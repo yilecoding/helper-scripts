@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         2026年暑期教师研修|国家中小学智慧教育平台|自动连播助手
 // @namespace    自动连播 自动答题
-// @version      2025.03.03.1
+// @version      2025.03.03.2
 // @description  适配 basic.smartedu.cn（React + Fish + video.js）。加载后弹出课程目录，点一门即开始：自动展开章节、自动播放、播完立即续播下一个、可选学完自动进下一门、课堂练习自动选第一个。支持后台标签页持续播放。课程清单从平台接口自动发现。
 // @author       壹樂（V：ita1125）
 // @match        https://basic.smartedu.cn/*
@@ -11,7 +11,15 @@
 // @grant        GM_deleteValue
 // @license      CC BY-NC-SA
 // @run-at       document-start
+// @homepageURL  https://github.com/yilecoding/helper-scripts
+// @supportURL   https://github.com/yilecoding/helper-scripts/issues
+// @updateURL    https://raw.githubusercontent.com/yilecoding/helper-scripts/main/smartedu-2026-basic/smartedu-2026-basic.user.js
+// @downloadURL  https://raw.githubusercontent.com/yilecoding/helper-scripts/main/smartedu-2026-basic/smartedu-2026-basic.user.js
 // ==/UserScript==
+
+// 脚本持续更新维护，欢迎 star / watch 仓库获取最新版本：
+// https://github.com/yilecoding/helper-scripts
+// Tampermonkey 已通过上方 @updateURL 自动检查更新，无需手动操作。
 
 /*
  * 两个容易踩的点，先说明：
