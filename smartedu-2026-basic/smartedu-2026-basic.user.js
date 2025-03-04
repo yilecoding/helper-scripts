@@ -1,8 +1,12 @@
 // ==UserScript==
 // @name         2026年暑期教师研修|国家中小学智慧教育平台|自动连播助手
+// @name:zh-CN   2026年暑期教师研修|国家中小学智慧教育平台|自动连播助手
+// @name:en      SmartEdu (basic.smartedu.cn) Auto-Play Assistant | China National Smart Education Platform
 // @namespace    自动连播 自动答题
-// @version      2025.03.04.3
+// @version      2025.03.04.4
 // @description  适配 basic.smartedu.cn（React + Fish + video.js）。加载后弹出课程目录，点一门即开始：自动展开章节、自动播放、播完立即续播下一个、可选学完自动进下一门、课堂练习自动选第一个。支持后台标签页持续播放。课程清单从平台接口自动发现。
+// @description:zh-CN  适配 basic.smartedu.cn（React + Fish + video.js）。加载后弹出课程目录，点一门即开始：自动展开章节、自动播放、播完立即续播下一个、可选学完自动进下一门、课堂练习自动选第一个。支持后台标签页持续播放。课程清单从平台接口自动发现。
+// @description:en  Auto-play helper for basic.smartedu.cn — China's National Smart Education Platform for Primary & Secondary Schools (国家中小学智慧教育平台 SmartEdu). Built for the 2026 Summer Teacher Training (暑期教师研修): expands chapters, auto-plays videos, jumps to the next lesson the moment one ends, optionally auto-advances to the next course, auto-picks the first answer on in-class quizzes, and keeps playing in a background tab. Course list is auto-discovered from the platform API — no manual course IDs needed.
 // @author       壹樂（V：ita1125）
 // @match        https://basic.smartedu.cn/*
 // @icon         https://basic.smartedu.cn/favicon.ico
