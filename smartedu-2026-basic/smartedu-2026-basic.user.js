@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         2026年暑期教师研修|国家中小学智慧教育平台|自动连播助手
 // @namespace    自动连播 自动答题
-// @version      2025.03.03.2
+// @version      2025.03.04.3
 // @description  适配 basic.smartedu.cn（React + Fish + video.js）。加载后弹出课程目录，点一门即开始：自动展开章节、自动播放、播完立即续播下一个、可选学完自动进下一门、课堂练习自动选第一个。支持后台标签页持续播放。课程清单从平台接口自动发现。
 // @author       壹樂（V：ita1125）
 // @match        https://basic.smartedu.cn/*
@@ -903,6 +903,9 @@
         text: '#d8dee9', dim: '#7c8798', accent: '#5ac8fa', ok: '#4ade80', warn: '#fbbf24',
     };
 
+    /** 脚本仓库，面板里放个入口方便用户 Star / Watch 关注更新。 */
+    const REPO_URL = 'https://github.com/yilecoding/helper-scripts';
+
     /** 面板：课程目录 + 控制 + 日志 */
     const Panel = (() => {
         let root, listBox, headBox, logBox, logBody;
@@ -930,6 +933,9 @@
             const title = css(document.createElement('div'), { flex: '1', fontWeight: '600', fontSize: '13px' });
             title.textContent = '研修助手';
             bar.appendChild(title);
+            bar.appendChild(iconBtn('★', 'GitHub 仓库：持续更新，欢迎 Star / Watch', () => {
+                window.open(REPO_URL, '_blank', 'noopener');
+            }));
             bar.appendChild(iconBtn(State.panelOpen ? '－' : '＋', '收起/展开', () => {
                 State.panelOpen = !State.panelOpen;
                 applyOpen();
@@ -1029,6 +1035,21 @@
             });
             logBox.append(logHead, logBody);
             collapsible.appendChild(logBox);
+
+            // ── 底部：关注仓库提示 ──
+            const footer = css(document.createElement('div'), {
+                padding: '7px 11px', borderTop: `1px solid ${COLORS.line}`,
+                fontSize: '11px', color: COLORS.dim, textAlign: 'center',
+            });
+            const footerLink = css(document.createElement('a'), {
+                color: COLORS.accent, textDecoration: 'none', cursor: 'pointer',
+            });
+            footerLink.textContent = '⭐ 脚本持续更新，去 GitHub Star / Watch 一下';
+            footerLink.href = REPO_URL;
+            footerLink.target = '_blank';
+            footerLink.rel = 'noopener';
+            footer.appendChild(footerLink);
+            collapsible.appendChild(footer);
 
             root.appendChild(collapsible);
             document.body.appendChild(root);
