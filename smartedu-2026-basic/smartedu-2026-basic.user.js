@@ -3,7 +3,7 @@
 // @name:zh-CN   2026年暑期教师研修|国家中小学智慧教育平台|自动连播助手
 // @name:en      SmartEdu (basic.smartedu.cn) Auto-Play Assistant | China National Smart Education Platform
 // @namespace    自动连播 自动答题
-// @version      2025.03.04.4
+// @version      2025.03.06.5
 // @description  适配 basic.smartedu.cn（React + Fish + video.js）。加载后弹出课程目录，点一门即开始：自动展开章节、自动播放、播完立即续播下一个、可选学完自动进下一门、课堂练习自动选第一个。支持后台标签页持续播放。课程清单从平台接口自动发现。
 // @description:zh-CN  适配 basic.smartedu.cn（React + Fish + video.js）。加载后弹出课程目录，点一门即开始：自动展开章节、自动播放、播完立即续播下一个、可选学完自动进下一门、课堂练习自动选第一个。支持后台标签页持续播放。课程清单从平台接口自动发现。
 // @description:en  Auto-play helper for basic.smartedu.cn — China's National Smart Education Platform for Primary & Secondary Schools (国家中小学智慧教育平台 SmartEdu). Built for the 2026 Summer Teacher Training (暑期教师研修): expands chapters, auto-plays videos, jumps to the next lesson the moment one ends, optionally auto-advances to the next course, auto-picks the first answer on in-class quizzes, and keeps playing in a background tab. Course list is auto-discovered from the platform API — no manual course IDs needed.
@@ -41,6 +41,13 @@
 
 (function () {
     'use strict';
+
+    /**
+     * 统一日志前缀，所有 console.* 输出都带上它。
+     * 调试时在浏览器控制台过滤框输入「研修助手」即可只看本脚本的日志，
+     * 不会和页面自己的日志混在一起。
+     */
+    const TAG = '[研修助手]';
 
     // =========================================================================
     // 配置
@@ -1203,7 +1210,7 @@
         };
 
         function log(msg, dedup) {
-            console.log('[研修助手]', msg);
+            console.log(TAG, msg);
             build();
             if (!logBody) return;
             if (dedup && msg === lastMsg && logBody.lastChild) {
@@ -1280,7 +1287,7 @@
             buttons: $$('button,.fish-btn').filter(isVisible).slice(0, 30).map(textOf).filter(Boolean),
         };
         const json = JSON.stringify(report, null, 1);
-        console.log('[研修助手] 诊断报告\n' + json);
+        console.log(TAG, '诊断报告\n' + json);
         Log.write('诊断报告已打印到控制台（F12 → Console）');
         if (navigator.clipboard) {
             navigator.clipboard.writeText(json)
@@ -1417,7 +1424,7 @@
         } catch (err) {
             errorStreak++;
             Log.write(`本轮异常已忽略：${err.message}`); // 单轮出错不能让整个循环停掉
-            console.error(err);
+            console.error(TAG, err);
             // 连续出错说明不是偶发，脚本自己绕不出来，刷新重来
             if (errorStreak >= CONFIG.reloadOnErrorStreak) safeReload(`连续 ${errorStreak} 轮异常`);
         } finally {
@@ -1430,6 +1437,16 @@
     // =========================================================================
 
     async function boot() {
+        try {
+            await bootInner();
+        } catch (err) {
+            // 启动阶段任何一步炸了都要留下明确痕迹，不然面板不弹出时无从下手排查。
+            console.error(TAG, '启动失败', err);
+            try { Log.write(`⚠ 启动失败：${err.message}`); } catch (_) { /* 连面板都没建出来，控制台报错已经够用 */ }
+        }
+    }
+
+    async function bootInner() {
         Panel.build();
         Log.write('脚本已就绪');
         KeepAlive.notes.forEach((n) => Log.write('保活：' + n));
