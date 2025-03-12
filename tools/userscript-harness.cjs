@@ -19,6 +19,7 @@
  *   - GM_getValue/GM_setValue 存在页面的 localStorage（前缀 __gm:），只在同源内共享，
  *     真实环境是按脚本全局共享。同源刷新后能读回，够测「刷新恢复」这类场景。
  *   - 没有沙箱：脚本直接跑在页面上下文，unsafeWindow === window。
+ *   - GM_xmlhttpRequest 的 timeout 不计时，要测超时就让 opts.xhr 返回 { timeout: true }。
  *   - @run-at 只区分 document-start（立即执行）/ document-end（DOMContentLoaded）/
  *     document-idle（load，默认）。
  */
@@ -27,6 +28,7 @@
 const fs = require('fs')
 const http = require('http')
 const path = require('path')
+const vm = require('vm')
 const { chromium } = require('playwright')
 
 const MIME = {
@@ -49,7 +51,22 @@ async function setup(fixturesDir, { headless = true } = {}) {
         if (!file.startsWith(fixturesDir)) return res.writeHead(403).end()
         if (fs.existsSync(file) && fs.statSync(file).isDirectory()) file = path.join(file, 'index.html')
         if (!fs.existsSync(file)) return res.writeHead(404).end('not found')
-        res.writeHead(200, { 'content-type': MIME[path.extname(file)] || 'application/octet-stream' })
+        const type = MIME[path.extname(file)] || 'application/octet-stream'
+        const size = fs.statSync(file).size
+        // 音视频 seek 要 Range → 206，否则 currentTime 设不过去
+        const range = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range || '')
+        if (range) {
+            const start = range[1] ? +range[1] : size - +range[2]
+            const end = range[1] && range[2] ? Math.min(+range[2], size - 1) : size - 1
+            res.writeHead(206, {
+                'content-type': type,
+                'accept-ranges': 'bytes',
+                'content-range': `bytes ${start}-${end}/${size}`,
+                'content-length': end - start + 1,
+            })
+            return fs.createReadStream(file, { start, end }).pipe(res)
+        }
+        res.writeHead(200, { 'content-type': type, 'accept-ranges': 'bytes', 'content-length': size })
         fs.createReadStream(file).pipe(res)
     })
     await new Promise(r => server.listen(0, '127.0.0.1', r))
@@ -79,10 +96,14 @@ function parseMeta(src) {
 /**
  * 把 GM 模拟层 + 用户脚本注册到 page 上（之后每次导航都会自动注入）。
  * opts.values  GM_getValue 的初始值
- * opts.xhr     (details) => { status, responseText, responseHeaders? }，模拟 GM_xmlhttpRequest
+ * opts.xhr     (details) => { status, responseText, responseHeaders? }，模拟 GM_xmlhttpRequest；
+ *              返回 { timeout: true } 走 ontimeout，抛错走 onerror
+ * opts.failDownloads  正则，匹配到的 url 让 GM_download 走 onerror
  */
 async function install(page, scriptPath, opts = {}) {
     const src = fs.readFileSync(scriptPath, 'utf8')
+    // 先在 node 里编译一遍：语法错误在页面里只是一条 pageerror，用例会全挂在「功能没生效」上，看不出原因
+    new vm.Script(`(function () {\n${src}\n})`, { filename: scriptPath })
     const meta = parseMeta(src)
     const runAt = (meta['run-at'] || ['document-idle'])[0]
     const errors = []
@@ -97,12 +118,14 @@ async function install(page, scriptPath, opts = {}) {
     }
 
     await page.addInitScript(
-        ({ src, runAt, values, name }) => {
+        ({ src, runAt, values, name, failDownloads }) => {
             const PREFIX = '__gm:'
             const rec = (window.__gm = { clipboard: null, downloads: [], menu: [], notifications: [], opened: [] })
+            // 初始值只在该源第一次加载时写入，之后删掉的键刷新也不会被补回来
             try {
-                for (const [k, v] of Object.entries(values || {})) {
-                    if (localStorage.getItem(PREFIX + k) === null) localStorage.setItem(PREFIX + k, JSON.stringify(v))
+                if (localStorage.getItem(PREFIX + '__seeded') === null) {
+                    for (const [k, v] of Object.entries(values || {})) localStorage.setItem(PREFIX + k, JSON.stringify(v))
+                    localStorage.setItem(PREFIX + '__seeded', '1')
                 }
             } catch (e) { /* about:blank 等无存储的页面 */ }
 
@@ -116,19 +139,30 @@ async function install(page, scriptPath, opts = {}) {
                 GM_setValue(k, v) { localStorage.setItem(PREFIX + k, JSON.stringify(v)) },
                 GM_deleteValue(k) { localStorage.removeItem(PREFIX + k) },
                 GM_listValues() {
-                    return Object.keys(localStorage).filter(k => k.startsWith(PREFIX)).map(k => k.slice(PREFIX.length))
+                    return Object.keys(localStorage)
+                        .filter(k => k.startsWith(PREFIX) && k !== PREFIX + '__seeded')
+                        .map(k => k.slice(PREFIX.length))
                 },
                 GM_addStyle(css) {
                     const s = document.createElement('style')
                     s.textContent = css
-                    ;(document.head || document.documentElement).appendChild(s)
+                    const mount = () => (document.head || document.documentElement).appendChild(s)
+                    // document-start 时 <html> 可能还没解析出来，等它出现再挂（Tampermonkey 也是这样兜的）
+                    if (document.documentElement) mount()
+                    else new MutationObserver((_, ob) => {
+                        if (document.documentElement) { ob.disconnect(); mount() }
+                    }).observe(document, { childList: true })
                     return s
                 },
                 GM_setClipboard(text, type) { rec.clipboard = { text, type } },
                 GM_download(arg, nameArg) {
                     const d = typeof arg === 'string' ? { url: arg, name: nameArg } : arg
                     rec.downloads.push({ url: d.url, name: d.name })
-                    setTimeout(() => d.onload && d.onload(), 0)
+                    const fail = failDownloads && new RegExp(failDownloads).test(d.url)
+                    setTimeout(() => {
+                        if (fail) d.onerror && d.onerror({ error: 'not_succeeded', details: 'harness: failDownloads' })
+                        else d.onload && d.onload()
+                    }, 0)
                 },
                 GM_registerMenuCommand(caption, fn) { rec.menu.push({ caption, fn }); return rec.menu.length },
                 GM_unregisterMenuCommand(id) { rec.menu[id - 1] = null },
@@ -139,6 +173,7 @@ async function install(page, scriptPath, opts = {}) {
                     const plain = { method: d.method || 'GET', url: d.url, headers: d.headers, data: d.data }
                     window.__gmXhrBridge(plain).then(
                         r => {
+                            if (r.timeout) return d.ontimeout && d.ontimeout({})
                             let response = r.responseText
                             if (d.responseType === 'json') try { response = JSON.parse(r.responseText) } catch (e) { response = null }
                             const resp = { ...r, response, finalUrl: d.url, readyState: 4 }
@@ -165,7 +200,13 @@ async function install(page, scriptPath, opts = {}) {
             else if (runAt === 'document-end') document.addEventListener('DOMContentLoaded', run, { once: true })
             else window.addEventListener('load', run, { once: true })
         },
-        { src, runAt, values: opts.values || {}, name: (meta.name || ['userscript'])[0] },
+        {
+            src,
+            runAt,
+            values: opts.values || {},
+            name: (meta.name || ['userscript'])[0],
+            failDownloads: opts.failDownloads ? opts.failDownloads.source : null,
+        },
     )
 }
 
