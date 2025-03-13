@@ -3,7 +3,7 @@
 // @name:zh-CN   网页复制限制解除｜解除禁止选中、禁止右键、复制版权尾巴
 // @name:en      Copy Unlock | Re-enable Text Selection, Right-Click & Clean Copy
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.03.13.3
+// @version      2025.03.13.4
 // @description  解除 CSDN、知乎专栏、各类文库/小说站的「禁止选中 / 禁止右键 / 复制后追加版权尾巴 / 复制要登录」限制。按站点启用/停用，可选是否连右键一起解锁。
 // @description:zh-CN  解除 CSDN、知乎专栏、各类文库/小说站的「禁止选中 / 禁止右键 / 复制后追加版权尾巴 / 复制要登录」限制。按站点启用/停用，可选是否连右键一起解锁。
 // @description:en  Removes copy restrictions on sites like CSDN, Zhihu and novel/document libraries: re-enables text selection and right-click, strips the copyright footer appended on copy, and lets you copy code without logging in. Per-site on/off switch; right-click unlocking is optional.
@@ -56,6 +56,15 @@
          */
         stripIfBlocking: ['onmousedown', 'onmouseup', 'onkeydown'],
         blockingPattern: /return\s*false|preventDefault|returnValue\s*=\s*false/i,
+
+        /** 在 window 捕获阶段截住、不让页面看到的事件。 */
+        events: ['copy', 'cut', 'selectstart', 'contextmenu', 'dragstart', 'keydown'],
+
+        /** keydown 只截这几个组合键（Ctrl/Cmd + 键），别的快捷键照常给页面。 */
+        hotkeys: ['c', 'a', 'x'],
+
+        /** 可编辑区：事件层完全不碰，复制/剪切/快捷键交给编辑器自己处理。 */
+        editableSelector: 'input, textarea, select, [contenteditable]:not([contenteditable="false"])',
     };
 
     const log = (...a) => CONFIG.debug && console.log(TAG, ...a);
@@ -156,6 +165,47 @@
         document.addEventListener('DOMContentLoaded', () => cleanTree(document.documentElement), { once: true });
     }
 
+    // =========================================================================
+    // 事件层：window 捕获阶段抢先截住，页面的处理器收不到事件
+    // =========================================================================
+
+    /*
+     * 为什么是 stopImmediatePropagation 而不是去「撤销」preventDefault：
+     * 事件一旦被 preventDefault 就撤不回来；而 `document.oncopy = () => false`、
+     * `<body oncopy="return false">` 这类处理器在引擎内部取消默认行为，
+     * 改写 Event.prototype.preventDefault 也拦不住。唯一可靠的办法是让它们收不到事件。
+     * window 捕获阶段是整条传播路径的起点，document-start 注册保证我们排第一。
+     *
+     * 代价是页面对这些事件的所有监听都失效，所以可编辑区整块放行：
+     * 富文本 / 代码编辑器靠 copy/cut/keydown 维护自己的数据模型，截了就坏。
+     */
+
+    /** 事件的真实目标。Shadow DOM 里 e.target 会被重定向到宿主，要看 composedPath。 */
+    function realTarget(e) {
+        let node = (e.composedPath && e.composedPath()[0]) || e.target;
+        if (node && node.nodeType === 3) node = node.parentElement; // selectstart 的目标可能是文本节点
+        return node && node.nodeType === 1 ? node : null;
+    }
+
+    function inEditable(el) {
+        return !!el && (el.isContentEditable || !!el.closest(CONFIG.editableSelector));
+    }
+
+    function isCopyHotkey(e) {
+        return (e.ctrlKey || e.metaKey) && !e.altKey && CONFIG.hotkeys.includes((e.key || '').toLowerCase());
+    }
+
+    function onEvent(e) {
+        if (inEditable(realTarget(e))) return;
+        if (e.type === 'keydown' && !isCopyHotkey(e)) return;
+        e.stopImmediatePropagation();
+    }
+
+    function hookEvents() {
+        for (const type of CONFIG.events) window.addEventListener(type, onEvent, true);
+    }
+
+    hookEvents();
     injectStyle();
     watchDom();
     log('已启用', HOST);

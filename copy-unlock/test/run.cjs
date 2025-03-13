@@ -85,6 +85,43 @@ const FIXTURES = path.join(__dirname, 'fixtures')
         await page.context().close()
     })
 
+    await t.test('脚本限制：selectstart 被拦也能选中，Ctrl+C 复制不带尾巴', async () => {
+        const page = await open('events.html')
+        await page.click('#p1', { clickCount: 3 })
+        t.eq(await selection(page), '第一段正文，限制全靠页面脚本。')
+        const { text } = await copyByKeyboard(page)
+        t.eq(text.trim(), '第一段正文，限制全靠页面脚本。')
+        t.assert(!text.includes('著作权'), '剪贴板里有版权尾巴：' + text)
+        await page.context().close()
+    })
+
+    await t.test('脚本限制：Ctrl+A 全选可用', async () => {
+        const page = await open('events.html')
+        await page.click('#p2')
+        await page.keyboard.press('Control+A')
+        const sel = await selection(page)
+        t.assert(sel.includes('第一段正文') && sel.includes('第二段正文'), '全选没生效：' + sel)
+        await page.context().close()
+    })
+
+    await t.test('脚本限制：右键不再弹页面自己的菜单', async () => {
+        const page = await open('events.html')
+        await page.click('#p1', { button: 'right' })
+        t.eq(await page.$eval('#menu', el => el.hidden), true)
+        await page.context().close()
+    })
+
+    await t.test('可编辑区不截：编辑器自己的 copy/keydown 监听照常触发', async () => {
+        const page = await open('events.html')
+        await page.click('#editor')
+        await page.keyboard.press('Control+A')
+        // 不用 Ctrl+C：页面 document 上的 keydown 拦截在编辑区里仍生效（这是放行的代价），
+        // 这里只验证 copy 事件能到达编辑器自己的监听
+        await page.evaluate(() => document.execCommand('copy'))
+        t.eq(await page.evaluate(() => [!!window.__editorSelectAll, !!window.__editorCopy]), [true, true])
+        await page.context().close()
+    })
+
     await close()
     t.done()
 })()
