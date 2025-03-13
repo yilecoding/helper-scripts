@@ -3,7 +3,7 @@
 // @name:zh-CN   网页复制限制解除｜解除禁止选中、禁止右键、复制版权尾巴
 // @name:en      Copy Unlock | Re-enable Text Selection, Right-Click & Clean Copy
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.03.13.2
+// @version      2025.03.13.3
 // @description  解除 CSDN、知乎专栏、各类文库/小说站的「禁止选中 / 禁止右键 / 复制后追加版权尾巴 / 复制要登录」限制。按站点启用/停用，可选是否连右键一起解锁。
 // @description:zh-CN  解除 CSDN、知乎专栏、各类文库/小说站的「禁止选中 / 禁止右键 / 复制后追加版权尾巴 / 复制要登录」限制。按站点启用/停用，可选是否连右键一起解锁。
 // @description:en  Removes copy restrictions on sites like CSDN, Zhihu and novel/document libraries: re-enables text selection and right-click, strips the copyright footer appended on copy, and lets you copy code without logging in. Per-site on/off switch; right-click unlocking is optional.
@@ -46,6 +46,16 @@
 
         /** 有的站把 ::selection 设成透明，「能选但看不见」。开着就恢复系统选区色。 */
         fixSelectionColor: true,
+
+        /** 无条件移除的内联属性：这些属性在正文元素上几乎只用来做限制。 */
+        stripAttrs: ['oncopy', 'oncut', 'onbeforecopy', 'onselectstart', 'oncontextmenu', 'ondragstart', 'unselectable'],
+
+        /*
+         * 只在「看起来是拦截」时才移除的内联属性。onmousedown 之类在链接上常用来
+         * 做点击统计/跳转改写，一刀切删掉会把正常功能弄坏。
+         */
+        stripIfBlocking: ['onmousedown', 'onmouseup', 'onkeydown'],
+        blockingPattern: /return\s*false|preventDefault|returnValue\s*=\s*false/i,
     };
 
     const log = (...a) => CONFIG.debug && console.log(TAG, ...a);
@@ -109,6 +119,44 @@
         mo.observe(document, { childList: true });
     }
 
+    // =========================================================================
+    // 内联属性清理（含之后动态插入 / 动态改写的节点）
+    // =========================================================================
+
+    const ALL_ATTRS = [...CONFIG.stripAttrs, ...CONFIG.stripIfBlocking];
+    const ATTR_SELECTOR = ALL_ATTRS.map(a => `[${a}]`).join(',');
+
+    function cleanAttr(el, name) {
+        const v = el.getAttribute(name);
+        if (v === null) return;
+        if (CONFIG.stripIfBlocking.includes(name) && !CONFIG.blockingPattern.test(v)) return;
+        // 移除内容属性时，对应的 on* 事件处理器也会被一并清掉（HTML 规范行为）
+        el.removeAttribute(name);
+    }
+
+    function cleanElement(el) {
+        for (const name of ALL_ATTRS) cleanAttr(el, name);
+    }
+
+    function cleanTree(root) {
+        if (root.nodeType !== 1) return;
+        if (root.matches(ATTR_SELECTOR)) cleanElement(root);
+        for (const el of root.querySelectorAll(ATTR_SELECTOR)) cleanElement(el);
+    }
+
+    function watchDom() {
+        const mo = new MutationObserver(records => {
+            for (const r of records) {
+                if (r.type === 'attributes') cleanAttr(r.target, r.attributeName);
+                else for (const n of r.addedNodes) cleanTree(n);
+            }
+        });
+        // 从 document 开始观察：解析器插入的节点也会产生记录，不用等 DOMContentLoaded
+        mo.observe(document, { childList: true, subtree: true, attributes: true, attributeFilter: ALL_ATTRS });
+        document.addEventListener('DOMContentLoaded', () => cleanTree(document.documentElement), { once: true });
+    }
+
     injectStyle();
+    watchDom();
     log('已启用', HOST);
 })();

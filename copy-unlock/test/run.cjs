@@ -51,6 +51,40 @@ const FIXTURES = path.join(__dirname, 'fixtures')
         await page.context().close()
     })
 
+    /** 键盘 Ctrl+C，然后从系统剪贴板读回 { text, html }。 */
+    async function copyByKeyboard(page) {
+        await page.evaluate(() => navigator.clipboard.writeText('__empty__'))
+        await page.keyboard.press('Control+C')
+        return page.evaluate(async () => {
+            const out = {}
+            for (const item of await navigator.clipboard.read()) {
+                for (const type of item.types) out[type] = await (await item.getType(type)).text()
+            }
+            return { text: out['text/plain'], html: out['text/html'] }
+        })
+    }
+    const attrs = (page, sel) => page.$eval(sel, el => el.getAttributeNames().sort())
+
+    await t.test('内联属性：限制属性被移除，正常的 onmousedown 保留', async () => {
+        const page = await open('inline-attrs.html')
+        t.eq(await attrs(page, 'body'), [])
+        t.eq(await attrs(page, '#p1'), ['id'])
+        t.eq(await attrs(page, '#p2'), ['id'])
+        t.eq(await attrs(page, '#track'), ['href', 'id', 'onmousedown'])
+        await page.context().close()
+    })
+
+    await t.test('内联属性：异步插入的节点和后来重挂的属性也被清掉', async () => {
+        const page = await open('inline-attrs.html')
+        await page.waitForFunction(() => window.__rendered)
+        await page.evaluate(() => new Promise(r => setTimeout(r, 0)))
+        t.eq(await attrs(page, '#p3'), ['id'])
+        t.eq(await attrs(page, '#p1'), ['id'])
+        await page.click('#p3', { clickCount: 3 })
+        t.eq((await copyByKeyboard(page)).text.trim(), '异步插入的段落')
+        await page.context().close()
+    })
+
     await close()
     t.done()
 })()

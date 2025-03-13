@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>内联属性限制</title></head>
+<body oncopy="return false" onselectstart="return false" oncontextmenu="return false">
+<p id="p1" unselectable="on" ondragstart="return false">正文第一段，body 上挂着 oncopy/onselectstart。</p>
+<p id="p2" onmousedown="return false;">按下鼠标就被拦的段落。</p>
+<a id="track" href="#x" onmousedown="window.__tracked = 1">带点击统计的链接</a>
+<div id="later"></div>
+<script>
+    // 模拟页面异步渲染：稍后插入的新节点、以及给已有节点重新挂上的限制
+    setTimeout(() => {
+        document.getElementById('later').innerHTML =
+            '<p id="p3" oncopy="return false" onselectstart="return false">异步插入的段落</p>'
+        document.getElementById('p1').setAttribute('oncopy', 'return false')
+        window.__rendered = true
+    }, 200)
+</script>
+</body>
+</html>
