@@ -31,6 +31,26 @@ const FIXTURES = path.join(__dirname, 'fixtures')
         await page.context().close()
     })
 
+    const selection = page => page.evaluate(() => getSelection().toString().trim())
+    const userSelect = (page, sel) => page.$eval(sel, el => getComputedStyle(el).userSelect)
+
+    await t.test('CSS 禁止选中：三击能选中段落，选区不透明', async () => {
+        const page = await open('no-select.html')
+        await page.click('#p1', { clickCount: 3 })
+        t.eq(await selection(page), '第一段正文，整页被 CSS 禁止选中。')
+        const bg = await page.$eval('#p1', el => getComputedStyle(el, '::selection').backgroundColor)
+        t.assert(bg !== 'rgba(0, 0, 0, 0)', '::selection 仍是透明：' + bg)
+        await page.context().close()
+    })
+
+    await t.test('CSS 层不改按钮和输入框', async () => {
+        const page = await open('no-select.html')
+        t.eq(await userSelect(page, '#btn'), 'none')
+        t.eq(await userSelect(page, '#input'), 'none')
+        t.eq(await userSelect(page, '#p2'), 'text')
+        await page.context().close()
+    })
+
     await close()
     t.done()
 })()
