@@ -3,7 +3,7 @@
 // @name:zh-CN   网页复制限制解除｜解除禁止选中、禁止右键、复制版权尾巴
 // @name:en      Copy Unlock | Re-enable Text Selection, Right-Click & Clean Copy
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.03.13.4
+// @version      2025.03.14.5
 // @description  解除 CSDN、知乎专栏、各类文库/小说站的「禁止选中 / 禁止右键 / 复制后追加版权尾巴 / 复制要登录」限制。按站点启用/停用，可选是否连右键一起解锁。
 // @description:zh-CN  解除 CSDN、知乎专栏、各类文库/小说站的「禁止选中 / 禁止右键 / 复制后追加版权尾巴 / 复制要登录」限制。按站点启用/停用，可选是否连右键一起解锁。
 // @description:en  Removes copy restrictions on sites like CSDN, Zhihu and novel/document libraries: re-enables text selection and right-click, strips the copyright footer appended on copy, and lets you copy code without logging in. Per-site on/off switch; right-click unlocking is optional.
@@ -65,6 +65,13 @@
 
         /** 可编辑区：事件层完全不碰，复制/剪切/快捷键交给编辑器自己处理。 */
         editableSelector: 'input, textarea, select, [contenteditable]:not([contenteditable="false"])',
+
+        /*
+         * 复制时去掉的零宽字符（文库/小说站拿它做隐形水印、打断关键词）。
+         * 刻意不含 U+200D / U+200C：前者是 emoji 组合序列的连接符（👨‍👩‍👧），
+         * 后者是波斯文、印地文等书写系统的正常字符，删了会把正文弄坏。
+         */
+        zeroWidth: /[\u200B\u2060\uFEFF]/g,
     };
 
     const log = (...a) => CONFIG.debug && console.log(TAG, ...a);
@@ -108,6 +115,7 @@
                 }
             `;
         }
+        css += `[${HIDE_ATTR}] { display: none !important; }`;
         const style = document.createElement('style');
         style.textContent = css;
         style.dataset.copyUnlock = '';
@@ -199,6 +207,93 @@
         if (inEditable(realTarget(e))) return;
         if (e.type === 'keydown' && !isCopyHotkey(e)) return;
         e.stopImmediatePropagation();
+        if (e.type === 'copy') writeClipboard(e);
+    }
+
+    // =========================================================================
+    // 复制：自己往 clipboardData 写干净的文本和 HTML
+    // =========================================================================
+
+    /*
+     * 光截住页面的 copy 监听还不够：小说站/文库会在正文里塞「看不见的干扰字」，
+     * 浏览器原生复制照样带出来。实测 Chrome 的 Selection.toString() 会跳过
+     * display:none / visibility:hidden，但 font-size:0、color:transparent 的
+     * 文字和零宽字符都原样保留。所以在复制瞬间把这类节点临时藏掉，再借浏览器
+     * 自己的序列化取文本（换行、空白处理和原生一致），取完立刻还原。
+     */
+    const HIDE_ATTR = 'data-copy-unlock-hide';
+
+    function isInvisible(el) {
+        const cs = getComputedStyle(el);
+        // display:none 的文字 toString() 自己会跳过，但 cloneContents() 照样克隆进 HTML
+        if (cs.display === 'none' || cs.visibility === 'hidden') return true;
+        if (parseFloat(cs.fontSize) === 0) return true;
+        // 渐变标题常用 color:transparent + background-clip:text，那是能看见的字
+        if (/^rgba\(.*,\s*0\)$|^transparent$/.test(cs.color) && cs.backgroundClip !== 'text' && cs.webkitBackgroundClip !== 'text') return true;
+        return false;
+    }
+
+    function markInvisible(range) {
+        const marked = [];
+        const root = range.commonAncestorContainer.nodeType === 1
+            ? range.commonAncestorContainer
+            : range.commonAncestorContainer.parentElement;
+        const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+        for (let el = walker.currentNode; el; el = walker.nextNode()) {
+            if (el === root || !range.intersectsNode(el)) continue;
+            if (isInvisible(el)) {
+                el.setAttribute(HIDE_ATTR, '');
+                marked.push(el);
+            }
+        }
+        return marked;
+    }
+
+    /** 片段里的相对链接、图片地址改成绝对地址，粘贴到别处才能用。 */
+    function absolutize(frag) {
+        for (const el of frag.querySelectorAll('[href], [src]')) {
+            for (const name of ['href', 'src']) {
+                const v = el.getAttribute(name);
+                if (v !== null) try { el.setAttribute(name, new URL(v, location.href).href); } catch (err) { /* 非法 URL 原样留着 */ }
+            }
+        }
+    }
+
+    function rangeToHtml(range) {
+        const frag = range.cloneContents();
+        for (const el of frag.querySelectorAll(`[${HIDE_ATTR}]`)) el.remove();
+        absolutize(frag);
+        const box = document.createElement('div');
+        // 只选中代码块里的一部分时，片段里没有 <pre>，粘贴后缩进和换行会被折叠
+        const node = range.commonAncestorContainer;
+        const pre = (node.nodeType === 1 ? node : node.parentElement).closest('pre');
+        if (pre) {
+            const wrap = document.createElement('pre');
+            wrap.appendChild(frag);
+            box.appendChild(wrap);
+        } else {
+            box.appendChild(frag);
+        }
+        return box.innerHTML;
+    }
+
+    function writeClipboard(e) {
+        const sel = window.getSelection();
+        if (!sel || sel.isCollapsed || !sel.rangeCount || !e.clipboardData) return;
+        const ranges = Array.from({ length: sel.rangeCount }, (_, i) => sel.getRangeAt(i));
+        const marked = ranges.flatMap(markInvisible);
+        let text, html;
+        try {
+            text = sel.toString().replace(CONFIG.zeroWidth, '');
+            html = ranges.map(rangeToHtml).join('').replace(CONFIG.zeroWidth, '');
+        } finally {
+            for (const el of marked) el.removeAttribute(HIDE_ATTR);
+        }
+        if (!text) return; // 选中的全是图片之类：交给浏览器原生复制
+        e.clipboardData.setData('text/plain', text);
+        e.clipboardData.setData('text/html', html);
+        e.preventDefault();
+        log('已复制', text.length, '字');
     }
 
     function hookEvents() {

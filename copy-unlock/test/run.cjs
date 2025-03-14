@@ -122,6 +122,55 @@ const FIXTURES = path.join(__dirname, 'fixtures')
         await page.context().close()
     })
 
+    /** 用 Range 精确选中某元素里的一段文字（三击会连带选到块尾换行）。 */
+    const selectText = (page, sel, start, end) => page.$eval(sel, (el, [start, end]) => {
+        const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT)
+        const texts = []
+        for (let n = walker.nextNode(); n; n = walker.nextNode()) texts.push(n)
+        const range = document.createRange()
+        let pos = 0
+        for (const n of texts) {
+            const len = n.data.length
+            if (start >= pos && start <= pos + len && !range.__s) { range.setStart(n, start - pos); range.__s = 1 }
+            if (end >= pos && end <= pos + len) { range.setEnd(n, end - pos); break }
+            pos += len
+        }
+        getSelection().removeAllRanges()
+        getSelection().addRange(range)
+    }, [start, end])
+
+    await t.test('复制去掉干扰字和零宽字符，HTML 里也没有', async () => {
+        const page = await open('interference.html')
+        await page.click('#novel', { clickCount: 3 })
+        const { text, html } = await copyByKeyboard(page)
+        t.eq(text.trim(), '他推开门，屋里一片漆黑。')
+        t.assert(!/[盗版必究\u200b]/.test(html), 'HTML 里有干扰字：' + html)
+        // 复制之后正文要原样还原
+        t.eq(await page.$$eval('[data-copy-unlock-hide]', els => els.length), 0)
+        t.eq(await page.$eval('#novel .x', el => getComputedStyle(el).display), 'inline')
+        await page.context().close()
+    })
+
+    await t.test('渐变文字、emoji 连接符保留；链接改成绝对地址', async () => {
+        const page = await open('interference.html')
+        await page.click('#grad', { clickCount: 3 })
+        t.eq((await copyByKeyboard(page)).text.trim(), '渐变标题文字')
+        await page.click('#emoji', { clickCount: 3 })
+        const { text, html } = await copyByKeyboard(page)
+        t.eq(text.trim(), '一家人👨\u200d👩\u200d👧下一章')
+        t.assert(html.includes(`href="${base}/chapter/2.html"`), '链接不是绝对地址：' + html)
+        await page.context().close()
+    })
+
+    await t.test('只选中代码块的一部分，HTML 仍包在 <pre> 里', async () => {
+        const page = await open('interference.html')
+        await selectText(page, '#code', 0, 30)
+        const { text, html } = await copyByKeyboard(page)
+        t.eq(text, 'def main():\n    print("hello")')
+        t.assert(/^<pre>/.test(html), 'HTML 没有 <pre>：' + html)
+        await page.context().close()
+    })
+
     await close()
     t.done()
 })()
