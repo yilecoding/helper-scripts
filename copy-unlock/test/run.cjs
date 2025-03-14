@@ -171,6 +171,67 @@ const FIXTURES = path.join(__dirname, 'fixtures')
         await page.context().close()
     })
 
+    const HOST = new URL(base).hostname
+    /** 触发菜单命令并等页面刷新完。 */
+    const menuAndReload = async (page, caption) => {
+        await Promise.all([page.waitForEvent('load'), h.menu(page, caption)])
+    }
+
+    /** 不走键盘（页面会拦 Ctrl+C），用 Range 选中元素后 execCommand('copy')，读回剪贴板文本。 */
+    async function copyElementByCommand(page, sel) {
+        await page.evaluate(() => navigator.clipboard.writeText('__empty__'))
+        await page.$eval(sel, el => {
+            getSelection().selectAllChildren(el)
+            document.execCommand('copy')
+        })
+        return page.evaluate(() => navigator.clipboard.readText())
+    }
+
+    await t.test('本站停用后完全不干预：选不中、右键被页面接管、复制带尾巴', async () => {
+        const values = { sites: { [HOST]: { disabled: true } } }
+        const page = await open('events.html', { values })
+        t.eq((await h.gm(page)).menu, [`⛔ 本站已停用（${HOST}），点击启用`])
+        await page.click('#p1', { clickCount: 3 })
+        t.eq(await selection(page), '')
+        await page.click('#p1', { button: 'right' })
+        t.eq(await page.$eval('#menu', el => el.hidden), false)
+        t.assert((await copyElementByCommand(page, '#p1')).includes('著作权归作者所有'), '停用后页面的尾巴应该照旧')
+        await page.context().close()
+
+        const page2 = await open('no-select.html', { values })
+        t.eq(await userSelect(page2, '#p1'), 'none')
+        await page2.context().close()
+        const page3 = await open('inline-attrs.html', { values })
+        t.eq(await page3.getAttribute('body', 'oncopy'), 'return false')
+        await page3.context().close()
+    })
+
+    await t.test('菜单：停用 → 刷新后页面限制回来；再启用恢复', async () => {
+        const page = await open('events.html')
+        t.eq((await h.gm(page)).menu, [`✅ 本站已启用（${HOST}），点击停用`, '🖱 右键：已解锁，点击改回页面自己的右键'])
+        t.eq(await copyElementByCommand(page, '#p1'), '第一段正文，限制全靠页面脚本。')
+
+        await menuAndReload(page, '点击停用')
+        t.eq(await page.evaluate(() => JSON.parse(localStorage.getItem('__gm:sites'))), { [HOST]: { disabled: true } })
+        t.assert((await copyElementByCommand(page, '#p1')).includes('著作权归作者所有'), '停用后页面的尾巴应该照旧')
+
+        await menuAndReload(page, '点击启用')
+        t.eq(await page.evaluate(() => JSON.parse(localStorage.getItem('__gm:sites'))), {})
+        t.eq(await copyElementByCommand(page, '#p1'), '第一段正文，限制全靠页面脚本。')
+        await page.context().close()
+    })
+
+    await t.test('菜单：右键改回页面自己的 → 页面菜单能弹，复制仍解锁', async () => {
+        const page = await open('events.html')
+        await menuAndReload(page, '右键：已解锁')
+        t.eq((await h.gm(page)).menu[1], '🖱 右键：未解锁，点击解锁')
+        await page.click('#p1', { button: 'right' })
+        t.eq(await page.$eval('#menu', el => el.hidden), false)
+        await page.click('#p1', { clickCount: 3 })
+        t.eq((await copyByKeyboard(page)).text.trim(), '第一段正文，限制全靠页面脚本。')
+        await page.context().close()
+    })
+
     await close()
     t.done()
 })()

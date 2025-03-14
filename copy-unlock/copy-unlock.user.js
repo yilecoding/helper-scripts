@@ -3,13 +3,15 @@
 // @name:zh-CN   网页复制限制解除｜解除禁止选中、禁止右键、复制版权尾巴
 // @name:en      Copy Unlock | Re-enable Text Selection, Right-Click & Clean Copy
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.03.14.5
+// @version      2025.03.14.6
 // @description  解除 CSDN、知乎专栏、各类文库/小说站的「禁止选中 / 禁止右键 / 复制后追加版权尾巴 / 复制要登录」限制。按站点启用/停用，可选是否连右键一起解锁。
 // @description:zh-CN  解除 CSDN、知乎专栏、各类文库/小说站的「禁止选中 / 禁止右键 / 复制后追加版权尾巴 / 复制要登录」限制。按站点启用/停用，可选是否连右键一起解锁。
 // @description:en  Removes copy restrictions on sites like CSDN, Zhihu and novel/document libraries: re-enables text selection and right-click, strips the copyright footer appended on copy, and lets you copy code without logging in. Per-site on/off switch; right-click unlocking is optional.
 // @author       壹樂（V：ita1125）
 // @match        *://*/*
 // @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_registerMenuCommand
 // @license      CC BY-NC-SA
 // @run-at       document-start
 // @homepageURL  https://github.com/yilecoding/helper-scripts
@@ -39,6 +41,12 @@
         debug: false,
 
         /*
+         * 默认是否连右键一起解锁。解锁的代价是页面自己的右键菜单组件（在线文档、
+         * 网盘、地图）全部失效，所以留了按站点的开关。
+         */
+        unlockContextMenu: true,
+
+        /*
          * 不强制可选中的元素。表单控件本来就能选，强行改 user-select 反而会让
          * 按钮双击时选中文字；可编辑区交给编辑器自己管。
          */
@@ -48,7 +56,7 @@
         fixSelectionColor: true,
 
         /** 无条件移除的内联属性：这些属性在正文元素上几乎只用来做限制。 */
-        stripAttrs: ['oncopy', 'oncut', 'onbeforecopy', 'onselectstart', 'oncontextmenu', 'ondragstart', 'unselectable'],
+        stripAttrs: ['oncopy', 'oncut', 'onbeforecopy', 'onselectstart', 'oncontextmenu', 'ondragstart', 'unselectable'],  // oncontextmenu 受右键开关控制
 
         /*
          * 只在「看起来是拦截」时才移除的内联属性。onmousedown 之类在链接上常用来
@@ -83,13 +91,40 @@
     const HOST = location.hostname;
     const STORE_KEY = 'sites';
 
-    /** { [hostname]: { disabled?: boolean } } */
+    /** { [hostname]: { disabled?: boolean, contextMenu?: boolean } } */
     function hostSettings() {
         const all = GM_getValue(STORE_KEY, {}) || {};
         return all[HOST] || {};
     }
 
+    /** 改完直接刷新：事件监听和样式都是 document-start 时装上的，热切换拆不干净。 */
+    function saveHostSettings(patch) {
+        const all = GM_getValue(STORE_KEY, {}) || {};
+        const next = { ...(all[HOST] || {}), ...patch };
+        for (const k of Object.keys(next)) if (next[k] === undefined) delete next[k];
+        if (Object.keys(next).length) all[HOST] = next;
+        else delete all[HOST];
+        GM_setValue(STORE_KEY, all);
+        location.reload();
+    }
+
     const settings = hostSettings();
+    const unlockContextMenu = settings.contextMenu ?? CONFIG.unlockContextMenu;
+
+    function registerMenu() {
+        if (settings.disabled) {
+            GM_registerMenuCommand(`⛔ 本站已停用（${HOST}），点击启用`, () => saveHostSettings({ disabled: undefined }));
+            return;
+        }
+        GM_registerMenuCommand(`✅ 本站已启用（${HOST}），点击停用`, () => saveHostSettings({ disabled: true }));
+        GM_registerMenuCommand(
+            unlockContextMenu ? '🖱 右键：已解锁，点击改回页面自己的右键' : '🖱 右键：未解锁，点击解锁',
+            // 和默认值相同就不存，省得默认值以后改了，老用户还卡在旧值上
+            () => saveHostSettings({ contextMenu: !unlockContextMenu === CONFIG.unlockContextMenu ? undefined : !unlockContextMenu }),
+        );
+    }
+
+    registerMenu();
     if (settings.disabled) {
         log('本站已停用', HOST);
         return;
@@ -140,7 +175,8 @@
     // 内联属性清理（含之后动态插入 / 动态改写的节点）
     // =========================================================================
 
-    const ALL_ATTRS = [...CONFIG.stripAttrs, ...CONFIG.stripIfBlocking];
+    const ALL_ATTRS = [...CONFIG.stripAttrs, ...CONFIG.stripIfBlocking]
+        .filter(a => unlockContextMenu || a !== 'oncontextmenu');
     const ATTR_SELECTOR = ALL_ATTRS.map(a => `[${a}]`).join(',');
 
     function cleanAttr(el, name) {
@@ -297,7 +333,10 @@
     }
 
     function hookEvents() {
-        for (const type of CONFIG.events) window.addEventListener(type, onEvent, true);
+        for (const type of CONFIG.events) {
+            if (type === 'contextmenu' && !unlockContextMenu) continue;
+            window.addEventListener(type, onEvent, true);
+        }
     }
 
     hookEvents();
