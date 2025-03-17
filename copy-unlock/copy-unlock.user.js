@@ -3,7 +3,7 @@
 // @name:zh-CN   网页复制限制解除｜解除禁止选中、禁止右键、复制版权尾巴
 // @name:en      Copy Unlock | Re-enable Text Selection, Right-Click & Clean Copy
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.03.14.6
+// @version      2025.03.17.7
 // @description  解除 CSDN、知乎专栏、各类文库/小说站的「禁止选中 / 禁止右键 / 复制后追加版权尾巴 / 复制要登录」限制。按站点启用/停用，可选是否连右键一起解锁。
 // @description:zh-CN  解除 CSDN、知乎专栏、各类文库/小说站的「禁止选中 / 禁止右键 / 复制后追加版权尾巴 / 复制要登录」限制。按站点启用/停用，可选是否连右键一起解锁。
 // @description:en  Removes copy restrictions on sites like CSDN, Zhihu and novel/document libraries: re-enables text selection and right-click, strips the copyright footer appended on copy, and lets you copy code without logging in. Per-site on/off switch; right-click unlocking is optional.
@@ -12,6 +12,7 @@
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_registerMenuCommand
+// @grant        GM_setClipboard
 // @license      CC BY-NC-SA
 // @run-at       document-start
 // @homepageURL  https://github.com/yilecoding/helper-scripts
@@ -85,6 +86,47 @@
     const log = (...a) => CONFIG.debug && console.log(TAG, ...a);
 
     // =========================================================================
+    // 站点规则：通用逻辑覆盖不到的站，在这里加一条
+    // =========================================================================
+
+    /*
+     * 字段都可选：
+     *   hosts        域名列表，匹配本域及其所有子域
+     *   contextMenu  本站默认是否解锁右键（用户在菜单里改过的以用户为准）
+     *   css          额外注入的样式
+     *   stripAttrs   额外清理的内联属性 { 属性名: 正则 }，属性内容匹配才删
+     *   copyButton   站点自带的复制按钮改成直接复制 { selector, label, code: btn => 代码元素 }
+     */
+    const SITES = [
+        {
+            name: 'CSDN',
+            hosts: ['csdn.net'],
+            // 未登录时点一下代码块就弹登录框：<code onclick="mdcp.signin(event)">
+            stripAttrs: { onclick: /signin/ },
+            // 长代码块默认折叠，「展开」按钮未登录也会弹登录框
+            css: `
+                #content_views pre.set-code-hide { height: auto !important; max-height: none !important; overflow: visible !important; }
+                #content_views .hide-preCode-box { display: none !important; }
+            `,
+            copyButton: {
+                // 未登录是 <div class="hljs-button signin" data-title="登录后复制" onclick="hljs.signin(event)">，
+                // 按钮文字是 ::before { content: attr(data-title) }，改 data-title 就改了显示
+                selector: '.hljs-button',
+                label: '复制',
+                code: btn => btn.closest('pre') && btn.closest('pre').querySelector('code'),
+            },
+        },
+        {
+            name: '在线文档',
+            hosts: ['docs.qq.com', 'feishu.cn', 'larksuite.com', 'yuque.com', 'shimo.im', 'kdocs.cn'],
+            // 右键菜单是这些产品的核心交互，解锁了反而没法用
+            contextMenu: false,
+        },
+    ];
+
+    const SITE = SITES.find(s => s.hosts.some(h => location.hostname === h || location.hostname.endsWith('.' + h))) || {};
+
+    // =========================================================================
     // 站点设置：按 hostname 存在 GM 存储里
     // =========================================================================
 
@@ -109,7 +151,8 @@
     }
 
     const settings = hostSettings();
-    const unlockContextMenu = settings.contextMenu ?? CONFIG.unlockContextMenu;
+    const defaultContextMenu = SITE.contextMenu ?? CONFIG.unlockContextMenu;
+    const unlockContextMenu = settings.contextMenu ?? defaultContextMenu;
 
     function registerMenu() {
         if (settings.disabled) {
@@ -120,7 +163,7 @@
         GM_registerMenuCommand(
             unlockContextMenu ? '🖱 右键：已解锁，点击改回页面自己的右键' : '🖱 右键：未解锁，点击解锁',
             // 和默认值相同就不存，省得默认值以后改了，老用户还卡在旧值上
-            () => saveHostSettings({ contextMenu: !unlockContextMenu === CONFIG.unlockContextMenu ? undefined : !unlockContextMenu }),
+            () => saveHostSettings({ contextMenu: !unlockContextMenu === defaultContextMenu ? undefined : !unlockContextMenu }),
         );
     }
 
@@ -151,6 +194,7 @@
             `;
         }
         css += `[${HIDE_ATTR}] { display: none !important; }`;
+        if (SITE.css) css += SITE.css;
         const style = document.createElement('style');
         style.textContent = css;
         style.dataset.copyUnlock = '';
@@ -175,14 +219,25 @@
     // 内联属性清理（含之后动态插入 / 动态改写的节点）
     // =========================================================================
 
-    const ALL_ATTRS = [...CONFIG.stripAttrs, ...CONFIG.stripIfBlocking]
-        .filter(a => unlockContextMenu || a !== 'oncontextmenu');
+    /** 属性名 → 删除条件：null 表示无条件删，否则内容匹配其中任一正则才删。 */
+    const ATTR_RULES = new Map();
+    for (const a of CONFIG.stripAttrs) {
+        if (a === 'oncontextmenu' && !unlockContextMenu) continue;
+        ATTR_RULES.set(a, null);
+    }
+    for (const a of CONFIG.stripIfBlocking) ATTR_RULES.set(a, [CONFIG.blockingPattern]);
+    for (const [a, re] of Object.entries(SITE.stripAttrs || {})) {
+        if (!ATTR_RULES.has(a)) ATTR_RULES.set(a, [re]);
+        else if (ATTR_RULES.get(a)) ATTR_RULES.get(a).push(re);
+    }
+    const ALL_ATTRS = [...ATTR_RULES.keys()];
     const ATTR_SELECTOR = ALL_ATTRS.map(a => `[${a}]`).join(',');
 
     function cleanAttr(el, name) {
         const v = el.getAttribute(name);
         if (v === null) return;
-        if (CONFIG.stripIfBlocking.includes(name) && !CONFIG.blockingPattern.test(v)) return;
+        const patterns = ATTR_RULES.get(name);
+        if (patterns && !patterns.some(re => re.test(v))) return;
         // 移除内容属性时，对应的 on* 事件处理器也会被一并清掉（HTML 规范行为）
         el.removeAttribute(name);
     }
@@ -195,6 +250,11 @@
         if (root.nodeType !== 1) return;
         if (root.matches(ATTR_SELECTOR)) cleanElement(root);
         for (const el of root.querySelectorAll(ATTR_SELECTOR)) cleanElement(el);
+        if (SITE.copyButton) {
+            const { selector, label } = SITE.copyButton;
+            if (root.matches(selector)) root.dataset.title = label;
+            for (const el of root.querySelectorAll(selector)) el.dataset.title = label;
+        }
     }
 
     function watchDom() {
@@ -332,11 +392,26 @@
         log('已复制', text.length, '字');
     }
 
+    /** 站点自带的复制按钮：抢在站点的「登录后复制」处理之前，直接把代码写进剪贴板。 */
+    function onCopyButtonClick(e) {
+        const target = realTarget(e);
+        const btn = target && target.closest(SITE.copyButton.selector);
+        if (!btn) return;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        const code = SITE.copyButton.code(btn);
+        if (!code) return;
+        GM_setClipboard(code.innerText.replace(CONFIG.zeroWidth, ''), 'text');
+        btn.dataset.title = '已复制';
+        setTimeout(() => { btn.dataset.title = SITE.copyButton.label; }, 1500);
+    }
+
     function hookEvents() {
         for (const type of CONFIG.events) {
             if (type === 'contextmenu' && !unlockContextMenu) continue;
             window.addEventListener(type, onEvent, true);
         }
+        if (SITE.copyButton) window.addEventListener('click', onCopyButtonClick, true);
     }
 
     hookEvents();

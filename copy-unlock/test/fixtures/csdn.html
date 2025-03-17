@@ -1,0 +1,33 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>CSDN 文章（结构按 2026 年页面简化）</title>
+<style>
+    .hljs-button::before { content: attr(data-title); }
+    #content_views pre.set-code-hide { height: 60px; overflow: hidden; }
+</style>
+</head>
+<body>
+<div id="content_views">
+    <p id="para">正文段落。</p>
+    <pre class="set-code-hide" id="pre1"><code class="hljs language-python" onclick="mdcp.signin(event)">import os
+print(os.getcwd())
+for i in range(3):
+    print(i)
+<div class="hljs-button signin" data-title="登录后复制" onclick="hljs.signin(event)"></div></code><div class="hide-preCode-box"><span class="hide-preCode-bt">展开</span></div></pre>
+</div>
+<div id="login" hidden>请登录</div>
+<script>
+    window.hljs = { signin() { document.getElementById('login').hidden = false } }
+    window.mdcp = window.hljs
+    // CSDN 的版权尾巴
+    document.addEventListener('copy', e => {
+        const text = getSelection().toString()
+        e.clipboardData.setData('text/plain', text +
+            '\n————————————————\n版权声明：本文为博主原创文章，遵循 CC 4.0 BY-SA 版权协议，转载请附上原文出处链接和本声明。\n原文链接：' + location.href)
+        e.preventDefault()
+    })
+</script>
+</body>
+</html>

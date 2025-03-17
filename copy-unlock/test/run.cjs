@@ -4,6 +4,7 @@
  */
 'use strict'
 
+const fs = require('fs')
 const path = require('path')
 const h = require('../../tools/userscript-harness.cjs')
 
@@ -14,13 +15,21 @@ const FIXTURES = path.join(__dirname, 'fixtures')
     const { browser, base, close } = await h.setup(FIXTURES)
     const t = h.createRunner('copy-unlock')
 
-    /** 新开一个带剪贴板权限的上下文，装好脚本再打开 fixture。 */
+    /**
+     * 新开一个带剪贴板权限的上下文，装好脚本再打开 fixture。
+     * opts.url：按真实域名打开（脚本按 hostname 选站点规则），用 route 把 fixture 当作该地址的响应，不访问外网。
+     */
     async function open(fixture, opts = {}) {
+        const url = opts.url || base + '/' + fixture
         const ctx = await browser.newContext()
-        await ctx.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: base })
+        await ctx.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: new URL(url).origin })
+        if (opts.url) {
+            const body = fs.readFileSync(path.join(FIXTURES, fixture), 'utf8')
+            await ctx.route(new URL(url).origin + '/**', r => r.fulfill({ contentType: 'text/html; charset=utf-8', body }))
+        }
         const page = await ctx.newPage()
         await h.install(page, SCRIPT, { values: opts.values })
-        await page.goto(base + '/' + fixture)
+        await page.goto(url)
         return page
     }
 
@@ -229,6 +238,47 @@ const FIXTURES = path.join(__dirname, 'fixtures')
         t.eq(await page.$eval('#menu', el => el.hidden), false)
         await page.click('#p1', { clickCount: 3 })
         t.eq((await copyByKeyboard(page)).text.trim(), '第一段正文，限制全靠页面脚本。')
+        await page.context().close()
+    })
+
+    const CSDN = 'https://blog.csdn.net/someone/article/details/123'
+
+    await t.test('CSDN：「登录后复制」按钮改成直接复制，不弹登录', async () => {
+        const page = await open('csdn.html', { url: CSDN })
+        t.eq(await page.getAttribute('.hljs-button', 'data-title'), '复制')
+        await page.click('.hljs-button')
+        t.eq((await h.gm(page)).clipboard, {
+            text: 'import os\nprint(os.getcwd())\nfor i in range(3):\n    print(i)\n',
+            type: 'text',
+        })
+        t.eq(await page.getAttribute('.hljs-button', 'data-title'), '已复制')
+        t.eq(await page.$eval('#login', el => el.hidden), true)
+        await page.context().close()
+    })
+
+    await t.test('CSDN：点代码块不弹登录、折叠的代码块展开、复制不带版权声明', async () => {
+        const page = await open('csdn.html', { url: CSDN })
+        t.eq(await page.getAttribute('#pre1 code', 'onclick'), null)
+        await page.click('#pre1 code', { position: { x: 5, y: 5 } })
+        t.eq(await page.$eval('#login', el => el.hidden), true)
+        t.eq(await page.$eval('.hide-preCode-box', el => getComputedStyle(el).display), 'none')
+        t.eq(await page.$eval('#pre1', el => el.scrollHeight <= el.clientHeight), true)
+        const text = await copyElementByCommand(page, '#para')
+        t.eq(text, '正文段落。')
+        await page.context().close()
+    })
+
+    await t.test('站点规则：在线文档默认不解锁右键，其他照常解锁', async () => {
+        const page = await open('events.html', { url: 'https://docs.qq.com/doc/abc' })
+        t.eq((await h.gm(page)).menu[1], '🖱 右键：未解锁，点击解锁')
+        await page.click('#p1', { button: 'right' })
+        t.eq(await page.$eval('#menu', el => el.hidden), false)
+        t.eq(await copyElementByCommand(page, '#p1'), '第一段正文，限制全靠页面脚本。')
+        // 规则默认是「不解锁」，用户点解锁要落盘；再点回去等于默认值，不落盘
+        await menuAndReload(page, '点击解锁')
+        t.eq(await page.evaluate(() => JSON.parse(localStorage.getItem('__gm:sites'))), { 'docs.qq.com': { contextMenu: true } })
+        await menuAndReload(page, '改回页面自己的右键')
+        t.eq(await page.evaluate(() => JSON.parse(localStorage.getItem('__gm:sites'))), {})
         await page.context().close()
     })
 
