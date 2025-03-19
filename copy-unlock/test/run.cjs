@@ -282,6 +282,20 @@ const FIXTURES = path.join(__dirname, 'fixtures')
         await page.context().close()
     })
 
+    await t.test('高特异性 !important、内联 !important 的禁选也能解开', async () => {
+        const page = await open('specificity.html')
+        await page.waitForFunction(() => window.__done)
+        await page.evaluate(() => new Promise(r => setTimeout(r, 0)))
+        t.eq(await userSelect(page, '#code'), 'text')
+        t.eq(await userSelect(page, '#inline'), 'text')
+        t.eq(await userSelect(page, '#later'), 'text')
+        // 只摘掉 user-select，同一个 style 里别的声明不动
+        t.eq(await page.$eval('#inline', el => el.style.color), 'rgb(51, 51, 51)')
+        await page.click('#code', { clickCount: 3 })
+        t.eq(await selection(page), 'echo hello')
+        await page.context().close()
+    })
+
     await close()
     t.done()
 })()

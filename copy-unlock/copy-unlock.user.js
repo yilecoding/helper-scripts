@@ -3,7 +3,7 @@
 // @name:zh-CN   网页复制限制解除｜解除禁止选中、禁止右键、复制版权尾巴
 // @name:en      Copy Unlock | Re-enable Text Selection, Right-Click & Clean Copy
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.03.17.7
+// @version      2025.03.19.8
 // @description  解除 CSDN、知乎专栏、各类文库/小说站的「禁止选中 / 禁止右键 / 复制后追加版权尾巴 / 复制要登录」限制。按站点启用/停用，可选是否连右键一起解锁。
 // @description:zh-CN  解除 CSDN、知乎专栏、各类文库/小说站的「禁止选中 / 禁止右键 / 复制后追加版权尾巴 / 复制要登录」限制。按站点启用/停用，可选是否连右键一起解锁。
 // @description:en  Removes copy restrictions on sites like CSDN, Zhihu and novel/document libraries: re-enables text selection and right-click, strips the copyright footer appended on copy, and lets you copy code without logging in. Per-site on/off switch; right-click unlocking is optional.
@@ -177,22 +177,30 @@
     // CSS 层：强制可选中
     // =========================================================================
 
+    /*
+     * 全局规则放进 @layer，不是为了好看：页面写 `#content_views pre code { user-select: none !important }`
+     * 这种带 id 的 !important，特异性 (1,0,2) 稳压 `body *:not(...)`，普通写法赢不了。
+     * 而级联层对 !important 是反着排的 —— 层内的 !important 胜过所有不在层里的 !important，
+     * 与特异性无关。唯一还压得过它的是内联 style 的 !important，那个在 fixInlineStyle() 里处理。
+     */
     function injectStyle() {
         const not = CONFIG.keepSelector.split(',').map(x => `:not(${x.trim()})`).join('');
-        let css = `
+        let rules = `
             html, body, body *${not} {
                 -webkit-user-select: text !important;
                 user-select: text !important;
             }
         `;
         if (CONFIG.fixSelectionColor) {
-            css += `
+            rules += `
                 ::selection {
                     background-color: Highlight !important;
                     color: HighlightText !important;
                 }
             `;
         }
+        // 层外再放一份：不认识 @layer 的老浏览器会丢掉整个块，至少还有普通优先级的兜底
+        let css = rules + `@layer copy-unlock { ${rules} }`;
         css += `[${HIDE_ATTR}] { display: none !important; }`;
         if (SITE.css) css += SITE.css;
         const style = document.createElement('style');
@@ -231,7 +239,16 @@
         else if (ATTR_RULES.get(a)) ATTR_RULES.get(a).push(re);
     }
     const ALL_ATTRS = [...ATTR_RULES.keys()];
-    const ATTR_SELECTOR = ALL_ATTRS.map(a => `[${a}]`).join(',');
+    const ATTR_SELECTOR = [...ALL_ATTRS.map(a => `[${a}]`), '[style*="user-select"]'].join(',');
+
+    /** 内联 style 里的 user-select 只摘这一项，同一个 style 里的其他声明不动。 */
+    function fixInlineStyle(el) {
+        const st = el.style;
+        if (!st || (!st.getPropertyValue('user-select') && !st.getPropertyValue('-webkit-user-select'))) return;
+        if (el.matches(CONFIG.keepSelector)) return;
+        st.removeProperty('user-select');
+        st.removeProperty('-webkit-user-select');
+    }
 
     function cleanAttr(el, name) {
         const v = el.getAttribute(name);
@@ -244,6 +261,7 @@
 
     function cleanElement(el) {
         for (const name of ALL_ATTRS) cleanAttr(el, name);
+        fixInlineStyle(el);
     }
 
     function cleanTree(root) {
@@ -260,12 +278,18 @@
     function watchDom() {
         const mo = new MutationObserver(records => {
             for (const r of records) {
-                if (r.type === 'attributes') cleanAttr(r.target, r.attributeName);
-                else for (const n of r.addedNodes) cleanTree(n);
+                if (r.type === 'childList') {
+                    for (const n of r.addedNodes) cleanTree(n);
+                } else if (r.attributeName === 'style') {
+                    fixInlineStyle(r.target);
+                } else {
+                    cleanAttr(r.target, r.attributeName);
+                }
             }
         });
         // 从 document 开始观察：解析器插入的节点也会产生记录，不用等 DOMContentLoaded
-        mo.observe(document, { childList: true, subtree: true, attributes: true, attributeFilter: ALL_ATTRS });
+        // style 也要观察：页面会在运行时 el.style.userSelect = 'none'。回调里只读一个属性，动画频繁改 style 也扛得住
+        mo.observe(document, { childList: true, subtree: true, attributes: true, attributeFilter: [...ALL_ATTRS, 'style'] });
         document.addEventListener('DOMContentLoaded', () => cleanTree(document.documentElement), { once: true });
     }
 
