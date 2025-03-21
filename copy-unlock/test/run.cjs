@@ -296,6 +296,25 @@ const FIXTURES = path.join(__dirname, 'fixtures')
         await page.context().close()
     })
 
+    const fireDragstart = (page, sel) => page.$eval(sel, el => el.dispatchEvent(new DragEvent('dragstart', { bubbles: true, cancelable: true, composed: true })))
+
+    await t.test('拖拽组件（draggable=true）的 dragstart 照常给页面，图片拖拽仍解锁', async () => {
+        const page = await open('edge.html')
+        await fireDragstart(page, '#item1')
+        await fireDragstart(page, '#handle')
+        await fireDragstart(page, '#img')
+        t.eq(await page.evaluate(() => window.__log), ['sortable:item1', 'sortable:handle'])
+        await page.context().close()
+    })
+
+    await t.test('Shadow DOM 里的编辑框按真实目标判断，快捷键不被截', async () => {
+        const page = await open('edge.html')
+        await page.click('#xe >> #ta')
+        await page.keyboard.press('Control+A')
+        t.eq(await page.evaluate(() => window.__log), ['shadow-ctrl-a'])
+        await page.context().close()
+    })
+
     await close()
     t.done()
 })()

@@ -3,7 +3,7 @@
 // @name:zh-CN   网页复制限制解除｜解除禁止选中、禁止右键、复制版权尾巴
 // @name:en      Copy Unlock | Re-enable Text Selection, Right-Click & Clean Copy
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.03.19.8
+// @version      2025.03.21.9
 // @description  解除 CSDN、知乎专栏、各类文库/小说站的「禁止选中 / 禁止右键 / 复制后追加版权尾巴 / 复制要登录」限制。按站点启用/停用，可选是否连右键一起解锁。
 // @description:zh-CN  解除 CSDN、知乎专栏、各类文库/小说站的「禁止选中 / 禁止右键 / 复制后追加版权尾巴 / 复制要登录」限制。按站点启用/停用，可选是否连右键一起解锁。
 // @description:en  Removes copy restrictions on sites like CSDN, Zhihu and novel/document libraries: re-enables text selection and right-click, strips the copyright footer appended on copy, and lets you copy code without logging in. Per-site on/off switch; right-click unlocking is optional.
@@ -324,8 +324,12 @@
     }
 
     function onEvent(e) {
-        if (inEditable(realTarget(e))) return;
+        const target = realTarget(e);
+        if (inEditable(target)) return;
         if (e.type === 'keydown' && !isCopyHotkey(e)) return;
+        // 显式 draggable="true" 的是拖拽排序/上传之类的组件，dragstart 是它的正常功能；
+        // 页面拦的通常是图片和正文文字的拖拽，那些不带这个属性
+        if (e.type === 'dragstart' && target && target.closest('[draggable="true"]')) return;
         e.stopImmediatePropagation();
         if (e.type === 'copy') writeClipboard(e);
     }

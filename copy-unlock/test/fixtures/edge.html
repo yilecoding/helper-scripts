@@ -1,0 +1,29 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>边界情况</title></head>
+<body>
+<p id="text">正文</p>
+<img id="img" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" width="20" height="20">
+<!-- 拖拽排序组件：dragstart 是它的正常功能 -->
+<ul id="sortable">
+    <li id="item1" draggable="true"><span id="handle">第一项</span></li>
+    <li id="item2" draggable="true">第二项</li>
+</ul>
+<!-- Web Component 里的编辑框：事件冒到 window 时 target 已被重定向成宿主 -->
+<x-editor id="xe"></x-editor>
+<script>
+    window.__log = []
+    document.getElementById('sortable').addEventListener('dragstart', e => window.__log.push('sortable:' + e.target.id))
+    document.addEventListener('dragstart', e => { if (e.target.id === 'img') { window.__log.push('img-blocked'); e.preventDefault() } })
+    customElements.define('x-editor', class extends HTMLElement {
+        connectedCallback() {
+            const root = this.attachShadow({ mode: 'open' })
+            root.innerHTML = '<textarea id="ta">shadow 里的文本</textarea>'
+            root.getElementById('ta').addEventListener('keydown', e => {
+                if (e.ctrlKey && e.key.toLowerCase() === 'a') window.__log.push('shadow-ctrl-a')
+            })
+        }
+    })
+</script>
+</body>
+</html>
