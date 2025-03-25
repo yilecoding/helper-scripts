@@ -1,0 +1,15 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>规则解析</title>
+<!--
+  每个 <a> 的 data-expect 是期望改写成的地址；data-expect="keep" 表示应保持原样。
+  测试逐个比对 a.href。
+-->
+<ul id="links">
+  <li><a data-expect="https://github.com/foo/bar" href="https://link.zhihu.com/?target=https%3A//github.com/foo/bar">知乎</a>
+  <li><a data-expect="https://github.com/foo/bar?a=1&b=2" href="https://link.zhihu.com/?target=https%3A%2F%2Fgithub.com%2Ffoo%2Fbar%3Fa%3D1%26b%3D2">知乎（全编码，带 query）</a>
+  <li><a data-expect="https://vitejs.dev/guide/" href="https://link.juejin.cn?target=https%3A%2F%2Fvitejs.dev%2Fguide%2F">掘金（无斜杠）</a>
+  <li><a data-expect="https://docs.python.org/3/" href="https://link.csdn.net/?target=https%3A%2F%2Fdocs.python.org%2F3%2F&from_id=123">CSDN</a>
+  <li><a data-expect="keep" href="https://www.zhihu.com/question/1">普通站内链接</a>
+  <li><a data-expect="keep" href="https://example.com/?target=https%3A%2F%2Fevil.com">非中转站点的 target 参数</a>
+</ul>
