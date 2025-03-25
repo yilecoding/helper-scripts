@@ -1,0 +1,24 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>高优先级的禁选</title>
+<style>
+    /* 带 id 的 !important：特异性 (1,0,2)，压得过 body *:not(...) 那条 */
+    #content_views pre code { -webkit-user-select: none !important; user-select: none !important; }
+</style>
+</head>
+<body>
+<div id="content_views">
+    <pre><code id="code">echo hello</code></pre>
+</div>
+<p id="inline" style="-webkit-user-select: none !important; user-select: none !important; color: #333">内联 !important 禁选</p>
+<p id="later">稍后被脚本改成禁选</p>
+<script>
+    setTimeout(() => {
+        document.getElementById('later').style.setProperty('user-select', 'none', 'important')
+        window.__done = true
+    }, 100)
+</script>
+</body>
+</html>

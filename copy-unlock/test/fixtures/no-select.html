@@ -1,0 +1,20 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>禁止选中</title>
+<style>
+    /* 常见写法：整页禁选 + 选区透明 */
+    * { -webkit-user-select: none; user-select: none; }
+    ::selection { background: transparent; }
+</style>
+</head>
+<body>
+<article id="article">
+    <p id="p1">第一段正文，整页被 CSS 禁止选中。</p>
+    <p id="p2">第二段正文。</p>
+</article>
+<button id="btn">按钮</button>
+<input id="input" value="输入框">
+</body>
+</html>

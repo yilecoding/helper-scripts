@@ -1,0 +1,33 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>脚本限制</title></head>
+<body>
+<article id="article">
+    <p id="p1">第一段正文，限制全靠页面脚本。</p>
+    <p id="p2">第二段正文。</p>
+</article>
+<div id="menu" hidden>页面自己的右键菜单</div>
+<textarea id="editor">编辑器里的内容</textarea>
+<script>
+    const TAIL = '\n\n著作权归作者所有。商业转载请联系作者获得授权，非商业转载请注明出处。'
+    document.onselectstart = () => false
+    document.addEventListener('dragstart', e => e.preventDefault())
+    document.addEventListener('contextmenu', e => {
+        e.preventDefault()
+        document.getElementById('menu').hidden = false
+    })
+    document.addEventListener('keydown', e => {
+        if ((e.ctrlKey || e.metaKey) && ['c', 'a', 'x'].includes(e.key.toLowerCase())) e.preventDefault()
+    })
+    // 最常见的「复制追加版权尾巴」写法
+    document.addEventListener('copy', e => {
+        e.clipboardData.setData('text/plain', getSelection().toString() + TAIL)
+        e.preventDefault()
+    })
+    // 编辑器自己的监听，脚本不该截掉
+    const editor = document.getElementById('editor')
+    editor.addEventListener('copy', () => { window.__editorCopy = true })
+    editor.addEventListener('keydown', e => { if (e.ctrlKey && e.key.toLowerCase() === 'a') window.__editorSelectAll = true })
+</script>
+</body>
+</html>

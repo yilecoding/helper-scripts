@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>干扰字</title>
+<style>
+    .x { font-size: 0; }
+    .y { color: transparent; }
+    .grad { background: linear-gradient(90deg, red, blue); -webkit-background-clip: text; background-clip: text; color: transparent; }
+</style>
+</head>
+<body>
+<!-- 小说站常见的反爬：正文里夹看不见的干扰字 + 零宽字符 -->
+<p id="novel">他<span class="x">盗</span>推开<span class="y">版</span>门，&#8203;屋里<span style="display:none">必究</span>一片漆黑。</p>
+<h2 id="grad">渐变<span class="grad">标题</span>文字</h2>
+<p id="emoji">一家人👨&#8205;👩&#8205;👧<a href="/chapter/2.html">下一章</a></p>
+<pre id="code"><code>def main():
+    print("hello")
+    return 0</code></pre>
+</body>
+</html>
