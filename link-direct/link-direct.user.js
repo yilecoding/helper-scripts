@@ -3,7 +3,7 @@
 // @name:zh-CN   外链直达｜跳过知乎/掘金/CSDN 等站点的「即将离开」中转页
 // @name:en      Link Direct | Skip "You are leaving…" redirect pages on Zhihu, Juejin, CSDN and more
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.03.25.1
+// @version      2025.03.27.2
 // @description  把页面上指向中转页（link.zhihu.com、link.juejin.cn、link.csdn.net……）的外链直接改成真实地址，点了就到，不再停在「安全提醒」页。
 // @description:zh-CN  把页面上指向中转页（link.zhihu.com、link.juejin.cn、link.csdn.net……）的外链直接改成真实地址，点了就到，不再停在「安全提醒」页。
 // @description:en  Rewrites outbound links that go through redirect/interstitial pages (link.zhihu.com, link.juejin.cn, link.csdn.net…) to their real destination, so a click takes you straight there.
@@ -65,6 +65,20 @@
     // 解析
     // =========================================================================
 
+    /**
+     * 目标地址只放行 http/https，并返回规范化后的绝对地址。
+     *
+     * 中转参数完全由链接作者控制。不校验的话，target=javascript:… 会被我们亲手
+     * 写进 href —— 原本站点的中转页会拦下它，经过脚本反而成了能点的 XSS。
+     * 相对地址（/foo、//evil.com）同理拒绝：中转参数里出现它们本身就不正常。
+     */
+    function sanitize(raw) {
+        let u;
+        try { u = new URL(raw); } catch (e) { return null; }
+        if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
+        return u.href;
+    }
+
     function findRule(url) {
         const list = RULES_BY_HOST.get(url.hostname);
         if (!list) return null;
@@ -82,7 +96,13 @@
         if (!rule) return null;
         for (const p of rule.params) {
             const v = url.searchParams.get(p);
-            if (v) return { rule, target: v };
+            if (!v) continue;
+            const target = sanitize(v.trim());
+            if (!target) {
+                console.warn(TAG, `[${rule.name}] 拒绝非 http(s) 目标：`, v);
+                return null;
+            }
+            return { rule, target };
         }
         return null;
     }
