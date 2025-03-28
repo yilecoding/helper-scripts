@@ -3,7 +3,7 @@
 // @name:zh-CN   外链直达｜跳过知乎/掘金/CSDN 等站点的「即将离开」中转页
 // @name:en      Link Direct | Skip "You are leaving…" redirect pages on Zhihu, Juejin, CSDN and more
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.03.27.2
+// @version      2025.03.28.3
 // @description  把页面上指向中转页（link.zhihu.com、link.juejin.cn、link.csdn.net……）的外链直接改成真实地址，点了就到，不再停在「安全提醒」页。
 // @description:zh-CN  把页面上指向中转页（link.zhihu.com、link.juejin.cn、link.csdn.net……）的外链直接改成真实地址，点了就到，不再停在「安全提醒」页。
 // @description:en  Rewrites outbound links that go through redirect/interstitial pages (link.zhihu.com, link.juejin.cn, link.csdn.net…) to their real destination, so a click takes you straight there.
@@ -47,9 +47,45 @@
      *   params 按顺序尝试的 query 参数名，取第一个有值的
      */
     const RULES = [
+        // —— 国内社区 / 博客 ——
         { name: '知乎', hosts: ['link.zhihu.com'], path: /^\/?$/, params: ['target'] },
         { name: '掘金', hosts: ['link.juejin.cn'], path: /^\/?$/, params: ['target'] },
         { name: 'CSDN', hosts: ['link.csdn.net'], path: /^\/?$/, params: ['target'] },
+        { name: '简书', hosts: ['www.jianshu.com'], path: /^\/go-wild\/?$/, params: ['url'] },
+        { name: 'Gitee', hosts: ['gitee.com'], path: /^\/link\/?$/, params: ['target'] },
+        { name: '开源中国', hosts: ['www.oschina.net'], path: /^\/action\/GoToLink\/?$/i, params: ['url'] },
+        { name: '爱发电', hosts: ['afdian.com', 'afdian.net', 'ifdian.net'], path: /^\/link\/?$/, params: ['target'] },
+        { name: '少数派', hosts: ['sspai.com'], path: /^\/link\/?$/, params: ['target'] },
+        { name: 'InfoQ', hosts: ['www.infoq.cn', 'xie.infoq.cn'], path: /^\/link\/?$/, params: ['target'] },
+        { name: '力扣', hosts: ['leetcode.cn'], path: /^\/link\/?$/, params: ['target'] },
+        { name: '链滴', hosts: ['link.ld246.com'], path: /^\/forward\/?$/, params: ['goto'] },
+        { name: '豆瓣', hosts: ['www.douban.com'], path: /^\/link2\/?$/, params: ['url'] },
+        { name: '百度贴吧', hosts: ['tieba.baidu.com'], path: /^\/mo\/q\/checkurl\/?$/, params: ['url'] },
+        { name: '微博', hosts: ['weibo.cn'], path: /^\/sinaurl\/?$/, params: ['u', 'toasturl'] },
+        /*
+         * SegmentFault 的 enc 参数是服务端加密的，前端解不开。
+         * 部分链接同时带明文 url 参数，有就用；只有 enc 的就不处理，交给站点自己跳。
+         */
+        { name: 'SegmentFault', hosts: ['link.segmentfault.com'], path: /^\/?$/, params: ['url'] },
+
+        // —— 腾讯系 ——
+        // QQ / TIM 聊天里的链接：middlem.html 用 pfurl，ios.html / pc.html 用 url
+        { name: 'QQ', hosts: ['c.pc.qq.com'], path: /^\/(middlem|ios|pc)\.html$/, params: ['pfurl', 'url'] },
+        { name: '腾讯文档', hosts: ['docs.qq.com'], path: /^\/scenario\/link\.html$/, params: ['url'] },
+        { name: '微信开放社区', hosts: ['developers.weixin.qq.com'], path: /^\/community\/middlepage\/href\/?$/, params: ['href'] },
+        { name: 'QQ 邮箱', hosts: ['mail.qq.com', 'wx.mail.qq.com'], path: /^\/cgi-bin\/readtemplate\/?$/, params: ['gourl'] },
+
+        // —— 文档 / 办公 ——
+        { name: '语雀', hosts: ['www.yuque.com'], path: /^\/r\/goto\/?$/, params: ['url'] },
+        { name: '金山文档', hosts: ['www.kdocs.cn'], path: /^\/office\/link\/?$/, params: ['target'] },
+
+        // —— 海外 ——
+        // Google 搜索结果里是 /url?url=…&sa=…，其它产品（Gmail、文档）里多是 /url?q=…
+        { name: 'Google', hosts: ['www.google.com', 'www.google.com.hk', 'google.com'], path: /^\/url\/?$/, params: ['q', 'url'] },
+        { name: 'YouTube', hosts: ['www.youtube.com', 'm.youtube.com', 'youtube.com'], path: /^\/redirect\/?$/, params: ['q'] },
+        { name: 'Steam', hosts: ['steamcommunity.com'], path: /^\/linkfilter\/?$/, params: ['url', 'u'] },
+        { name: 'Facebook', hosts: ['l.facebook.com', 'lm.facebook.com'], path: /^\/l\.php$/, params: ['u'] },
+        { name: 'Instagram', hosts: ['l.instagram.com'], path: /^\/?$/, params: ['u'] },
     ];
 
     /** hostname → 规则列表。绝大多数链接的 host 不在表里，一次 Map 查询就能放过。 */

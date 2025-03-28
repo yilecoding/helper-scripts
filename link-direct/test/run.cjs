@@ -3,6 +3,7 @@
  * 外链直达的测试。运行：
  *   NODE_PATH=/path/to/node_modules node link-direct/test/run.cjs
  */
+const fs = require('fs')
 const path = require('path')
 const h = require('../../tools/userscript-harness.cjs')
 
@@ -41,6 +42,14 @@ const FIXTURES = path.join(__dirname, 'fixtures')
         t.eq(await mismatches(page), [])
         t.eq(h.errors(page).map(String), [])
         await page.close()
+    })
+
+    await t.test('规则表里每条规则的首个 host 在 rules.html 里都有样本', async () => {
+        const src = fs.readFileSync(SCRIPT, 'utf8')
+        const fixture = fs.readFileSync(path.join(FIXTURES, 'rules.html'), 'utf8')
+        const firstHosts = [...src.matchAll(/hosts: \['([^']+)'/g)].map(m => m[1])
+        t.assert(firstHosts.length >= 20, '规则表没读出来：' + firstHosts.length)
+        t.eq(firstHosts.filter(host => !fixture.includes('://' + host + '/') && !fixture.includes('://' + host + '?')), [])
     })
 
     await t.test('安全：javascript:/data:/相对地址等目标被拒绝，链接保持原样', async () => {
