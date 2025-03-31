@@ -3,7 +3,7 @@
 // @name:zh-CN   外链直达｜跳过知乎/掘金/CSDN 等站点的「即将离开」中转页
 // @name:en      Link Direct | Skip "You are leaving…" redirect pages on Zhihu, Juejin, CSDN and more
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.03.28.3
+// @version      2025.03.31.4
 // @description  把页面上指向中转页（link.zhihu.com、link.juejin.cn、link.csdn.net……）的外链直接改成真实地址，点了就到，不再停在「安全提醒」页。
 // @description:zh-CN  把页面上指向中转页（link.zhihu.com、link.juejin.cn、link.csdn.net……）的外链直接改成真实地址，点了就到，不再停在「安全提醒」页。
 // @description:en  Rewrites outbound links that go through redirect/interstitial pages (link.zhihu.com, link.juejin.cn, link.csdn.net…) to their real destination, so a click takes you straight there.
@@ -45,6 +45,9 @@
      *   hosts  中转页的 hostname（精确匹配，不含端口）
      *   path   pathname 正则
      *   params 按顺序尝试的 query 参数名，取第一个有值的
+     *   decode 可选，参数值 → 地址字符串（站点自己的编码方式，如 Bing 的 a1+base64）
+     *
+     * 参数值统一还会经过 unwrap()：多重 URL 编码逐层剥，纯 base64 也试着解一次。
      */
     const RULES = [
         // —— 国内社区 / 博客 ——
@@ -86,6 +89,8 @@
         { name: 'Steam', hosts: ['steamcommunity.com'], path: /^\/linkfilter\/?$/, params: ['url', 'u'] },
         { name: 'Facebook', hosts: ['l.facebook.com', 'lm.facebook.com'], path: /^\/l\.php$/, params: ['u'] },
         { name: 'Instagram', hosts: ['l.instagram.com'], path: /^\/?$/, params: ['u'] },
+        // Bing 搜索结果：u=a1<base64url>，a1 是固定前缀
+        { name: 'Bing', hosts: ['www.bing.com', 'cn.bing.com'], path: /^\/ck\/a\/?$/, params: ['u'], decode: v => (v.startsWith('a1') ? base64(v.slice(2)) || v : v) },
     ];
 
     /** hostname → 规则列表。绝大多数链接的 host 不在表里，一次 Map 查询就能放过。 */
@@ -115,30 +120,70 @@
         return u.href;
     }
 
+    /** base64 / base64url → UTF-8 字符串；不是合法 base64 返回 null。 */
+    function base64(s) {
+        if (!/^[A-Za-z0-9+/_-]+={0,2}$/.test(s)) return null;
+        let b = s.replace(/-/g, '+').replace(/_/g, '/');
+        while (b.length % 4) b += '=';
+        try {
+            const bin = atob(b);
+            const bytes = Uint8Array.from(bin, c => c.charCodeAt(0));
+            return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+        } catch (e) {
+            return null;
+        }
+    }
+
+    const HAS_SCHEME = /^[a-z][a-z0-9+.-]*:/i;
+
+    /**
+     * 剥掉多余的编码层。
+     *
+     * 只在「还没有协议头」时继续 decode：真实地址里本来就可能有 %20、%2F，
+     * 已经是 https://… 了还往下解，会把目标地址本身的编码也剥掉，改出一个错的链接。
+     * 安全校验在这之后做，所以 javascript%253A… 这种多重编码绕不过去。
+     */
+    function unwrap(v) {
+        for (let i = 0; i < 3 && !HAS_SCHEME.test(v); i++) {
+            if (/%[0-9a-f]{2}/i.test(v)) {
+                try { v = decodeURIComponent(v); continue; } catch (e) { break; }
+            }
+            const b = base64(v);
+            if (b && /^https?:\/\//i.test(b)) { v = b; continue; }
+            break;
+        }
+        return v;
+    }
+
     function findRule(url) {
         const list = RULES_BY_HOST.get(url.hostname);
         if (!list) return null;
         return list.find(r => r.path.test(url.pathname)) || null;
     }
 
+    /** 中转套中转（Google 结果指向知乎中转页之类）最多往里追这么多层。 */
+    const MAX_DEPTH = 3;
+
     /**
      * 中转链接 → 真实地址；不是中转链接或取不到就返回 null。
      * href 必须是绝对地址（传 a.href 而不是 getAttribute('href')）。
      */
-    function resolve(href) {
+    function resolve(href, depth = 0) {
         let url;
         try { url = new URL(href); } catch (e) { return null; }
         const rule = findRule(url);
         if (!rule) return null;
         for (const p of rule.params) {
-            const v = url.searchParams.get(p);
+            let v = url.searchParams.get(p);
             if (!v) continue;
-            const target = sanitize(v.trim());
+            if (rule.decode) v = rule.decode(v);
+            const target = sanitize(unwrap(v.trim()));
             if (!target) {
                 console.warn(TAG, `[${rule.name}] 拒绝非 http(s) 目标：`, v);
                 return null;
             }
-            return { rule, target };
+            const inner = depth < MAX_DEPTH ? resolve(target, depth + 1) : null;
+            return inner ? { rule, target: inner.target } : { rule, target };
         }
         return null;
     }

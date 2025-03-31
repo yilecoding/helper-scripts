@@ -1,0 +1,17 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>多重编码 / base64 / 嵌套</title>
+<!-- 由手工构造的样本，编码层数见链接文字。data-expect 含义同 rules.html。 -->
+<ul id="links">
+  <li><a data-expect="https://example.com/dbl" href="https://link.zhihu.com/?target=https%253A%252F%252Fexample.com%252Fdbl">双重编码</a>
+  <li><a data-expect="https://example.com/tri?x=1&y=2" href="https://link.juejin.cn/?target=https%25253A%25252F%25252Fexample.com%25252Ftri%25253Fx%25253D1%252526y%25253D2">三重编码</a>
+  <li><a data-expect="https://example.com/a%20b/c%2Fd" href="https://link.zhihu.com/?target=https%3A%2F%2Fexample.com%2Fa%2520b%2Fc%252Fd">目标自身的 %20/%2F 不能被多剥一层</a>
+  <li><a data-expect="https://example.com/b64" href="https://link.csdn.net/?target=aHR0cHM6Ly9leGFtcGxlLmNvbS9iNjQ=">纯 base64</a>
+  <li><a data-expect="https://example.com/b64url?q=%E4%B8%AD" href="https://link.csdn.net/?target=aHR0cHM6Ly9leGFtcGxlLmNvbS9iNjR1cmw_cT0lRTQlQjglQUQ">base64url（无填充）</a>
+  <li><a data-expect="https://example.com/bing" href="https://www.bing.com/ck/a?!&amp;&amp;p=abc&amp;ptn=3&amp;ver=2&amp;hsh=4&amp;u=a1aHR0cHM6Ly9leGFtcGxlLmNvbS9iaW5n&amp;ntb=1">Bing a1+base64</a>
+  <li><a data-expect="https://example.com/bing-cn" href="https://cn.bing.com/ck/a?!&amp;&amp;p=abc&amp;u=a1aHR0cHM6Ly9leGFtcGxlLmNvbS9iaW5nLWNu&amp;ntb=1">Bing 国内版</a>
+  <li><a data-expect="https://example.com/nested" href="https://www.google.com/url?q=https%3A%2F%2Flink.zhihu.com%2F%3Ftarget%3Dhttps%253A%252F%252Fexample.com%252Fnested&amp;sa=D">中转套中转（Google → 知乎）</a>
+  <li><a data-expect="keep" href="https://link.zhihu.com/?target=javascript%253Aalert%25281%2529">双重编码的 javascript: 仍被拒绝</a>
+  <li><a data-expect="keep" href="https://link.csdn.net/?target=amF2YXNjcmlwdDphbGVydCgxKQ==">base64 的 javascript: 不当成地址</a>
+  <li><a data-expect="https://link.zhihu.com/?target=javascript%3Aalert%281%29" href="https://www.google.com/url?q=https%3A%2F%2Flink.zhihu.com%2F%3Ftarget%3Djavascript%253Aalert%25281%2529">嵌套里的 javascript: —— 内层被拒，只剥掉外层，留给知乎中转页去拦</a>
+</ul>
