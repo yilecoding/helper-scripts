@@ -3,7 +3,7 @@
 // @name:zh-CN   外链直达｜跳过知乎/掘金/CSDN 等站点的「即将离开」中转页
 // @name:en      Link Direct | Skip "You are leaving…" redirect pages on Zhihu, Juejin, CSDN and more
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.03.31.4
+// @version      2025.04.01.5
 // @description  把页面上指向中转页（link.zhihu.com、link.juejin.cn、link.csdn.net……）的外链直接改成真实地址，点了就到，不再停在「安全提醒」页。
 // @description:zh-CN  把页面上指向中转页（link.zhihu.com、link.juejin.cn、link.csdn.net……）的外链直接改成真实地址，点了就到，不再停在「安全提醒」页。
 // @description:en  Rewrites outbound links that go through redirect/interstitial pages (link.zhihu.com, link.juejin.cn, link.csdn.net…) to their real destination, so a click takes you straight there.
@@ -208,8 +208,31 @@
         for (const a of root.querySelectorAll('a[href]')) fixAnchor(a);
     }
 
+    /**
+     * 动态内容：SPA 翻页、评论区懒加载、「展开全文」都是后插进来的。
+     * 除了新增节点，还要盯 href 属性本身 —— 有的站点先渲染直链、稍后再把 href
+     * 换成中转地址（或者复用同一个 <a> 换内容），只看 childList 会漏掉。
+     * 我们自己改 href 也会触发一次属性变更，但改完的地址不再命中规则，不会死循环。
+     */
+    function observe() {
+        new MutationObserver(records => {
+            for (const rec of records) {
+                if (rec.type === 'attributes') {
+                    if (rec.target.tagName === 'A') fixAnchor(rec.target);
+                    continue;
+                }
+                for (const n of rec.addedNodes) {
+                    if (n.nodeType !== 1) continue;
+                    if (n.tagName === 'A' && n.hasAttribute('href')) fixAnchor(n);
+                    if (n.firstElementChild) scan(n);
+                }
+            }
+        }).observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['href'] });
+    }
+
     function boot() {
         scan(document);
+        observe();
         console.log(TAG, `已改写 ${rewritten} 个链接`);
     }
 

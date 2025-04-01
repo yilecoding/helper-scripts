@@ -59,6 +59,24 @@ const FIXTURES = path.join(__dirname, 'fixtures')
         await page.close()
     })
 
+    await t.test('动态插入的链接、后改的 href 都会被改写', async () => {
+        const page = await open('dynamic.html')
+        const href = id => page.$eval('#' + id, a => a.href)
+        t.eq(await href('static'), 'https://example.com/static')
+
+        await page.evaluate(() => window.addOne())
+        await page.evaluate(() => window.addBlock())
+        await page.evaluate(() => window.swapHref())
+        // MutationObserver 回调是微任务，等一轮即可
+        await page.waitForFunction(() => document.getElementById('static2').href.startsWith('https://example.com/swapped'), null, { timeout: 2000 })
+        t.eq(await href('one'), 'https://example.com/one')
+        t.eq(await href('deep'), 'https://example.com/deep')
+        t.eq(await href('deep2'), 'https://example.com/deep2')
+        t.eq(await href('static2'), 'https://example.com/swapped')
+        t.eq(h.errors(page).map(String), [])
+        await page.close()
+    })
+
     await t.test('安全：javascript:/data:/相对地址等目标被拒绝，链接保持原样', async () => {
         const page = await open('unsafe.html')
         t.eq(await mismatches(page), [])
