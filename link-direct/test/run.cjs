@@ -14,8 +14,20 @@ const FIXTURES = path.join(__dirname, 'fixtures')
     const { browser, base, close } = await h.setup(FIXTURES)
     const t = h.createRunner('link-direct')
 
+    /**
+     * 测试不访问外网：除了本地 fixtures 服务，所有请求都回一个占位页。
+     * 挂在 context 上而不是 page 上，window.open 弹出的新页也一样被拦。
+     */
+    async function stubExternal(page) {
+        await page.context().route(url => !url.href.startsWith(base), route => route.fulfill({
+            contentType: 'text/html; charset=utf-8',
+            body: '<!doctype html><meta charset="utf-8"><title>stub</title><p>stub: ' + route.request().url() + '</p>',
+        }))
+    }
+
     async function open(file, opts) {
         const page = await browser.newPage()
+        await stubExternal(page)
         await h.install(page, SCRIPT, opts)
         await page.goto(base + '/' + file)
         return page
@@ -74,6 +86,28 @@ const FIXTURES = path.join(__dirname, 'fixtures')
         t.eq(await href('deep2'), 'https://example.com/deep2')
         t.eq(await href('static2'), 'https://example.com/swapped')
         t.eq(h.errors(page).map(String), [])
+        await page.close()
+    })
+
+    await t.test('点击兜底：mousedown 临时改 href 的站点，点击仍然直达', async () => {
+        const page = await open('click.html')
+        await Promise.all([page.waitForURL('https://example.com/mdown', { timeout: 3000 }), page.click('#mdown')])
+        await page.close()
+    })
+
+    await t.test('点击兜底：Shadow DOM 里的链接在点击时改写', async () => {
+        const page = await open('click.html')
+        const inner = page.locator('#card >> #inner')   // locator 自动穿透 open shadow root
+        t.assert((await inner.getAttribute('href')).startsWith('https://link.zhihu.com/'), '点击前不该已被改写（否则这条用例测不到兜底）')
+        await Promise.all([page.waitForURL('https://example.com/shadow', { timeout: 3000 }), inner.click()])
+        await page.close()
+    })
+
+    await t.test('点击兜底：站点 window.open(中转地址) 被换成真实地址', async () => {
+        const page = await open('click.html')
+        const [popup] = await Promise.all([page.waitForEvent('popup'), page.click('#wopen')])
+        await popup.waitForLoadState()
+        t.eq(popup.url(), 'https://example.com/wopen')
         await page.close()
     })
 

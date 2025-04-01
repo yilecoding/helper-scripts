@@ -3,7 +3,7 @@
 // @name:zh-CN   外链直达｜跳过知乎/掘金/CSDN 等站点的「即将离开」中转页
 // @name:en      Link Direct | Skip "You are leaving…" redirect pages on Zhihu, Juejin, CSDN and more
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.04.01.5
+// @version      2025.04.01.6
 // @description  把页面上指向中转页（link.zhihu.com、link.juejin.cn、link.csdn.net……）的外链直接改成真实地址，点了就到，不再停在「安全提醒」页。
 // @description:zh-CN  把页面上指向中转页（link.zhihu.com、link.juejin.cn、link.csdn.net……）的外链直接改成真实地址，点了就到，不再停在「安全提醒」页。
 // @description:en  Rewrites outbound links that go through redirect/interstitial pages (link.zhihu.com, link.juejin.cn, link.csdn.net…) to their real destination, so a click takes you straight there.
@@ -229,6 +229,48 @@
             }
         }).observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['href'] });
     }
+
+    /**
+     * 点击兜底。两类情况 MutationObserver 管不到：
+     *   1. 链接在 Shadow DOM 里 —— observer 和 querySelectorAll 都看不进 shadow root，
+     *      但事件的 composedPath() 能拿到里面真正被点的 <a>；
+     *   2. 站点在 mousedown 里临时改 href（Google 结果页的老套路）。
+     *      真实点击时 observer 会在站点监听器返回后的微任务里改回来（测试里实测如此），
+     *      但脚本合成的点击（el.click()）期间微任务不会插队，靠 click 捕获再修一遍。
+     * auxclick 是中键「新标签打开」，contextmenu 是右键「复制链接地址」，都要覆盖。
+     */
+    function onPointer(e) {
+        for (const el of e.composedPath()) {
+            if (el.tagName === 'A' && el.hasAttribute && el.hasAttribute('href')) { fixAnchor(el); return; }
+        }
+    }
+
+    /**
+     * 站点自己用 window.open(中转地址) 打开新窗口（拦掉了 <a> 的默认行为）时，
+     * 改 href 没用，只能在 open 这一层换地址。
+     */
+    function hookWindowOpen() {
+        const w = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
+        const orig = w.open;
+        if (typeof orig !== 'function') return;
+        w.open = function (url, ...rest) {
+            if (url) {
+                let abs = null;
+                try { abs = new URL(String(url), location.href).href; } catch (e) { /* 交给原函数报错 */ }
+                const r = abs && resolve(abs);
+                if (r) {
+                    if (CONFIG.debug) console.log(TAG, `[${r.rule.name}] window.open`, abs, '→', r.target);
+                    url = r.target;
+                }
+            }
+            return orig.call(this, url, ...rest);
+        };
+    }
+
+    for (const type of ['mousedown', 'click', 'auxclick', 'contextmenu']) {
+        window.addEventListener(type, onPointer, true);
+    }
+    hookWindowOpen();
 
     function boot() {
         scan(document);
