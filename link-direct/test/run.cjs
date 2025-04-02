@@ -33,6 +33,15 @@ const FIXTURES = path.join(__dirname, 'fixtures')
         return page
     }
 
+    /** 直接打开一个（被占位的）外部地址，比如中转页本身。 */
+    async function openUrl(url, opts) {
+        const page = await browser.newPage()
+        await stubExternal(page)
+        await h.install(page, SCRIPT, opts)
+        await page.goto(url).catch(() => {})   // 立即 replace 时 goto 可能报 aborted，以最终 URL 为准
+        return page
+    }
+
     /**
      * 逐个比对 data-expect，返回不一致的列表。
      * data-expect="keep" 要和「改写前」的 href 比 —— 改写后 getAttribute('href') 也变了，
@@ -110,6 +119,34 @@ const FIXTURES = path.join(__dirname, 'fixtures')
         t.eq(popup.url(), 'https://example.com/wopen')
         await page.close()
     })
+
+    for (const [name, from, to] of [
+        ['知乎', 'https://link.zhihu.com/?target=https%3A//example.com/land?a=1', 'https://example.com/land?a=1'],
+        ['QQ middlem', 'https://c.pc.qq.com/middlem.html?pfurl=https%3A%2F%2Fexample.com%2Fqq&pfuin=1', 'https://example.com/qq'],
+        ['Bing base64', 'https://www.bing.com/ck/a?!&&p=x&u=a1' + Buffer.from('https://example.com/bing').toString('base64url') + '&ntb=1', 'https://example.com/bing'],
+    ]) {
+        await t.test(`中转页自动跳转：${name}`, async () => {
+            const page = await openUrl(from)
+            await page.waitForURL(to, { timeout: 3000 })
+            // replace 不留历史：后退应回到打开前的 about:blank，而不是中转页
+            await page.goBack().catch(() => {})
+            t.eq(page.url(), 'about:blank')
+            await page.close()
+        })
+    }
+
+    for (const [name, url] of [
+        ['javascript: 目标', 'https://link.zhihu.com/?target=javascript%3Aalert(document.domain)'],
+        ['SegmentFault 只有 enc', 'https://link.segmentfault.com/?enc=AbCdEf%3D%3D.xyz'],
+    ]) {
+        await t.test(`中转页不跳转：${name}`, async () => {
+            const page = await openUrl(url)
+            await page.waitForTimeout(500)
+            t.eq(page.url(), url)
+            t.assert(await page.title() === 'stub', '应该停在站点自己的中转页上')
+            await page.close()
+        })
+    }
 
     await t.test('安全：javascript:/data:/相对地址等目标被拒绝，链接保持原样', async () => {
         const page = await open('unsafe.html')

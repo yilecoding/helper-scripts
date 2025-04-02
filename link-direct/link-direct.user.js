@@ -3,7 +3,7 @@
 // @name:zh-CN   外链直达｜跳过知乎/掘金/CSDN 等站点的「即将离开」中转页
 // @name:en      Link Direct | Skip "You are leaving…" redirect pages on Zhihu, Juejin, CSDN and more
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.04.01.6
+// @version      2025.04.02.7
 // @description  把页面上指向中转页（link.zhihu.com、link.juejin.cn、link.csdn.net……）的外链直接改成真实地址，点了就到，不再停在「安全提醒」页。
 // @description:zh-CN  把页面上指向中转页（link.zhihu.com、link.juejin.cn、link.csdn.net……）的外链直接改成真实地址，点了就到，不再停在「安全提醒」页。
 // @description:en  Rewrites outbound links that go through redirect/interstitial pages (link.zhihu.com, link.juejin.cn, link.csdn.net…) to their real destination, so a click takes you straight there.
@@ -186,6 +186,23 @@
             return inner ? { rule, target: inner.target } : { rule, target };
         }
         return null;
+    }
+
+    // =========================================================================
+    // 中转页本身：直接跳走
+    // =========================================================================
+
+    /*
+     * 从地址栏、书签、别的 App 打开中转链接时，改 href 来不及，人已经站在中转页上了。
+     * document-start 就判断，用 replace 而不是赋值 —— 不在历史里留下中转页，
+     * 否则在目标页点「后退」会回到中转页，再被我们弹回目标页，后退键形同失效。
+     * 取不到目标（加密参数 / 被安全校验拒绝）就什么都不做，留给站点自己的页面。
+     */
+    const landing = resolve(location.href);
+    if (landing) {
+        console.log(TAG, `[${landing.rule.name}] 中转页 → `, landing.target);
+        location.replace(landing.target);
+        return;
     }
 
     // =========================================================================
