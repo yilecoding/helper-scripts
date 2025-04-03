@@ -3,7 +3,7 @@
 // @name:zh-CN   外链直达｜跳过知乎/掘金/CSDN 等站点的「即将离开」中转页
 // @name:en      Link Direct | Skip "You are leaving…" redirect pages on Zhihu, Juejin, CSDN and more
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.04.03.8
+// @version      2025.04.03.9
 // @description  把页面上指向中转页（link.zhihu.com、link.juejin.cn、link.csdn.net……）的外链直接改成真实地址，点了就到，不再停在「安全提醒」页。
 // @description:zh-CN  把页面上指向中转页（link.zhihu.com、link.juejin.cn、link.csdn.net……）的外链直接改成真实地址，点了就到，不再停在「安全提醒」页。
 // @description:en  Rewrites outbound links that go through redirect/interstitial pages (link.zhihu.com, link.juejin.cn, link.csdn.net…) to their real destination, so a click takes you straight there.
@@ -174,6 +174,19 @@
         return v;
     }
 
+    /**
+     * 取参数值。目标地址没编码（Steam 就是 ?url=https://… 原样拼上）时不能用 searchParams：
+     * 目标里的 & 会被当成外层分隔符截断、# 会被算成外层的 hash、+ 会被当成空格。
+     * 判据是参数值直接以 http(s):// 开头 —— 编码过的值不会出现裸的 ://。
+     * 这时把它后面直到 hash 结尾的全部内容都算作目标（代价：排在它后面的外层参数会被并进来，
+     * 但没编码的目标本来就没法和后续参数区分，截断目标比多带几个参数更糟）。
+     */
+    function paramValue(url, name) {
+        const m = new RegExp('[?&]' + name + '=(https?://.*)$', 'is').exec(url.search + url.hash);
+        if (m) return m[1];
+        return url.searchParams.get(name);
+    }
+
     function findRule(url) {
         const list = RULES_BY_HOST.get(url.hostname);
         if (!list) return null;
@@ -193,7 +206,7 @@
         const rule = findRule(url);
         if (!rule) return null;
         for (const p of rule.params) {
-            let v = url.searchParams.get(p);
+            let v = paramValue(url, p);
             if (!v) continue;
             if (rule.decode) v = rule.decode(v);
             const target = sanitize(unwrap(v.trim()));

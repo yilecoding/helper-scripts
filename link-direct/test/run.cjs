@@ -80,6 +80,12 @@ const FIXTURES = path.join(__dirname, 'fixtures')
         await page.close()
     })
 
+    await t.test('未编码的目标：& # + 不被外层 URL 解析吃掉', async () => {
+        const page = await open('raw.html')
+        t.eq(await mismatches(page), [])
+        await page.close()
+    })
+
     await t.test('动态插入的链接、后改的 href 都会被改写', async () => {
         const page = await open('dynamic.html')
         const href = id => page.$eval('#' + id, a => a.href)
