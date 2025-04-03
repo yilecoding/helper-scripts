@@ -3,13 +3,17 @@
 // @name:zh-CN   外链直达｜跳过知乎/掘金/CSDN 等站点的「即将离开」中转页
 // @name:en      Link Direct | Skip "You are leaving…" redirect pages on Zhihu, Juejin, CSDN and more
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.04.02.7
+// @version      2025.04.03.8
 // @description  把页面上指向中转页（link.zhihu.com、link.juejin.cn、link.csdn.net……）的外链直接改成真实地址，点了就到，不再停在「安全提醒」页。
 // @description:zh-CN  把页面上指向中转页（link.zhihu.com、link.juejin.cn、link.csdn.net……）的外链直接改成真实地址，点了就到，不再停在「安全提醒」页。
 // @description:en  Rewrites outbound links that go through redirect/interstitial pages (link.zhihu.com, link.juejin.cn, link.csdn.net…) to their real destination, so a click takes you straight there.
 // @author       壹樂（V：ita1125）
 // @match        *://*/*
-// @grant        none
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_registerMenuCommand
+// @grant        GM_unregisterMenuCommand
+// @grant        unsafeWindow
 // @license      CC BY-NC-SA
 // @run-at       document-start
 // @homepageURL  https://github.com/yilecoding/helper-scripts
@@ -33,6 +37,21 @@
 
     const CONFIG = {
         debug: false,  // true 时每改一个链接打一行日志
+
+        /*
+         * 去追踪参数：只作用于「从中转链接里解出来的地址」，不碰页面上其它普通链接。
+         * 默认只去 utm_*。spm、from 这类名字太常见，有的站点拿它做正常参数
+         * （分页来源、语言切换……），删了可能打不开或内容不对，想要就自己加：
+         *   trackingParams: ['utm_*', 'spm', 'from', 'share_source', 'share_medium', 'fbclid', 'gclid'],
+         * 末尾 * 表示前缀匹配，其余精确匹配（不区分大小写）。开关在菜单里，记在 GM 存储里。
+         */
+        stripTracking: true,
+        trackingParams: ['utm_*'],
+    };
+
+    const settings = {
+        get stripTracking() { return GM_getValue('stripTracking', CONFIG.stripTracking); },
+        set stripTracking(v) { GM_setValue('stripTracking', !!v); },
     };
 
     // =========================================================================
@@ -168,7 +187,7 @@
      * 中转链接 → 真实地址；不是中转链接或取不到就返回 null。
      * href 必须是绝对地址（传 a.href 而不是 getAttribute('href')）。
      */
-    function resolve(href, depth = 0) {
+    function resolveRaw(href, depth = 0) {
         let url;
         try { url = new URL(href); } catch (e) { return null; }
         const rule = findRule(url);
@@ -182,10 +201,42 @@
                 console.warn(TAG, `[${rule.name}] 拒绝非 http(s) 目标：`, v);
                 return null;
             }
-            const inner = depth < MAX_DEPTH ? resolve(target, depth + 1) : null;
+            const inner = depth < MAX_DEPTH ? resolveRaw(target, depth + 1) : null;
             return inner ? { rule, target: inner.target } : { rule, target };
         }
         return null;
+    }
+
+    const TRACKING = CONFIG.trackingParams.map(p => p.toLowerCase());
+
+    function isTracking(name) {
+        name = name.toLowerCase();
+        return TRACKING.some(p => (p.endsWith('*') ? name.startsWith(p.slice(0, -1)) : name === p));
+    }
+
+    /**
+     * 去掉追踪参数。在原始 query 字符串上按 & 拆了过滤，而不是 searchParams.delete()：
+     * URLSearchParams 序列化时会把剩下的参数统统重新编码（%20 → +、%7E → ~ 等），
+     * 有的服务端对 + 和 %20 不一视同仁，去个 utm 把正常参数改坏了就得不偿失。
+     */
+    function stripTracking(href) {
+        const u = new URL(href);
+        if (!u.search) return href;
+        const kept = u.search.slice(1).split('&').filter(pair => {
+            let name = pair.split('=')[0];
+            try { name = decodeURIComponent(name.replace(/\+/g, ' ')); } catch (e) { /* 保留原样 */ }
+            return !isTracking(name);
+        });
+        if (kept.length === u.search.slice(1).split('&').length) return href;
+        u.search = kept.length ? '?' + kept.join('&') : '';
+        return u.href;
+    }
+
+    /** resolveRaw + 按开关去追踪参数。外面一律用这个。 */
+    function resolve(href) {
+        const r = resolveRaw(href);
+        if (r && settings.stripTracking) r.target = stripTracking(r.target);
+        return r;
     }
 
     // =========================================================================
@@ -211,13 +262,19 @@
 
     const done = new WeakSet();
     let rewritten = 0;
+    const byRule = new Map();  // 规则名 → 个数，菜单里展示
 
     function fixAnchor(a) {
         const r = resolve(a.href);
         if (!r) return false;
         if (CONFIG.debug) console.log(TAG, `[${r.rule.name}]`, a.href, '→', r.target);
         a.href = r.target;
-        if (!done.has(a)) { done.add(a); rewritten++; }
+        if (!done.has(a)) {
+            done.add(a);
+            rewritten++;
+            byRule.set(r.rule.name, (byRule.get(r.rule.name) || 0) + 1);
+            Menu.refreshSoon();
+        }
         return true;
     }
 
@@ -289,9 +346,44 @@
     }
     hookWindowOpen();
 
+    // =========================================================================
+    // 菜单
+    // =========================================================================
+
+    /*
+     * 菜单标题是静态的，要显示计数只能注销再重新注册。
+     * 全部重注册而不是只换计数那一项：只换一项的话它会跑到菜单最后，顺序乱跳。
+     * 计数变化很密（一屏几十个链接），合并到一次刷新里。
+     */
+    const Menu = (() => {
+        let ids = [];
+        let timer = 0;
+
+        function render() {
+            timer = 0;
+            for (const id of ids) GM_unregisterMenuCommand(id);
+            ids = [
+                GM_registerMenuCommand(`🔗 本页已处理 ${rewritten} 个链接`, () => {
+                    const lines = [...byRule].map(([name, n]) => `${name}：${n}`);
+                    alert(`${TAG} 本页已把 ${rewritten} 个中转链接改成直链` + (lines.length ? '\n\n' + lines.join('\n') : ''));
+                }),
+                GM_registerMenuCommand(`${settings.stripTracking ? '✅' : '⬜'} 去追踪参数（${CONFIG.trackingParams.join(', ')}）`, () => {
+                    settings.stripTracking = !settings.stripTracking;
+                    render();
+                }),
+            ];
+        }
+
+        return {
+            render,
+            refreshSoon() { if (!timer) timer = setTimeout(render, 300); },
+        };
+    })();
+
     function boot() {
         scan(document);
         observe();
+        Menu.render();
         console.log(TAG, `已改写 ${rewritten} 个链接`);
     }
 

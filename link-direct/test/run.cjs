@@ -47,12 +47,12 @@ const FIXTURES = path.join(__dirname, 'fixtures')
      * data-expect="keep" 要和「改写前」的 href 比 —— 改写后 getAttribute('href') 也变了，
      * 所以先在一个不装脚本的页面里把原始 href 读出来。
      */
-    async function mismatches(page, selector = 'a[data-expect]') {
+    async function mismatches(page, selector = 'a[data-expect]', attr = 'expect') {
         const raw = await browser.newPage()
         await raw.goto(page.url())
         const original = await raw.$$eval(selector, as => as.map(a => a.href))
         await raw.close()
-        const actual = await page.$$eval(selector, as => as.map(a => ({ text: a.textContent, href: a.href, expect: a.dataset.expect })))
+        const actual = await page.$$eval(selector, (as, attr) => as.map(a => ({ text: a.textContent, href: a.href, expect: a.dataset[attr] })), attr)
         return actual
             .map((a, i) => ({ text: a.text, actual: a.href, expected: a.expect === 'keep' ? original[i] : new URL(a.expect).href }))
             .filter(x => x.actual !== x.expected)
@@ -147,6 +147,38 @@ const FIXTURES = path.join(__dirname, 'fixtures')
             await page.close()
         })
     }
+
+    await t.test('去追踪参数：默认只去 utm_*，其余参数编码原样保留', async () => {
+        const page = await open('tracking.html')
+        t.eq(await mismatches(page), [])
+        await page.close()
+    })
+
+    await t.test('去追踪参数：开关关掉（GM 存储）时不去', async () => {
+        const page = await open('tracking.html', { values: { stripTracking: false } })
+        t.eq(await mismatches(page, 'a[data-raw]', 'raw'), [])
+        await page.close()
+    })
+
+    await t.test('菜单：计数 + 去追踪参数开关可切换并持久化', async () => {
+        const page = await open('rules.html')
+        const expected = await page.$$eval('a[data-expect]:not([data-expect="keep"])', as => as.length)
+        await page.waitForFunction(n => window.__gm.menu.some(m => m && m.caption.includes(`已处理 ${n} 个链接`)), expected, { timeout: 2000 })
+
+        let dialog = ''
+        page.once('dialog', d => { dialog = d.message(); d.dismiss() })
+        await h.menu(page, '已处理')
+        t.assert(dialog.includes(`${expected} 个`) && dialog.includes('知乎：2'), '计数弹窗内容不对：' + dialog)
+
+        t.assert((await h.gm(page)).menu.some(c => c.startsWith('✅ 去追踪参数')), '默认应为开')
+        await h.menu(page, '去追踪参数')
+        const menu = (await h.gm(page)).menu
+        t.assert(menu.some(c => c.startsWith('⬜ 去追踪参数')), '切换后应为关：' + menu.join(' | '))
+        t.eq(menu.length, 2, '重注册后菜单项数量不该变')
+        t.eq(await page.evaluate(() => localStorage.getItem('__gm:stripTracking')), 'false')
+        await page.evaluate(() => localStorage.removeItem('__gm:stripTracking'))
+        await page.close()
+    })
 
     await t.test('安全：javascript:/data:/相对地址等目标被拒绝，链接保持原样', async () => {
         const page = await open('unsafe.html')

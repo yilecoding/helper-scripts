@@ -1,0 +1,15 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>追踪参数</title>
+<!-- data-expect 是默认配置（开关打开、只去 utm_*）下的期望；data-raw 是开关关掉时的期望。 -->
+<ul id="links">
+  <li><a data-expect="https://example.com/a?id=1" data-raw="https://example.com/a?utm_source=zhihu&id=1&utm_medium=social"
+         href="https://link.zhihu.com/?target=https%3A%2F%2Fexample.com%2Fa%3Futm_source%3Dzhihu%26id%3D1%26utm_medium%3Dsocial">utm 夹在中间</a>
+  <li><a data-expect="https://example.com/b" data-raw="https://example.com/b?UTM_Campaign=x"
+         href="https://link.juejin.cn/?target=https%3A%2F%2Fexample.com%2Fb%3FUTM_Campaign%3Dx">只有 utm（大写）→ 整个 ? 去掉</a>
+  <li><a data-expect="https://example.com/c?spm=a.b.c&from=timeline" data-raw="https://example.com/c?spm=a.b.c&from=timeline"
+         href="https://link.csdn.net/?target=https%3A%2F%2Fexample.com%2Fc%3Fspm%3Da.b.c%26from%3Dtimeline">spm/from 默认不动</a>
+  <li><a data-expect="https://example.com/d?q=a%20b&t=%7E1#frag" data-raw="https://example.com/d?q=a%20b&utm_term=x&t=%7E1#frag"
+         href="https://link.zhihu.com/?target=https%3A%2F%2Fexample.com%2Fd%3Fq%3Da%2520b%26utm_term%3Dx%26t%3D%257E1%23frag">剩下参数的编码原样保留，hash 保留</a>
+  <li><a data-expect="keep" data-raw="keep" href="https://example.com/e?utm_source=x">普通链接（不是中转）不碰</a>
+</ul>
