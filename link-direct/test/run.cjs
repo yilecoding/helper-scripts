@@ -5,6 +5,7 @@
  */
 const fs = require('fs')
 const path = require('path')
+const vm = require('vm')
 const h = require('../../tools/userscript-harness.cjs')
 
 const SCRIPT = path.join(__dirname, '..', 'link-direct.user.js')
@@ -57,6 +58,14 @@ const FIXTURES = path.join(__dirname, 'fixtures')
             .map((a, i) => ({ text: a.text, actual: a.href, expected: a.expect === 'keep' ? original[i] : new URL(a.expect).href }))
             .filter(x => x.actual !== x.expected)
     }
+
+    /*
+     * 脚本有语法错误时 harness 不会报出来：注入失败只是一条 pageerror，页面照常打开，
+     * 后面的用例全挂在「链接没被改写」上，看不出根因。先单独编译一遍。
+     */
+    await t.test('脚本能编译', async () => {
+        new vm.Script(`(function () {\n${fs.readFileSync(SCRIPT, 'utf8')}\n})`, { filename: SCRIPT })
+    })
 
     await t.test('规则解析：静态链接按 data-expect 改写', async () => {
         const page = await open('rules.html')
@@ -183,6 +192,28 @@ const FIXTURES = path.join(__dirname, 'fixtures')
         t.eq(menu.length, 2, '重注册后菜单项数量不该变')
         t.eq(await page.evaluate(() => localStorage.getItem('__gm:stripTracking')), 'false')
         await page.evaluate(() => localStorage.removeItem('__gm:stripTracking'))
+        await page.close()
+    })
+
+    await t.test('边界：contenteditable 里的链接不改写（含后插入的、点击时）', async () => {
+        const page = await open('edge.html')
+        t.eq(await page.$eval('#outside', a => a.href), 'https://example.com/draft')
+        await page.evaluate(() => window.typeLink())
+        await page.click('#in-editor')   // 点击兜底也不该动编辑器里的链接
+        await page.waitForTimeout(100)
+        t.assert((await page.$eval('#in-editor', a => a.href)).startsWith('https://link.zhihu.com/'), '编辑器里的链接被改了')
+        t.assert((await page.$eval('#typed', a => a.href)).startsWith('https://link.juejin.cn/'), '编辑器里后插入的链接被改了')
+        await page.close()
+    })
+
+    await t.test('边界：iframe 里照常改写，但只有顶层页面注册菜单', async () => {
+        const page = await open('edge.html')
+        const frame = page.frame({ url: /rules\.html$/ })
+        await frame.waitForLoadState()
+        t.eq(await frame.$eval('a', a => a.href), 'https://github.com/foo/bar')
+        t.eq(await frame.evaluate(() => window.__gm.menu.length), 0)
+        await page.waitForFunction(() => window.__gm.menu.filter(Boolean).length === 2, null, { timeout: 2000 })
+        t.eq(h.errors(page).map(String), [])
         await page.close()
     })
 

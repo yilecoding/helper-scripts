@@ -3,7 +3,7 @@
 // @name:zh-CN   外链直达｜跳过知乎/掘金/CSDN 等站点的「即将离开」中转页
 // @name:en      Link Direct | Skip "You are leaving…" redirect pages on Zhihu, Juejin, CSDN and more
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.04.03.9
+// @version      2025.04.03.10
 // @description  把页面上指向中转页（link.zhihu.com、link.juejin.cn、link.csdn.net……）的外链直接改成真实地址，点了就到，不再停在「安全提醒」页。
 // @description:zh-CN  把页面上指向中转页（link.zhihu.com、link.juejin.cn、link.csdn.net……）的外链直接改成真实地址，点了就到，不再停在「安全提醒」页。
 // @description:en  Rewrites outbound links that go through redirect/interstitial pages (link.zhihu.com, link.juejin.cn, link.csdn.net…) to their real destination, so a click takes you straight there.
@@ -278,6 +278,12 @@
     const byRule = new Map();  // 规则名 → 个数，菜单里展示
 
     function fixAnchor(a) {
+        /*
+         * 编辑器里的链接不碰（知乎写回答、掘金写文章的富文本框）。
+         * 编辑器有自己的文档模型，DOM 被外部改了要么被它改回去、要么模型和 DOM 对不上，
+         * 严重的会把改写后的地址存进草稿 —— 那就不是「绕过中转」而是改了用户的内容。
+         */
+        if (a.isContentEditable) return false;
         const r = resolve(a.href);
         if (!r) return false;
         if (CONFIG.debug) console.log(TAG, `[${r.rule.name}]`, a.href, '→', r.target);
@@ -396,7 +402,12 @@
     function boot() {
         scan(document);
         observe();
-        Menu.render();
+        /*
+         * 菜单只在顶层页面注册。@match 匹配所有页面，页面里每个 iframe（广告、评论框、嵌入的视频）
+         * 都会跑一份脚本，各注册一组菜单，Tampermonkey 菜单里就会出现好几组重复的项。
+         * iframe 里的链接照常改写，只是计数不汇总到顶层。
+         */
+        if (window.top === window.self) Menu.render();
         console.log(TAG, `已改写 ${rewritten} 个链接`);
     }
 
