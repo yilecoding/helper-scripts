@@ -1,0 +1,22 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>点击兜底</title>
+<style>a, x-card { display: block; padding: 8px; }</style>
+
+<!-- 1. Google 套路：href 是直链，mousedown 时站点把它换成 /url?q= 中转 -->
+<a id="mdown" href="https://example.com/mdown"
+   onmousedown="this.href='https://www.google.com/url?q=' + encodeURIComponent('https://example.com/mdown') + '&sa=t'">mousedown 改写</a>
+
+<!-- 2. 链接在 Shadow DOM 里：observer / querySelectorAll 都看不到 -->
+<x-card id="card"></x-card>
+<script>
+  customElements.define('x-card', class extends HTMLElement {
+    connectedCallback() {
+      this.attachShadow({ mode: 'open' }).innerHTML =
+        '<a id="inner" href="https://link.zhihu.com/?target=https%3A%2F%2Fexample.com%2Fshadow">shadow 里的链接</a>'
+    }
+  })
+</script>
+
+<!-- 3. 站点拦掉默认行为，自己 window.open(中转地址) -->
+<a id="wopen" href="#" onclick="event.preventDefault(); window.open('https://link.juejin.cn/?target=' + encodeURIComponent('https://example.com/wopen'))">window.open</a>

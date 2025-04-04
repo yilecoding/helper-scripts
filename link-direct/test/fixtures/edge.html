@@ -1,0 +1,20 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>边界情况</title>
+<!-- 富文本编辑器里的链接：不改写（包括后插入的） -->
+<div id="editor" contenteditable="true">
+  <p>正在写的回答 <a id="in-editor" href="https://link.zhihu.com/?target=https%3A%2F%2Fexample.com%2Fdraft">草稿里的链接</a></p>
+</div>
+<!-- 编辑器外的同一条链接照常改写，作对照 -->
+<a id="outside" href="https://link.zhihu.com/?target=https%3A%2F%2Fexample.com%2Fdraft">编辑器外</a>
+<!-- iframe 里的链接也要改写，但 iframe 不该注册菜单 -->
+<iframe id="frame" src="rules.html"></iframe>
+<script>
+  window.typeLink = () => {
+    const a = document.createElement('a')
+    a.id = 'typed'
+    a.href = 'https://link.juejin.cn/?target=https%3A%2F%2Fexample.com%2Ftyped'
+    a.textContent = '刚粘贴进编辑器的链接'
+    document.querySelector('#editor p').appendChild(a)
+  }
+</script>

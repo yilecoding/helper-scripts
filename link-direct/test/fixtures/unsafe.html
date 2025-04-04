@@ -1,0 +1,15 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>危险目标</title>
+<!-- 中转参数里的非 http(s) 目标一律不改写，保持原中转链接（让站点自己的中转页去拦）。 -->
+<ul id="links">
+  <li><a data-expect="keep" href="https://link.zhihu.com/?target=javascript:alert(1)">javascript:</a>
+  <li><a data-expect="keep" href="https://link.zhihu.com/?target=javascript%3Aalert(document.cookie)">javascript:（编码）</a>
+  <li><a data-expect="keep" href="https://link.juejin.cn/?target=%20JaVaScRiPt%3Aalert(1)">大小写混写 + 前导空格</a>
+  <li><a data-expect="keep" href="https://link.juejin.cn/?target=%09java%0Ascript%3Aalert(1)">中间夹 tab/换行</a>
+  <li><a data-expect="keep" href="https://link.csdn.net/?target=data%3Atext%2Fhtml%2C%3Cscript%3Ealert(1)%3C%2Fscript%3E">data:</a>
+  <li><a data-expect="keep" href="https://link.csdn.net/?target=%2F%2Fevil.com">协议相对地址</a>
+  <li><a data-expect="keep" href="https://link.csdn.net/?target=%2Fsettings">站内相对路径</a>
+  <li><a data-expect="keep" href="https://link.zhihu.com/?target=file%3A%2F%2F%2Fetc%2Fpasswd">file:</a>
+  <li><a data-expect="https://example.com/ok" href="https://link.zhihu.com/?target=https%3A%2F%2Fexample.com%2Fok">对照：正常目标照常改写</a>
+</ul>

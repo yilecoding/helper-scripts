@@ -1,0 +1,14 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>未编码的目标</title>
+<!--
+  Steam 之类的站点把目标地址原样拼在参数后面，不做编码。
+  这时目标里的 & 会被当成外层参数的分隔、# 会被当成外层的 hash、+ 会被 URLSearchParams 当成空格。
+-->
+<ul id="links">
+  <li><a data-expect="https://example.com/s?a=1&b=2" href="https://steamcommunity.com/linkfilter/?url=https://example.com/s?a=1&b=2">目标里带 &amp;</a>
+  <li><a data-expect="https://example.com/doc#section-2" href="https://steamcommunity.com/linkfilter/?url=https://example.com/doc#section-2">目标里带 #</a>
+  <li><a data-expect="https://example.com/search?q=c++" href="https://steamcommunity.com/linkfilter/?url=https://example.com/search?q=c++">目标里带 +</a>
+  <li><a data-expect="https://example.com/x?k=a+b" href="https://link.zhihu.com/?target=https%3A%2F%2Fexample.com%2Fx%3Fk%3Da%2Bb">对照：编码过的 %2B 照常是 +</a>
+  <li><a data-expect="https://example.com/g" href="https://www.google.com/url?q=https%3A%2F%2Fexample.com%2Fg&sa=D&ust=1">对照：编码过的目标，后面的外层参数不能并进来</a>
+</ul>

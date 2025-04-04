@@ -1,0 +1,30 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>动态内容</title>
+<!-- 模拟 SPA：初始只有一条链接，其余由测试通过 window.addXxx() 在加载后插入 / 修改。 -->
+<div id="feed">
+  <a id="static" href="https://link.zhihu.com/?target=https%3A%2F%2Fexample.com%2Fstatic">首屏</a>
+</div>
+<script>
+  const feed = document.getElementById('feed')
+  // 单个 <a> 直接 append
+  window.addOne = () => {
+    const a = document.createElement('a')
+    a.id = 'one'
+    a.href = 'https://link.juejin.cn/?target=https%3A%2F%2Fexample.com%2Fone'
+    a.textContent = 'one'
+    feed.appendChild(a)
+  }
+  // 一整块 innerHTML（评论区懒加载那种），链接嵌在深层
+  window.addBlock = () => {
+    const div = document.createElement('div')
+    div.innerHTML = '<section><p>评论 <a id="deep" href="https://gitee.com/link?target=https%3A%2F%2Fexample.com%2Fdeep">deep</a></p>'
+      + '<p><a id="deep2" href="https://link.csdn.net/?target=https%3A%2F%2Fexample.com%2Fdeep2">deep2</a></p></section>'
+    feed.appendChild(div)
+  }
+  // 先渲染直链，稍后站点自己把 href 换成中转地址
+  window.swapHref = () => {
+    document.getElementById('static2').setAttribute('href', 'https://link.zhihu.com/?target=https%3A%2F%2Fexample.com%2Fswapped')
+  }
+</script>
+<a id="static2" href="https://example.com/plain">稍后会被站点换成中转</a>

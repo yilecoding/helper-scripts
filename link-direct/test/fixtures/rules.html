@@ -1,0 +1,50 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>规则解析</title>
+<!--
+  每个 <a> 的 data-expect 是期望改写成的地址；data-expect="keep" 表示应保持原样。
+  测试逐个比对 a.href。链接样本按各站点实际出现的形式构造（编码方式、附带的杂参数）。
+-->
+<ul id="links">
+  <li><a data-expect="https://github.com/foo/bar" href="https://link.zhihu.com/?target=https%3A//github.com/foo/bar">知乎</a>
+  <li><a data-expect="https://github.com/foo/bar?a=1&b=2" href="https://link.zhihu.com/?target=https%3A%2F%2Fgithub.com%2Ffoo%2Fbar%3Fa%3D1%26b%3D2">知乎（全编码，带 query）</a>
+  <li><a data-expect="https://vitejs.dev/guide/" href="https://link.juejin.cn?target=https%3A%2F%2Fvitejs.dev%2Fguide%2F">掘金（无斜杠）</a>
+  <li><a data-expect="https://docs.python.org/3/" href="https://link.csdn.net/?target=https%3A%2F%2Fdocs.python.org%2F3%2F&from_id=123">CSDN</a>
+  <li><a data-expect="https://www.rust-lang.org/" href="https://www.jianshu.com/go-wild?ac=2&url=https%3A%2F%2Fwww.rust-lang.org%2F">简书</a>
+  <li><a data-expect="https://nodejs.org/en" href="https://gitee.com/link?target=https%3A%2F%2Fnodejs.org%2Fen">Gitee</a>
+  <li><a data-expect="https://openjdk.org/" href="https://www.oschina.net/action/GoToLink?url=https%3A%2F%2Fopenjdk.org%2F">开源中国</a>
+  <li><a data-expect="https://example.com/afd" href="https://afdian.com/link?target=https%3A%2F%2Fexample.com%2Fafd">爱发电</a>
+  <li><a data-expect="https://example.com/afd-net" href="https://afdian.net/link?target=https%3A%2F%2Fexample.com%2Fafd-net">爱发电（旧域名）</a>
+  <li><a data-expect="https://example.com/sspai" href="https://sspai.com/link?target=https%3A%2F%2Fexample.com%2Fsspai">少数派</a>
+  <li><a data-expect="https://example.com/infoq0" href="https://www.infoq.cn/link?target=https%3A%2F%2Fexample.com%2Finfoq0">InfoQ</a>
+  <li><a data-expect="https://example.com/infoq" href="https://xie.infoq.cn/link?target=https%3A%2F%2Fexample.com%2Finfoq">InfoQ 写作</a>
+  <li><a data-expect="https://example.com/lc" href="https://leetcode.cn/link/?target=https%3A%2F%2Fexample.com%2Flc">力扣</a>
+  <li><a data-expect="https://example.com/ld" href="https://link.ld246.com/forward?goto=https%3A%2F%2Fexample.com%2Fld">链滴</a>
+  <li><a data-expect="https://example.com/db" href="https://www.douban.com/link2/?url=https%3A%2F%2Fexample.com%2Fdb&query=x&cat_id=1&type=search&pos=0">豆瓣</a>
+  <li><a data-expect="https://example.com/tb" href="https://tieba.baidu.com/mo/q/checkurl?url=https%3A%2F%2Fexample.com%2Ftb&urlrefer=abc">百度贴吧</a>
+  <li><a data-expect="https://example.com/wb" href="https://weibo.cn/sinaurl?u=https%3A%2F%2Fexample.com%2Fwb">微博 u</a>
+  <li><a data-expect="https://example.com/wb2" href="https://weibo.cn/sinaurl?toasturl=https%3A%2F%2Fexample.com%2Fwb2">微博 toasturl</a>
+  <li><a data-expect="https://example.com/sf" href="https://link.segmentfault.com/?enc=AbCdEf%3D%3D.xyz&url=https%3A%2F%2Fexample.com%2Fsf">SegmentFault（带明文 url）</a>
+  <li><a data-expect="keep" href="https://link.segmentfault.com/?enc=AbCdEf%3D%3D.xyz">SegmentFault（只有 enc，解不开，不处理）</a>
+  <li><a data-expect="https://example.com/qq1" href="https://c.pc.qq.com/middlem.html?pfurl=https%3A%2F%2Fexample.com%2Fqq1&pfuin=10000&pfto=qq.msg">QQ middlem</a>
+  <li><a data-expect="https://example.com/qq2" href="https://c.pc.qq.com/ios.html?level=14&url=https%3A%2F%2Fexample.com%2Fqq2">QQ ios</a>
+  <li><a data-expect="https://example.com/qq3" href="https://c.pc.qq.com/pc.html?url=https%3A%2F%2Fexample.com%2Fqq3">QQ pc</a>
+  <li><a data-expect="https://example.com/tdoc" href="https://docs.qq.com/scenario/link.html?url=https%3A%2F%2Fexample.com%2Ftdoc&pid=1">腾讯文档</a>
+  <li><a data-expect="https://example.com/wx" href="https://developers.weixin.qq.com/community/middlepage/href?href=https%3A%2F%2Fexample.com%2Fwx">微信开放社区</a>
+  <li><a data-expect="https://example.com/qqmail" href="https://mail.qq.com/cgi-bin/readtemplate?t=safety&check=false&gourl=https%3A%2F%2Fexample.com%2Fqqmail">QQ 邮箱</a>
+  <li><a data-expect="https://example.com/yq" href="https://www.yuque.com/r/goto?url=https%3A%2F%2Fexample.com%2Fyq">语雀</a>
+  <li><a data-expect="https://example.com/kd" href="https://www.kdocs.cn/office/link?target=https%3A%2F%2Fexample.com%2Fkd">金山文档</a>
+  <li><a data-expect="https://example.com/g1" href="https://www.google.com/url?q=https%3A%2F%2Fexample.com%2Fg1&sa=D&source=docs">Google q</a>
+  <li><a data-expect="https://example.com/g2" href="https://www.google.com/url?sa=t&rct=j&url=https%3A%2F%2Fexample.com%2Fg2&ved=2ah">Google url</a>
+  <li><a data-expect="https://example.com/yt" href="https://www.youtube.com/redirect?event=video_description&redir_token=QUFF&q=https%3A%2F%2Fexample.com%2Fyt&v=abc">YouTube</a>
+  <li><a data-expect="https://example.com/steam" href="https://steamcommunity.com/linkfilter/?url=https://example.com/steam">Steam url</a>
+  <li><a data-expect="https://example.com/steam2" href="https://steamcommunity.com/linkfilter/?u=https%3A%2F%2Fexample.com%2Fsteam2">Steam u</a>
+  <li><a data-expect="https://example.com/fb" href="https://l.facebook.com/l.php?u=https%3A%2F%2Fexample.com%2Ffb&h=AT0">Facebook</a>
+  <li><a data-expect="https://example.com/ig" href="https://l.instagram.com/?u=https%3A%2F%2Fexample.com%2Fig&e=AT0">Instagram</a>
+
+  <li><a data-expect="keep" href="https://www.zhihu.com/question/1">普通站内链接</a>
+  <li><a data-expect="keep" href="https://example.com/?target=https%3A%2F%2Fevil.com">非中转站点的 target 参数</a>
+  <li><a data-expect="keep" href="https://gitee.com/explore?target=https%3A%2F%2Fevil.com">中转站点的非中转路径</a>
+  <li><a data-expect="keep" href="https://www.google.com/search?q=https%3A%2F%2Fexample.com">Google 搜索页的 q 不是跳转目标</a>
+  <li><a data-expect="keep" href="https://link.zhihu.com/">中转页但没有参数</a>
+</ul>
