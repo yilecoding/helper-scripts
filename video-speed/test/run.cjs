@@ -61,6 +61,74 @@ const FIXTURES = path.join(__dirname, 'fixtures')
         })
     })
 
+    const rateOf = (page, sel = '#v') => page.$eval(sel, v => v.playbackRate)
+    async function press(page, key, times = 1) {
+        for (let i = 0; i < times; i++) await page.keyboard.press(key)
+    }
+
+    console.log('快捷键调速')
+
+    await t.test('X 加速、Z 减速、R 恢复 1.0', async () => {
+        await withPage('basic.html', async page => {
+            await press(page, 'x', 3)
+            eq(await rateOf(page), 1.75)
+            await press(page, 'z')
+            eq(await rateOf(page), 1.5)
+            await press(page, 'r')
+            eq(await rateOf(page), 1)
+        })
+    })
+
+    await t.test('钳位在 0.1–16，从下限加速对齐到步长网格', async () => {
+        await withPage('basic.html', async page => {
+            await press(page, 'x', 70)
+            eq(await rateOf(page), 16)
+            await press(page, 'z', 70)
+            eq(await rateOf(page), 0.1)
+            await press(page, 'x')
+            eq(await rateOf(page), 0.25)
+        })
+    })
+
+    await t.test('处理掉的键不再漏给页面（keydown 和 keyup 都吞）', async () => {
+        await withPage('basic.html', async page => {
+            await press(page, 'x')
+            await press(page, 'k')
+            eq(await page.evaluate(() => siteKeys), ['down:KeyK', 'up:KeyK'])
+        })
+    })
+
+    await t.test('带修饰键不响应', async () => {
+        await withPage('basic.html', async page => {
+            await press(page, 'Shift+X')
+            await press(page, 'Alt+X')
+            eq(await rateOf(page), 1)
+        })
+    })
+
+    await t.test('输入框 / textarea / contenteditable / shadow DOM 里的输入框不响应', async () => {
+        await withPage('basic.html', async page => {
+            for (const sel of ['#text', '#area', '#editable', '#sbox >> #inner']) {
+                await page.focus(sel)
+                await press(page, 'x', 2)
+                eq(await rateOf(page), 1, sel + ' 里按键改了倍速')
+            }
+            eq(await page.$eval('#text', el => el.value), 'xx')
+            eq(await page.$eval('#sbox', el => el.shadowRoot.querySelector('input').value), 'xx')
+            // 非文本类 input（复选框）不算在打字
+            await page.focus('#check')
+            await press(page, 'x')
+            eq(await rateOf(page), 1.25)
+        })
+    })
+
+    await t.test('页面没有媒体时不拦截按键', async () => {
+        await withPage('no-media.html', async page => {
+            await press(page, 'x')
+            eq(await page.evaluate(() => siteKeys), ['down:KeyX'])
+        })
+    })
+
     await env.close()
     t.done()
 })().catch(e => {

@@ -2,3 +2,23 @@
 <meta charset="utf-8">
 <title>basic</title>
 <video id="v" width="480" height="270"></video>
+<p>
+    <input id="text" type="text">
+    <input id="check" type="checkbox">
+    <textarea id="area"></textarea>
+    <div id="editable" contenteditable="true" style="min-height:1em">x</div>
+    <shadow-box id="sbox"></shadow-box>
+</p>
+<script>
+    // 页面自己的快捷键：记录下来，用来断言我们处理掉的键没有漏给页面
+    window.siteKeys = []
+    document.addEventListener('keydown', e => siteKeys.push('down:' + e.code))
+    document.addEventListener('keyup', e => siteKeys.push('up:' + e.code))
+
+    customElements.define('shadow-box', class extends HTMLElement {
+        constructor() {
+            super()
+            this.attachShadow({ mode: 'open' }).innerHTML = '<input id="inner" type="search">'
+        }
+    })
+</script>
