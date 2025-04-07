@@ -13,6 +13,39 @@ const h = require('../../tools/userscript-harness.cjs')
 const SCRIPT = path.join(__dirname, '..', 'video-speed.user.js')
 const FIXTURES = path.join(__dirname, 'fixtures')
 
+/**
+ * 测试用的「真媒体」：静音 WAV（8 kHz / 8 bit / 单声道），运行时生成、经 route 提供，不进仓库。
+ * <video> 也能播纯音频文件（只是没有画面），够测 duration / currentTime / 播放状态。
+ */
+function silentWav(seconds) {
+    const rate = 8000
+    const n = rate * seconds
+    const buf = Buffer.alloc(44 + n, 0x80)   // 8 bit PCM 的静音是 0x80
+    buf.write('RIFF', 0); buf.writeUInt32LE(36 + n, 4); buf.write('WAVE', 8)
+    buf.write('fmt ', 12); buf.writeUInt32LE(16, 16); buf.writeUInt16LE(1, 20); buf.writeUInt16LE(1, 22)
+    buf.writeUInt32LE(rate, 24); buf.writeUInt32LE(rate, 28); buf.writeUInt16LE(1, 32); buf.writeUInt16LE(8, 34)
+    buf.write('data', 36); buf.writeUInt32LE(n, 40)
+    return buf
+}
+const WAV = silentWav(60)
+
+/**
+ * 必须按 Range 回 206。整包回 200 的话 Chrome 认为服务器不支持分段，
+ * seekable 是 [0, 0]，设置 currentTime 会被静默钳回 0（buffered 明明有 60 秒）。
+ */
+function serveWav(route) {
+    const m = /bytes=(\d+)-(\d*)/.exec(route.request().headers().range || '')
+    if (!m) return route.fulfill({ contentType: 'audio/wav', body: WAV, headers: { 'accept-ranges': 'bytes' } })
+    const start = +m[1]
+    const end = m[2] ? Math.min(+m[2], WAV.length - 1) : WAV.length - 1
+    return route.fulfill({
+        status: 206,
+        contentType: 'audio/wav',
+        headers: { 'accept-ranges': 'bytes', 'content-range': `bytes ${start}-${end}/${WAV.length}` },
+        body: WAV.subarray(start, end + 1),
+    })
+}
+
 ;(async () => {
     const env = await h.setup(FIXTURES)
     const t = h.createRunner('video-speed')
@@ -21,6 +54,7 @@ const FIXTURES = path.join(__dirname, 'fixtures')
     /** 每个用例一个独立 context（localStorage 互不串），用完关掉。 */
     async function withPage(file, fn, opts = {}) {
         const context = await env.browser.newContext()
+        await context.route('**/silence.wav', serveWav)
         const page = await context.newPage()
         const logs = []
         page.on('console', m => logs.push(m.text()))
@@ -119,6 +153,52 @@ const FIXTURES = path.join(__dirname, 'fixtures')
             await page.focus('#check')
             await press(page, 'x')
             eq(await rateOf(page), 1.25)
+        })
+    })
+
+    await t.test('G 切到常用倍速 2.0，再按切回之前的速度', async () => {
+        await withPage('basic.html', async page => {
+            await press(page, 'x')
+            eq(await rateOf(page), 1.25)
+            await press(page, 'g')
+            eq(await rateOf(page), 2)
+            await press(page, 'g')
+            eq(await rateOf(page), 1.25)
+        })
+    })
+
+    await t.test('本来就在 2.0 上按 G：切回 1.0，不会原地不动', async () => {
+        await withPage('basic.html', async page => {
+            await page.$eval('#v', v => { v.playbackRate = 2 })
+            await press(page, 'g')
+            eq(await rateOf(page), 1)
+        })
+    })
+
+    await t.test('按住 G 不放（连发）不会来回闪', async () => {
+        await withPage('basic.html', async page => {
+            await page.keyboard.down('g')
+            // Playwright 对已按下的键再 down 会带 repeat。连发次数取奇数：没拦的话 1+3 次切换正好落回 1.0
+            for (let i = 0; i < 3; i++) await page.keyboard.down('g')
+            await page.keyboard.up('g')
+            eq(await rateOf(page), 2)
+        })
+    })
+
+    await t.test('Q / E 快退快进 5 秒，钳在 [0, duration]', async () => {
+        await withPage('media.html', async page => {
+            await page.waitForFunction(() => document.querySelector('#v').readyState >= 1)
+            eq(await page.$eval('#v', v => v.duration), 60)
+            const now = () => page.$eval('#v', v => Math.round(v.currentTime * 10) / 10)
+            await press(page, 'e', 2)
+            eq(await now(), 10)
+            await press(page, 'q')
+            eq(await now(), 5)
+            await press(page, 'q', 3)
+            eq(await now(), 0)
+            await page.$eval('#v', v => { v.currentTime = 58 })
+            await press(page, 'e')
+            eq(await now(), 60)
         })
     })
 

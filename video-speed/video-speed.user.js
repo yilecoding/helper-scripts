@@ -3,7 +3,7 @@
 // @name:zh-CN   通用视频倍速控制
 // @name:en      Video Speed Control (any site)
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.04.07.2
+// @version      2025.04.07.3
 // @description  任意网站的 HTML5 视频/音频都能用快捷键调速：加速、减速、恢复 1.0、一键切常用倍速、快进快退。站点把速度重置回 1 时自动恢复，按站点记住倍速。
 // @description:zh-CN  任意网站的 HTML5 视频/音频都能用快捷键调速：加速、减速、恢复 1.0、一键切常用倍速、快进快退。站点把速度重置回 1 时自动恢复，按站点记住倍速。
 // @description:en  Keyboard speed control for any HTML5 video/audio: faster, slower, reset to 1.0, toggle a preferred speed, seek back/forward. Re-applies your speed when the site resets it to 1, and remembers the speed per site.
@@ -50,8 +50,13 @@
             slower: 'KeyZ',
             faster: 'KeyX',
             reset: 'KeyR',     // 恢复 1.0
+            preferred: 'KeyG', // 切到常用倍速，再按切回之前的速度
+            rewind: 'KeyQ',
+            forward: 'KeyE',
         },
 
+        preferredRate: 2.0,
+        seekSeconds: 5,
         step: 0.25,       // 加速 / 减速步长
         minRate: 0.1,
         maxRate: 16,      // Chrome 允许的上限就是 16，再大直接抛 NotSupportedError
@@ -122,11 +127,37 @@
     // 快捷键
     // =========================================================================
 
+    /** 按 G 切到常用倍速之前的速度，再按 G 时切回它。 */
+    let rateBeforePreferred = 1;
+
+    function togglePreferred(media) {
+        const cur = media.playbackRate;
+        if (Math.abs(cur - CONFIG.preferredRate) > 1e-6) {
+            rateBeforePreferred = cur;
+            return setRate(media, CONFIG.preferredRate);
+        }
+        return setRate(media, rateBeforePreferred === CONFIG.preferredRate ? 1 : rateBeforePreferred);
+    }
+
+    /** 快进快退。duration 在直播流里是 Infinity、元数据没到时是 NaN，这两种情况不钳上限。 */
+    function seek(media, delta) {
+        let t = media.currentTime + delta;
+        if (t < 0) t = 0;
+        if (Number.isFinite(media.duration) && t > media.duration) t = media.duration;
+        media.currentTime = t;
+    }
+
     const ACTIONS = {
         faster: media => setRate(media, stepRate(media.playbackRate, +1)),
         slower: media => setRate(media, stepRate(media.playbackRate, -1)),
         reset: media => setRate(media, 1),
+        preferred: togglePreferred,
+        rewind: media => seek(media, -CONFIG.seekSeconds),
+        forward: media => seek(media, CONFIG.seekSeconds),
     };
+
+    /** 按住不放时浏览器会连发 keydown（e.repeat）。加减速、快进快退连发是想要的，切换类的不是。 */
+    const NO_REPEAT = new Set(['reset', 'preferred']);
 
     const ACTION_BY_CODE = {};
     for (const [name, code] of Object.entries(CONFIG.keys)) if (code) ACTION_BY_CODE[code] = name;
@@ -162,6 +193,7 @@
         e.preventDefault();
         e.stopImmediatePropagation();
         swallowed.add(e.code);
+        if (e.repeat && NO_REPEAT.has(action)) return;
         ACTIONS[action](media, e);
     }
 
