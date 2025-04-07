@@ -3,7 +3,7 @@
 // @name:zh-CN   通用视频倍速控制
 // @name:en      Video Speed Control (any site)
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.04.07.3
+// @version      2025.04.07.4
 // @description  任意网站的 HTML5 视频/音频都能用快捷键调速：加速、减速、恢复 1.0、一键切常用倍速、快进快退。站点把速度重置回 1 时自动恢复，按站点记住倍速。
 // @description:zh-CN  任意网站的 HTML5 视频/音频都能用快捷键调速：加速、减速、恢复 1.0、一键切常用倍速、快进快退。站点把速度重置回 1 时自动恢复，按站点记住倍速。
 // @description:en  Keyboard speed control for any HTML5 video/audio: faster, slower, reset to 1.0, toggle a preferred speed, seek back/forward. Re-applies your speed when the site resets it to 1, and remembers the speed per site.
@@ -68,14 +68,33 @@
 
     const Media = (() => {
         const known = new Set();
+        /** 媒体元素 → 最近一次被用户点到 / 被我们操作的时间。WeakMap，元素被回收时自动消失。 */
+        const touched = new WeakMap();
 
         function track(el) {
             if (known.has(el)) return;
             known.add(el);
         }
 
+        const isMedia = node => node.nodeType === 1 && (node.tagName === 'VIDEO' || node.tagName === 'AUDIO');
+
+        /**
+         * 深度收集：连同 open shadow DOM 一起找。
+         * document.querySelectorAll 不会穿进 shadow root，Web Components 封装的播放器
+         * （<xx-player> 里面套 <video>）用普通选择器永远找不到。
+         * closed shadow root 拿不到（el.shadowRoot 是 null），这是平台限制。
+         */
+        function collect(root) {
+            if (isMedia(root)) track(root);
+            if (root.shadowRoot) collect(root.shadowRoot);
+            for (const el of root.querySelectorAll('*')) {
+                if (isMedia(el)) track(el);
+                if (el.shadowRoot) collect(el.shadowRoot);
+            }
+        }
+
         function scan() {
-            for (const el of document.querySelectorAll('video, audio')) track(el);
+            if (document.documentElement) collect(document.documentElement);
         }
 
         /** 当前还在文档里的媒体元素。被页面移除的顺手清掉，免得 Set 只增不减。 */
@@ -84,14 +103,48 @@
             return Array.from(known);
         }
 
-        /** 快捷键作用的对象。先简单取第一个视频，没有视频再取音频。 */
-        function current() {
-            scan();
-            const all = list();
-            return all.find(el => el.tagName === 'VIDEO') || all[0] || null;
+        function touch(el) {
+            touched.set(el, performance.now());
         }
 
-        return { scan, list, current };
+        const isPlaying = el => !el.paused && !el.ended;
+
+        /** 在视口里露出来的面积。被 visibility:hidden / opacity:0 藏起来的算 0。 */
+        function visibleArea(el) {
+            if (el.checkVisibility && !el.checkVisibility({ opacityProperty: true, visibilityProperty: true })) return 0;
+            const r = el.getBoundingClientRect();
+            const w = Math.min(r.right, innerWidth) - Math.max(r.left, 0);
+            const h = Math.min(r.bottom, innerHeight) - Math.max(r.top, 0);
+            return w > 0 && h > 0 ? w * h : 0;
+        }
+
+        /**
+         * 「当前视频」：正在播放的 > 最近交互过的 > 视口里露出面积最大的。
+         * 播放优先：页面角落里静音自动播放的预告片面积再小，用户真正在看的那个也一定在播；
+         * 都在播（主视频 + 静音广告）时再看用户点过哪个，都没点过才比面积。
+         * 既不在播、没点过、也看不见的（预加载的下一集、display:none 的）不参与。
+         */
+        function current() {
+            scan();
+            const scored = list()
+                .map(el => ({ el, playing: isPlaying(el) ? 1 : 0, touched: touched.get(el) || 0, area: visibleArea(el) }))
+                .filter(c => c.playing || c.touched || c.area > 0);
+            scored.sort((a, b) => b.playing - a.playing || b.touched - a.touched || b.area - a.area);
+            return scored.length ? scored[0].el : null;
+        }
+
+        /*
+         * 「点过哪个」用坐标判定而不是看事件路径：多数播放器在 <video> 上面盖了一层控制条 / 遮罩，
+         * 点击落在遮罩上，事件路径里根本没有 <video>。
+         */
+        window.addEventListener('pointerdown', e => {
+            for (const el of list()) {
+                const r = el.getBoundingClientRect();
+                if (e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom) touch(el);
+            }
+        }, true);
+
+        return { scan, list, current, touch };
     })();
 
     // =========================================================================
@@ -189,6 +242,7 @@
         if (!action || isTyping(e)) return;
         const media = Media.current();
         if (!media) return;   // 页面没有媒体就不拦，按键原样还给页面
+        Media.touch(media);   // 连续按键时锁定同一个，不会因为面积变化中途换人
 
         e.preventDefault();
         e.stopImmediatePropagation();

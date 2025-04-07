@@ -1,0 +1,23 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>shadow</title>
+<x-player id="p1"></x-player>
+<script>
+    // 只存在于 open shadow DOM 里的 <video>，document.querySelector 找不到
+    customElements.define('x-player', class extends HTMLElement {
+        constructor() {
+            super()
+            this.attachShadow({ mode: 'open' }).innerHTML = '<div class="frame"><video width="480" height="270"></video></div>'
+        }
+    })
+    // 两层嵌套：外壳组件里再套一个播放器组件
+    customElements.define('x-shell', class extends HTMLElement {
+        constructor() {
+            super()
+            this.attachShadow({ mode: 'open' }).innerHTML = '<section><x-player></x-player></section>'
+        }
+    })
+    window.shadowVideo = host => host.shadowRoot.querySelector('x-player')
+        ? host.shadowRoot.querySelector('x-player').shadowRoot.querySelector('video')
+        : host.shadowRoot.querySelector('video')
+</script>

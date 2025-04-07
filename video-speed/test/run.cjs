@@ -209,6 +209,78 @@ function serveWav(route) {
         })
     })
 
+    console.log('当前视频的判定')
+
+    const rates = page => page.$$eval('video', vs => Object.fromEntries(vs.map(v => [v.id, v.playbackRate])))
+    const ready = page => page.waitForFunction(() => [...document.querySelectorAll('video')].every(v => v.readyState >= 1))
+
+    await t.test('都没在播：取视口里露出面积最大的（屏外的、display:none 的不算）', async () => {
+        await withPage('pick.html', async page => {
+            await ready(page)
+            await press(page, 'x')
+            eq(await rates(page), { big: 1.25, small: 1, hidden: 1, far: 1 })
+        })
+    })
+
+    await t.test('正在播放的优先于面积大的', async () => {
+        await withPage('pick.html', async page => {
+            await ready(page)
+            await page.$eval('#small', v => v.play())
+            await press(page, 'x')
+            eq(await rates(page), { big: 1, small: 1.25, hidden: 1, far: 1 })
+        })
+    })
+
+    await t.test('点过的优先于面积大的；点在盖住视频的控制层上也算', async () => {
+        await withPage('pick.html', async page => {
+            await ready(page)
+            await page.click('#small')
+            await press(page, 'x')
+            eq(await rates(page), { big: 1, small: 1.25, hidden: 1, far: 1 })
+            await page.click('#overlay')
+            await press(page, 'x')
+            eq(await rates(page), { big: 1.25, small: 1.25, hidden: 1, far: 1 })
+        })
+    })
+
+    console.log('shadow DOM 与动态插入')
+
+    const shadowRate = (page, sel) => page.$eval(sel, host => shadowVideo(host).playbackRate)
+
+    await t.test('open shadow DOM 里的视频', async () => {
+        await withPage('shadow.html', async page => {
+            await press(page, 'x')
+            eq(await shadowRate(page, '#p1'), 1.25)
+        })
+    })
+
+    await t.test('加载后插入的两层嵌套 shadow 播放器', async () => {
+        await withPage('shadow.html', async page => {
+            await page.evaluate(() => {
+                document.querySelector('#p1').remove()
+                const shell = document.createElement('x-shell')
+                shell.id = 'shell'
+                document.body.append(shell)
+            })
+            await press(page, 'x')
+            eq(await shadowRate(page, '#shell'), 1.25)
+        })
+    })
+
+    await t.test('已有 shadow root 里后来才插进去的视频', async () => {
+        await withPage('shadow.html', async page => {
+            await page.evaluate(() => {
+                const root = document.querySelector('#p1').shadowRoot
+                root.querySelector('video').remove()
+                const v = document.createElement('video')
+                v.width = 320; v.height = 180
+                root.querySelector('.frame').append(v)
+            })
+            await press(page, 'x')
+            eq(await shadowRate(page, '#p1'), 1.25)
+        })
+    })
+
     await env.close()
     t.done()
 })().catch(e => {
