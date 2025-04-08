@@ -33,7 +33,9 @@ const WAV = silentWav(60)
  * 必须按 Range 回 206。整包回 200 的话 Chrome 认为服务器不支持分段，
  * seekable 是 [0, 0]，设置 currentTime 会被静默钳回 0（buffered 明明有 60 秒）。
  */
-function serveWav(route) {
+async function serveWav(route) {
+    // ?slow=1：元数据晚到，模拟真实网络（换集后 loadedmetadata 要等一会儿才来）
+    if (route.request().url().includes('slow=1')) await new Promise(r => setTimeout(r, 600))
     const m = /bytes=(\d+)-(\d*)/.exec(route.request().headers().range || '')
     if (!m) return route.fulfill({ contentType: 'audio/wav', body: WAV, headers: { 'accept-ranges': 'bytes' } })
     const start = +m[1]
@@ -54,7 +56,7 @@ function serveWav(route) {
     /** 每个用例一个独立 context（localStorage 互不串），用完关掉。 */
     async function withPage(file, fn, opts = {}) {
         const context = await env.browser.newContext()
-        await context.route('**/silence.wav', serveWav)
+        await context.route(/\/silence\.wav(\?|$)/, serveWav)   // glob 匹配不了带 query 的 URL
         const page = await context.newPage()
         const logs = []
         page.on('console', m => logs.push(m.text()))
@@ -278,6 +280,79 @@ function serveWav(route) {
             })
             await press(page, 'x')
             eq(await shadowRate(page, '#p1'), 1.25)
+        })
+    })
+
+    console.log('站点重置 vs 用户主动修改')
+
+    const settle = page => page.waitForTimeout(250)   // ratechange 是异步派发的，用户改动的判定还要再等 100ms
+
+    await t.test('没调过速时完全不干预站点自己设的倍速', async () => {
+        await withPage('keep.html', async page => {
+            await page.$eval('#v', v => { v.playbackRate = 1.5 })
+            await settle(page)
+            eq(await rateOf(page), 1.5)
+        })
+    })
+
+    await t.test('站点把速度写回 1：被重新应用', async () => {
+        await withPage('keep.html', async page => {
+            await press(page, 'g')
+            await page.$eval('#v', v => { v.playbackRate = 1 })   // evaluate 不产生用户手势
+            await settle(page)
+            eq(await rateOf(page), 2)
+        })
+    })
+
+    await t.test('换 src（加载算法会重置成 defaultPlaybackRate）：速度保持', async () => {
+        await withPage('keep.html', async page => {
+            await press(page, 'g')
+            await page.$eval('#v', v => { v.src = 'silence.wav?ep=9' })
+            await page.waitForFunction(() => document.querySelector('#v').readyState >= 1)
+            eq(await rateOf(page), 2)
+        })
+    })
+
+    await t.test('点「下一集」（有手势 + 换 src + 设回 1）：仍按站点重置处理', async () => {
+        await withPage('keep.html', async page => {
+            await press(page, 'g')
+            await page.click('#next')
+            await page.waitForFunction(() => document.querySelector('#v').readyState >= 1)
+            await settle(page)
+            eq(await rateOf(page), 2)
+        })
+    })
+
+    await t.test('用户在播放器菜单里主动改：尊重，之后的站点重置恢复到用户选的值', async () => {
+        await withPage('keep.html', async page => {
+            await press(page, 'g')
+            await page.click('#menu-15')
+            await settle(page)
+            eq(await rateOf(page), 1.5)
+            await page.waitForTimeout(1100)   // 走出手势窗口
+            await page.$eval('#v', v => { v.playbackRate = 1 })
+            await settle(page)
+            eq(await rateOf(page), 1.5)
+            // 用户在菜单里选「正常」也是主动选择
+            await page.click('#menu-10')
+            await settle(page)
+            eq(await rateOf(page), 1)
+        })
+    })
+
+    await t.test('动态插入的视频（含 shadow root 里的）自动套用当前倍速，不用再按键', async () => {
+        await withPage('keep.html', async page => {
+            await press(page, 'x', 2)
+            const got = await page.evaluate(async () => {
+                const a = document.createElement('video')
+                a.src = 'silence.wav?new=1'
+                document.body.append(a)
+                const b = document.createElement('video')
+                document.querySelector('#sp').shadowRoot.querySelector('.frame').append(b)
+                await new Promise(r => setTimeout(r, 50))
+                return [a.playbackRate, b.playbackRate]
+            })
+            eq(got, [1.5, 1.5])
         })
     })
 
