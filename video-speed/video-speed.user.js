@@ -3,7 +3,7 @@
 // @name:zh-CN   通用视频倍速控制
 // @name:en      Video Speed Control (any site)
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.04.08.5
+// @version      2025.04.10.6
 // @description  任意网站的 HTML5 视频/音频都能用快捷键调速：加速、减速、恢复 1.0、一键切常用倍速、快进快退。站点把速度重置回 1 时自动恢复，按站点记住倍速。
 // @description:zh-CN  任意网站的 HTML5 视频/音频都能用快捷键调速：加速、减速、恢复 1.0、一键切常用倍速、快进快退。站点把速度重置回 1 时自动恢复，按站点记住倍速。
 // @description:en  Keyboard speed control for any HTML5 video/audio: faster, slower, reset to 1.0, toggle a preferred speed, seek back/forward. Re-applies your speed when the site resets it to 1, and remembers the speed per site.
@@ -66,6 +66,8 @@
          * 我们跟着改，不再把它拉回去。超出这个窗口的算站点重置。
          */
         userChangeWindowMs: 1000,
+
+        osdMs: 1000,      // 改速提示停留多久后淡出
     };
 
     // =========================================================================
@@ -291,6 +293,49 @@
     });
 
     // =========================================================================
+    // OSD：改速时在视频左上角浮出的提示
+    // =========================================================================
+
+    const OSD = (() => {
+        let box = null;
+        let timer = 0;
+
+        /*
+         * 样式全部走 element.style（CSSOM），不插 <style>：
+         * 站点的 CSP 写了 style-src 时，插进去的 <style> 会被拦，而 CSSOM 赋值不受 CSP 管。
+         */
+        function ensure() {
+            if (box && box.isConnected) return box;
+            box = document.createElement('div');
+            box.setAttribute('data-video-speed-osd', '');
+            box.style.cssText = [
+                'position:fixed', 'z-index:2147483647', 'pointer-events:none',
+                'padding:4px 10px', 'border-radius:4px', 'background:rgba(0,0,0,.6)', 'color:#fff',
+                'font:600 16px/1.4 system-ui,sans-serif', 'opacity:0', 'transition:opacity .3s',
+            ].join(';');
+            (document.body || document.documentElement).appendChild(box);
+            return box;
+        }
+
+        function show(media, text) {
+            const b = ensure();
+            // 音频元素、看不见的视频没有可用的矩形，退到视口左上角
+            const r = media.getBoundingClientRect();
+            const visible = r.width > 0 && r.height > 0;
+            b.style.left = (visible ? Math.max(r.left, 0) : 0) + 8 + 'px';
+            b.style.top = (visible ? Math.max(r.top, 0) : 0) + 8 + 'px';
+            b.textContent = text;
+            b.style.opacity = '1';
+            clearTimeout(timer);
+            timer = setTimeout(() => { b.style.opacity = '0'; }, CONFIG.osdMs);
+        }
+
+        return { show };
+    })();
+
+    const fmtRate = r => r.toFixed(2).replace(/0$/, '') + '×';
+
+    // =========================================================================
     // 快捷键
     // =========================================================================
 
@@ -314,13 +359,14 @@
         media.currentTime = t;
     }
 
+    /** 每个动作返回 OSD 上显示的文字。 */
     const ACTIONS = {
-        faster: media => setRate(media, stepRate(media.playbackRate, +1)),
-        slower: media => setRate(media, stepRate(media.playbackRate, -1)),
-        reset: media => setRate(media, 1),
-        preferred: togglePreferred,
-        rewind: media => seek(media, -CONFIG.seekSeconds),
-        forward: media => seek(media, CONFIG.seekSeconds),
+        faster: media => fmtRate(setRate(media, stepRate(media.playbackRate, +1))),
+        slower: media => fmtRate(setRate(media, stepRate(media.playbackRate, -1))),
+        reset: media => fmtRate(setRate(media, 1)),
+        preferred: media => fmtRate(togglePreferred(media)),
+        rewind: media => (seek(media, -CONFIG.seekSeconds), `« ${CONFIG.seekSeconds} 秒`),
+        forward: media => (seek(media, CONFIG.seekSeconds), `${CONFIG.seekSeconds} 秒 »`),
     };
 
     /** 按住不放时浏览器会连发 keydown（e.repeat）。加减速、快进快退连发是想要的，切换类的不是。 */
@@ -364,7 +410,7 @@
         e.stopImmediatePropagation();
         swallowed.add(e.code);
         if (e.repeat && NO_REPEAT.has(action)) return;
-        ACTIONS[action](media, e);
+        OSD.show(media, ACTIONS[action](media, e));
     }
 
     function onKeyUpOrPress(e) {

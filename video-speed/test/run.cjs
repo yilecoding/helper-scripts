@@ -356,6 +356,38 @@ async function serveWav(route) {
         })
     })
 
+    console.log('OSD')
+
+    const osd = page => page.evaluate(() => {
+        const el = document.querySelector('[data-video-speed-osd]')
+        if (!el) return null
+        const r = el.getBoundingClientRect()
+        return { text: el.textContent, opacity: getComputedStyle(el).opacity, x: Math.round(r.left), y: Math.round(r.top) }
+    })
+
+    await t.test('改速时在视频左上角出现，约 1 秒后淡出', async () => {
+        await withPage('pick.html', async page => {
+            await ready(page)
+            await press(page, 'x')
+            await page.waitForTimeout(350)   // 淡入的 transition 是 .3s
+            const big = await page.$eval('#big', v => v.getBoundingClientRect().toJSON())
+            const o = await osd(page)
+            eq([o.text, o.opacity], ['1.25×', '1'])
+            assert(o.x >= big.left && o.x < big.left + 40 && o.y >= big.top && o.y < big.top + 40, `位置不在视频左上角：${JSON.stringify(o)}`)
+            await page.waitForTimeout(1100)
+            eq((await osd(page)).opacity, '0')
+        })
+    })
+
+    await t.test('快进快退也有提示；1.0 显示为 1.0×', async () => {
+        await withPage('media.html', async page => {
+            await press(page, 'e')
+            eq((await osd(page)).text, '5 秒 »')
+            await press(page, 'r')
+            eq((await osd(page)).text, '1.0×')
+        })
+    })
+
     await env.close()
     t.done()
 })().catch(e => {
