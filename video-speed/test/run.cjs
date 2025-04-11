@@ -388,6 +388,48 @@ async function serveWav(route) {
         })
     })
 
+    /**
+     * OSD 是否真的在最上面看得见：截 OSD 那块区域，数白色（文字）像素。
+     * 全屏元素在 top layer 里，普通 z-index 再大也压不过它，被盖住时那块是纯黑的视频。
+     *
+     * 不用 elementFromPoint 做命中测试：实测提示已经画在全屏视频上面了（截图可见），
+     * 它仍然返回 <video>——对 top layer 里的 popover 不可靠。
+     */
+    async function osdVisiblePixels(page) {
+        await page.waitForTimeout(400)   // 等淡入 transition 走完
+        const clip = await page.$eval('[data-video-speed-osd]', el => {
+            const r = el.getBoundingClientRect()
+            return { x: r.left, y: r.top, width: r.width, height: r.height }
+        })
+        const png = (await page.screenshot({ clip })).toString('base64')
+        return page.evaluate(async b64 => {
+            const img = new Image()
+            img.src = 'data:image/png;base64,' + b64
+            await img.decode()
+            const c = document.createElement('canvas')
+            c.width = img.width; c.height = img.height
+            const ctx = c.getContext('2d')
+            ctx.drawImage(img, 0, 0)
+            const d = ctx.getImageData(0, 0, c.width, c.height).data
+            let white = 0
+            for (let i = 0; i < d.length; i += 4) if (d[i] > 200 && d[i + 1] > 200 && d[i + 2] > 200) white++
+            return white
+        }, png)
+    }
+
+    for (const [btn, what] of [['#fs-player', '播放器容器'], ['#fs-video', '<video> 本身']]) {
+        await t.test(`全屏时（全屏的是${what}）OSD 仍在最上层可见`, async () => {
+            await withPage('fullscreen.html', async page => {
+                await page.click(btn)
+                await page.waitForFunction(() => !!document.fullscreenElement)
+                await press(page, 'x')
+                eq(await rateOf(page), 1.25)
+                const white = await osdVisiblePixels(page)
+                assert(white > 20, `OSD 被全屏元素盖住了（白色像素 ${white}）`)
+            })
+        })
+    }
+
     await env.close()
     t.done()
 })().catch(e => {

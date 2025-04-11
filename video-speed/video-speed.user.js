@@ -3,7 +3,7 @@
 // @name:zh-CN   通用视频倍速控制
 // @name:en      Video Speed Control (any site)
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.04.10.6
+// @version      2025.04.11.7
 // @description  任意网站的 HTML5 视频/音频都能用快捷键调速：加速、减速、恢复 1.0、一键切常用倍速、快进快退。站点把速度重置回 1 时自动恢复，按站点记住倍速。
 // @description:zh-CN  任意网站的 HTML5 视频/音频都能用快捷键调速：加速、减速、恢复 1.0、一键切常用倍速、快进快退。站点把速度重置回 1 时自动恢复，按站点记住倍速。
 // @description:en  Keyboard speed control for any HTML5 video/audio: faster, slower, reset to 1.0, toggle a preferred speed, seek back/forward. Re-applies your speed when the site resets it to 1, and remembers the speed per site.
@@ -301,6 +301,18 @@
         let timer = 0;
 
         /*
+         * 全屏时的坑：全屏元素进的是浏览器的 top layer，页面里任何 z-index 都压不过它，
+         * 挂在 body 上的提示会被整个盖住（测试里实测复现，两种全屏都盖）。
+         * 而且全屏的往往不是 <video>，是播放器外层容器；也可能就是 <video> 本身，
+         * 它不能有子元素，往里塞也没用。
+         *
+         * 解法是让提示自己也进 top layer：popover="manual" + showPopover()。
+         * top layer 里后进的在上面，所以每次显示都先 hide 再 show，排到全屏元素之上。
+         * 不支持 popover 的老浏览器退而求其次：挂进全屏容器里（全屏的是 <video> 本身时无解）。
+         */
+        const canPopover = typeof HTMLElement.prototype.showPopover === 'function';
+
+        /*
          * 样式全部走 element.style（CSSOM），不插 <style>：
          * 站点的 CSP 写了 style-src 时，插进去的 <style> 会被拦，而 CSSOM 赋值不受 CSP 管。
          */
@@ -308,17 +320,31 @@
             if (box && box.isConnected) return box;
             box = document.createElement('div');
             box.setAttribute('data-video-speed-osd', '');
+            if (canPopover) box.popover = 'manual';
             box.style.cssText = [
-                'position:fixed', 'z-index:2147483647', 'pointer-events:none',
+                // inset / margin / border 是为了盖掉浏览器给 [popover] 的默认样式（居中、带边框）
+                'position:fixed', 'inset:auto', 'margin:0', 'border:0', 'z-index:2147483647', 'pointer-events:none',
                 'padding:4px 10px', 'border-radius:4px', 'background:rgba(0,0,0,.6)', 'color:#fff',
                 'font:600 16px/1.4 system-ui,sans-serif', 'opacity:0', 'transition:opacity .3s',
             ].join(';');
-            (document.body || document.documentElement).appendChild(box);
             return box;
+        }
+
+        function mount(b) {
+            if (canPopover) {
+                if (!b.isConnected) (document.body || document.documentElement).appendChild(b);
+                if (b.matches(':popover-open')) b.hidePopover();
+                b.showPopover();
+                return;
+            }
+            const fs = document.fullscreenElement;
+            const parent = fs && !(fs instanceof HTMLMediaElement) ? fs : (document.body || document.documentElement);
+            if (b.parentNode !== parent) parent.appendChild(b);
         }
 
         function show(media, text) {
             const b = ensure();
+            mount(b);
             // 音频元素、看不见的视频没有可用的矩形，退到视口左上角
             const r = media.getBoundingClientRect();
             const visible = r.width > 0 && r.height > 0;
