@@ -430,6 +430,90 @@ async function serveWav(route) {
         })
     }
 
+    console.log('按站点记忆')
+
+    const SITE = 'https://video.example.com/watch'
+    /** 「真实域名」：拦下来用本地 fixture 回，不访问外网。silence.wav 的 route 不限域名，照样生效。 */
+    async function fakeSite(context, url, fixture) {
+        const body = fs.readFileSync(path.join(FIXTURES, fixture), 'utf8')
+        await context.route(url, r => r.fulfill({ contentType: 'text/html; charset=utf-8', body }))
+    }
+    const stored = page => page.evaluate(() => JSON.parse(localStorage.getItem('__gm:rates')))
+    const reloadAndWait = async page => {
+        await page.reload()
+        await page.waitForFunction(() => document.querySelector('#v').readyState >= 1)
+    }
+
+    /** withPage 的导航在 fn 之前，route 来不及挂；记忆相关的用例自己开页面。 */
+    async function withSite(fn, opts = {}) {
+        const context = await env.browser.newContext()
+        await context.route(/\/silence\.wav(\?|$)/, serveWav)
+        await fakeSite(context, SITE, 'keep.html')
+        const page = await context.newPage()
+        try {
+            await h.install(page, SCRIPT, opts)
+            await page.goto(SITE)
+            await page.waitForFunction(() => document.querySelector('#v').readyState >= 1)
+            await fn(page)
+            eq(h.errors(page).map(String), [])
+        } finally {
+            await context.close()
+        }
+    }
+
+    await t.test('调过的速度按 hostname 存下，刷新后不按键自动恢复', async () => {
+        await withSite(async page => {
+            await press(page, 'g')
+            eq(await stored(page), { 'video.example.com': 2 })
+            await reloadAndWait(page)
+            eq(await rateOf(page), 2)
+            // 恢复之后站点重置照样拉回来
+            await page.$eval('#v', v => { v.playbackRate = 1 })
+            await settle(page)
+            eq(await rateOf(page), 2)
+        })
+    })
+
+    await t.test('只认本站的记忆；调回 1.0 时删掉本站的条目', async () => {
+        await withSite(async page => {
+            eq(await rateOf(page), 1)
+            await press(page, 'x')
+            await press(page, 'r')
+            eq(await stored(page), { 'other.example.org': 3 })
+        }, { values: { rates: { 'other.example.org': 3 } } })
+    })
+
+    await t.test('在播放器菜单里主动改的也记住', async () => {
+        await withSite(async page => {
+            await press(page, 'g')
+            await page.click('#menu-15')
+            await settle(page)
+            eq(await stored(page), { 'video.example.com': 1.5 })
+        })
+    })
+
+    await t.test('菜单：清除本站记忆', async () => {
+        await withSite(async page => {
+            await press(page, 'g')
+            await h.menu(page, '清除本站记忆的倍速（video.example.com）')
+            eq(await stored(page), {})
+            await reloadAndWait(page)
+            eq(await rateOf(page), 1)
+        })
+    })
+
+    await t.test('菜单：关闭记忆后不存也不恢复，菜单文字跟着变', async () => {
+        await withSite(async page => {
+            eq((await h.gm(page)).menu, ['清除本站记忆的倍速（video.example.com）', '记忆倍速：已开启（点击关闭）'])
+            await h.menu(page, '记忆倍速：已开启')
+            eq((await h.gm(page)).menu, ['清除本站记忆的倍速（video.example.com）', '记忆倍速：已关闭（点击开启）'])
+            await press(page, 'g')
+            eq(await stored(page), { 'video.example.com': 1.25 })
+            await reloadAndWait(page)
+            eq(await rateOf(page), 1)
+        }, { values: { rates: { 'video.example.com': 1.25 } } })
+    })
+
     await env.close()
     t.done()
 })().catch(e => {

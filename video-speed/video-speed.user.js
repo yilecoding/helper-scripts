@@ -3,13 +3,16 @@
 // @name:zh-CN   通用视频倍速控制
 // @name:en      Video Speed Control (any site)
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.04.11.7
+// @version      2025.04.16.8
 // @description  任意网站的 HTML5 视频/音频都能用快捷键调速：加速、减速、恢复 1.0、一键切常用倍速、快进快退。站点把速度重置回 1 时自动恢复，按站点记住倍速。
 // @description:zh-CN  任意网站的 HTML5 视频/音频都能用快捷键调速：加速、减速、恢复 1.0、一键切常用倍速、快进快退。站点把速度重置回 1 时自动恢复，按站点记住倍速。
 // @description:en  Keyboard speed control for any HTML5 video/audio: faster, slower, reset to 1.0, toggle a preferred speed, seek back/forward. Re-applies your speed when the site resets it to 1, and remembers the speed per site.
 // @author       壹樂（V：ita1125）
 // @match        *://*/*
-// @grant        none
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_registerMenuCommand
+// @grant        GM_unregisterMenuCommand
 // @license      CC BY-NC-SA
 // @run-at       document-start
 // @homepageURL  https://github.com/yilecoding/helper-scripts
@@ -243,7 +246,79 @@
         Speed.desired = clampRate(rate);
         Speed.active = true;
         apply(media);
+        Memory.save(Speed.desired);
         return media.playbackRate;
+    }
+
+    // =========================================================================
+    // 按站点记忆
+    // =========================================================================
+
+    const Memory = (() => {
+        /*
+         * 所有站点存在一个对象里（{ hostname: rate }），不是每站一个 key：
+         * GM 存储是按脚本全局共享的，一站一个 key 的话「清除全部」之类的操作得先 list 一遍。
+         * 1.0 不存，存了等于没存，还让对象越长越大。
+         */
+        const KEY = 'rates';
+        // file:// 页面的 hostname 是空串，退到协议名，好歹不跟别的站混在一起
+        const host = location.hostname || location.protocol;
+
+        const enabled = () => GM_getValue('remember', true);
+
+        function load() {
+            if (!enabled()) return null;
+            const r = (GM_getValue(KEY, {}) || {})[host];
+            return typeof r === 'number' && r > 0 ? clampRate(r) : null;
+        }
+
+        function save(rate) {
+            if (!enabled()) return;
+            const all = GM_getValue(KEY, {}) || {};
+            if (near(rate, 1)) delete all[host];
+            else all[host] = rate;
+            GM_setValue(KEY, all);
+        }
+
+        function clear() {
+            const all = GM_getValue(KEY, {}) || {};
+            delete all[host];
+            GM_setValue(KEY, all);
+            console.log(TAG, `已清除 ${host} 记忆的倍速`);
+        }
+
+        /*
+         * 菜单只在顶层页面注册：脚本在每个 iframe 里也跑一份，各自注册的话
+         * Tampermonkey 菜单里会出现好几条同名命令。代价是 iframe 所在站点的记忆没法从菜单清除。
+         */
+        let toggleId = null;
+        function registerMenu() {
+            if (window.top !== window) return;
+            GM_registerMenuCommand(`清除本站记忆的倍速（${host}）`, clear);
+            renderToggle();
+        }
+
+        function renderToggle() {
+            if (toggleId !== null) GM_unregisterMenuCommand(toggleId);
+            const on = enabled();
+            toggleId = GM_registerMenuCommand(on ? '记忆倍速：已开启（点击关闭）' : '记忆倍速：已关闭（点击开启）', () => {
+                GM_setValue('remember', !on);
+                console.log(TAG, on ? '已关闭倍速记忆' : '已开启倍速记忆');
+                renderToggle();
+            });
+        }
+
+        return { host, load, save, clear, registerMenu };
+    })();
+
+    {
+        // 尽早恢复（document-start），后面发现的媒体一出现就是记住的速度
+        const saved = Memory.load();
+        if (saved !== null) {
+            Speed.desired = saved;
+            Speed.active = true;
+            console.log(TAG, `恢复 ${Memory.host} 记忆的倍速：${saved}`);
+        }
     }
 
     // =========================================================================
@@ -281,6 +356,7 @@
             if ((lastLoadStart.get(el) || -Infinity) >= gestureAt) return apply(el);   // 用户点的是「下一集」
             if (near(el.playbackRate, Speed.desired)) return;
             Speed.desired = clampRate(el.playbackRate);
+            Memory.save(Speed.desired);
             console.log(TAG, `用户在播放器里改了倍速：${Speed.desired}`);
         }, 100);
     }
@@ -461,6 +537,7 @@
     function boot() {
         try {
             Media.start();
+            Memory.registerMenu();
             console.log(TAG, `已启动，${location.hostname || location.protocol}，发现 ${Media.list().length} 个媒体元素`);
         } catch (err) {
             console.error(TAG, '启动失败', err);
