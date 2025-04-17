@@ -534,6 +534,46 @@ async function serveWav(route) {
         })
     })
 
+    console.log('iframe')
+
+    await t.test('各 frame 各管各的：快捷键只作用于有焦点的那个 frame；记忆按 frame 自己的 hostname', async () => {
+        const context = await env.browser.newContext()
+        const top = 'https://video.example.com/iframe'
+        await fakeSite(context, top, 'iframe.html')
+        await fakeSite(context, 'https://video.example.com/iframe-inner.html', 'iframe-inner.html')
+        await fakeSite(context, 'https://player.example.net/embed', 'iframe-inner.html')
+        const page = await context.newPage()
+        try {
+            await h.install(page, SCRIPT)
+            await page.goto(top)
+            const same = page.frame({ url: /iframe-inner/ })
+            const cross = page.frame({ url: /player\.example\.net/ })
+            const all = async () => [await rateOf(page), await same.$eval('#v', v => v.playbackRate), await cross.$eval('#v', v => v.playbackRate)]
+
+            await page.frameLocator('#cross').locator('#v').click()
+            await press(page, 'g')
+            eq(await all(), [1, 1, 2])
+
+            await page.frameLocator('#same').locator('#v').click()
+            await press(page, 'x')
+            eq(await all(), [1, 1.25, 2])
+
+            await page.click('#v')
+            await press(page, 'z')
+            eq(await all(), [0.75, 1.25, 2])
+
+            // 跨域 iframe 的记忆记在它自己的域名下（harness 的 GM 存储按源隔离，这里在各自的源里读）
+            eq(await cross.evaluate(() => JSON.parse(localStorage.getItem('__gm:rates'))), { 'player.example.net': 2 })
+            eq(await page.evaluate(() => JSON.parse(localStorage.getItem('__gm:rates'))), { 'video.example.com': 0.75 })
+            // 菜单只在顶层注册
+            eq((await h.gm(page)).menu.length, 2)
+            eq(await cross.evaluate(() => window.__gm.menu.length), 0)
+            eq(h.errors(page).map(String), [])
+        } finally {
+            await context.close()
+        }
+    })
+
     await env.close()
     t.done()
 })().catch(e => {
