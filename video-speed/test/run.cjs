@@ -514,6 +514,26 @@ async function serveWav(route) {
         }, { values: { rates: { 'video.example.com': 1.25 } } })
     })
 
+    console.log('边界情况')
+
+    await t.test('站点死锁 1.0：拉锯几次后让步，不无限循环；再按键会重新尝试', async () => {
+        await withPage('locked.html', async page => {
+            await press(page, 'g')
+            await page.waitForTimeout(500)
+            const n1 = await page.evaluate(() => rateEvents)
+            assert(n1 < 30, `ratechange 次数失控：${n1}`)
+            eq(await rateOf(page), 1)
+            assert(page.logs.some(l => l.includes('停止自动恢复')), '没有让步日志')
+            await page.waitForTimeout(500)
+            eq(await page.evaluate(() => rateEvents), n1, '让步后还在拉锯')
+            // 用户再按一次：明确的意图，重新尝试（然后再次让步）
+            await press(page, 'x')
+            await page.waitForTimeout(500)
+            const n2 = await page.evaluate(() => rateEvents)
+            assert(n2 > n1 && n2 < n1 + 30, `再按键后 ratechange：${n1} → ${n2}`)
+        })
+    })
+
     await env.close()
     t.done()
 })().catch(e => {

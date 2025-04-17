@@ -1,0 +1,13 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>locked</title>
+<video id="v" width="480" height="270"></video>
+<script>
+    // 有些站点（培训 / 考试类）不许倍速：任何 ratechange 都立刻改回 1
+    const v = document.querySelector('#v')
+    window.rateEvents = 0
+    v.addEventListener('ratechange', () => {
+        rateEvents++
+        if (v.playbackRate !== 1) v.playbackRate = 1
+    })
+</script>

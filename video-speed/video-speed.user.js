@@ -3,7 +3,7 @@
 // @name:zh-CN   通用视频倍速控制
 // @name:en      Video Speed Control (any site)
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.04.16.8
+// @version      2025.04.17.9
 // @description  任意网站的 HTML5 视频/音频都能用快捷键调速：加速、减速、恢复 1.0、一键切常用倍速、快进快退。站点把速度重置回 1 时自动恢复，按站点记住倍速。
 // @description:zh-CN  任意网站的 HTML5 视频/音频都能用快捷键调速：加速、减速、恢复 1.0、一键切常用倍速、快进快退。站点把速度重置回 1 时自动恢复，按站点记住倍速。
 // @description:en  Keyboard speed control for any HTML5 video/audio: faster, slower, reset to 1.0, toggle a preferred speed, seek back/forward. Re-applies your speed when the site resets it to 1, and remembers the speed per site.
@@ -69,6 +69,14 @@
          * 我们跟着改，不再把它拉回去。超出这个窗口的算站点重置。
          */
         userChangeWindowMs: 1000,
+
+        /*
+         * 站点把速度锁死在 1（每次 ratechange 都改回去）时，我们改、它改回、我们再改……
+         * 测试里不设上限 0.5 秒就是 55 万次 ratechange。fightWindowMs 内被重置超过 fightMax 次
+         * 就对这个元素让步，直到用户再按快捷键。
+         */
+        fightMax: 5,
+        fightWindowMs: 2000,
 
         osdMs: 1000,      // 改速提示停留多久后淡出
     };
@@ -221,9 +229,13 @@
      */
     const Speed = { desired: 1, active: false };
 
+    /** 拉锯后让步了的元素：自动恢复不再碰它，用户按快捷键时解除。 */
+    const gaveUp = new WeakSet();
+    const resets = new WeakMap();
+
     /** 把期望倍速写到一个元素上。 */
     function apply(el) {
-        if (!Speed.active) return;
+        if (!Speed.active || gaveUp.has(el)) return;
         try {
             /*
              * defaultPlaybackRate 也要设：换 src 时浏览器的加载算法会把 playbackRate
@@ -245,6 +257,8 @@
     function setRate(media, rate) {
         Speed.desired = clampRate(rate);
         Speed.active = true;
+        gaveUp.delete(media);
+        resets.delete(media);
         apply(media);
         Memory.save(Speed.desired);
         return media.playbackRate;
@@ -348,17 +362,32 @@
         const el = e.target;
         if (!Speed.active || near(el.playbackRate, Speed.desired)) return;
         if (performance.now() - lastGesture > CONFIG.userChangeWindowMs) {
-            apply(el);   // 站点重置
+            onSiteReset(el);
             return;
         }
         const gestureAt = lastGesture;
         setTimeout(() => {
-            if ((lastLoadStart.get(el) || -Infinity) >= gestureAt) return apply(el);   // 用户点的是「下一集」
+            if ((lastLoadStart.get(el) || -Infinity) >= gestureAt) return onSiteReset(el);   // 用户点的是「下一集」
             if (near(el.playbackRate, Speed.desired)) return;
             Speed.desired = clampRate(el.playbackRate);
             Memory.save(Speed.desired);
             console.log(TAG, `用户在播放器里改了倍速：${Speed.desired}`);
         }, 100);
+    }
+
+    function onSiteReset(el) {
+        if (gaveUp.has(el)) return;
+        const now = performance.now();
+        const recent = (resets.get(el) || []).filter(t => now - t < CONFIG.fightWindowMs);
+        recent.push(now);
+        resets.set(el, recent);
+        if (recent.length > CONFIG.fightMax) {
+            gaveUp.add(el);
+            console.warn(TAG, `站点在 ${CONFIG.fightWindowMs}ms 内把倍速改回去 ${recent.length} 次，停止自动恢复（再按快捷键会重新尝试）`);
+            OSD.show(el, '本站锁定了倍速');
+            return;
+        }
+        apply(el);
     }
 
     Media.onNew(el => {
