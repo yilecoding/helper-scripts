@@ -1,0 +1,26 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>keep</title>
+<div id="player">
+    <video id="v" width="480" height="270" src="silence.wav?ep=1" preload="auto" muted></video>
+    <!-- 播放器自带的倍速菜单 -->
+    <button id="menu-15" onclick="document.querySelector('#v').playbackRate = 1.5">1.5x</button>
+    <button id="menu-10" onclick="document.querySelector('#v').playbackRate = 1">正常</button>
+    <!-- 「下一集」：换 src，顺手把速度设回 1（不少播放器这么干） -->
+    <button id="next" onclick="nextEpisode()">下一集</button>
+</div>
+<x-player id="sp"></x-player>
+<script>
+    let ep = 1
+    function nextEpisode() {
+        const v = document.querySelector('#v')
+        v.src = 'silence.wav?slow=1&ep=' + (++ep)
+        v.playbackRate = 1
+    }
+    customElements.define('x-player', class extends HTMLElement {
+        constructor() {
+            super()
+            this.attachShadow({ mode: 'open' }).innerHTML = '<div class="frame"></div>'
+        }
+    })
+</script>

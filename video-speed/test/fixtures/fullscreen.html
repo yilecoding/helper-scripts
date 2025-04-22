@@ -1,0 +1,13 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>fullscreen</title>
+<style>
+    #player { position: relative; width: 480px; background: #000 }
+    #player video { display: block; width: 100%; height: 270px }
+</style>
+<!-- 常见播放器：全屏的是外层容器（好让自定义控制条一起全屏），不是 <video> 本身 -->
+<div id="player">
+    <video id="v"></video>
+</div>
+<button id="fs-player" onclick="document.querySelector('#player').requestFullscreen()">容器全屏</button>
+<button id="fs-video" onclick="document.querySelector('#v').requestFullscreen()">video 全屏</button>

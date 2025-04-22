@@ -1,0 +1,18 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>pick</title>
+<style>
+    body { margin: 0 }
+    video { display: block; background: #000; margin: 8px }
+    #wrap { position: relative; width: 640px }
+    /* 播放器常见结构：控制层盖在 <video> 上面，点击落在它上面 */
+    #overlay { position: absolute; inset: 0 }
+    #far { margin-top: 3000px }
+</style>
+<div id="wrap">
+    <video id="big" width="640" height="360" src="silence.wav" preload="auto" muted></video>
+    <div id="overlay"></div>
+</div>
+<video id="small" width="200" height="112" src="silence.wav" preload="auto" muted></video>
+<video id="hidden" style="display:none" src="silence.wav" preload="auto" muted></video>
+<video id="far" width="800" height="450" src="silence.wav" preload="auto" muted></video>
