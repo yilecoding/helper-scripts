@@ -1,0 +1,61 @@
+/*
+ * page-to-markdown 测试。从仓库根目录运行：
+ *   NODE_PATH=/path/to/node_modules node page-to-markdown/test/run.cjs
+ */
+'use strict'
+
+const path = require('path')
+const h = require(path.join(__dirname, '../../tools/userscript-harness.cjs'))
+
+const SCRIPT = path.join(__dirname, '../page-to-markdown.user.js')
+const t = h.createRunner('page-to-markdown')
+
+/** 打开页面 → 触发菜单 → 返回剪贴板里的 Markdown。 */
+async function copyFrom(page, caption = '复制正文为 Markdown') {
+    await h.menu(page, caption)
+    const gm = await h.gm(page)
+    t.assert(gm.clipboard, '剪贴板为空')
+    return gm.clipboard.text
+}
+
+/** 断言 md 里包含片段（多行片段原样比对）。 */
+function has(md, frag) {
+    t.assert(md.includes(frag), `缺少片段：\n${frag}\n---- 实际输出 ----\n${md}`)
+}
+
+function hasNot(md, frag) {
+    t.assert(!md.includes(frag), `不应出现：\n${frag}\n---- 实际输出 ----\n${md}`)
+}
+
+;(async () => {
+    const { browser, base, close } = await h.setup(path.join(__dirname, 'fixtures'))
+    const open = async (file, opts) => {
+        const page = await browser.newPage()
+        await h.install(page, SCRIPT, opts)
+        await page.goto(base + '/' + file)
+        return page
+    }
+
+    await t.test('注册菜单', async () => {
+        const page = await open('basic.html')
+        const gm = await h.gm(page)
+        t.assert(gm.menu.includes('复制正文为 Markdown'), JSON.stringify(gm.menu))
+        await page.close()
+    })
+
+    await t.test('标题 / 段落 / 强调 / 链接 / br / hr', async () => {
+        const page = await open('basic.html')
+        const md = await copyFrom(page)
+        has(md, '# 一级标题\n\n')
+        has(md, '这是第一段，带 **加粗**、*强调* 和 [一个链接](' + base + '/docs/intro.html)。')
+        has(md, '## 二级 **标题**\n')
+        has(md, '第一行\\\n第二行')
+        has(md, '上一段\n\n用两个 br 分出来的下一段')
+        has(md, '\n\n---\n\n结尾。')
+        t.eq(h.errors(page).map(String), [])
+        await page.close()
+    })
+
+    await close()
+    t.done()
+})()
