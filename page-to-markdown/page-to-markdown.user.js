@@ -3,7 +3,7 @@
 // @name:zh-CN   网页正文转 Markdown|一键复制 / 下载干净的 Markdown
 // @name:en      Page to Markdown | Copy or download the article as clean Markdown
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.04.23.2
+// @version      2025.04.23.3
 // @description  把文章页的正文一键转成干净的 Markdown，复制到剪贴板或下载为 .md 文件。
 // @description:zh-CN  把文章页的正文一键转成干净的 Markdown，复制到剪贴板或下载为 .md 文件。
 // @description:en  Turn the main article of any web page into clean Markdown — copy it to the clipboard or download it as a .md file.
@@ -157,8 +157,61 @@
             const text = finishInline(inlineChildren(el, ctx)).replace(/\\?\n+/g, ' ');
             return text ? '#'.repeat(+tag[1]) + ' ' + text : '';
         }
-        if (tag === 'HR') return '---';
+        switch (tag) {
+            case 'HR': return '---';
+            case 'UL': case 'OL': return renderList(el, ctx);
+            case 'LI': return renderListItem(el, CONFIG.bullet, ctx); // 选区里截出来的孤儿 li
+            case 'BLOCKQUOTE': {
+                const inner = renderChildren(el, ctx).join('\n\n');
+                return inner ? inner.split('\n').map(l => (l ? '> ' + l : '>')).join('\n') : '';
+            }
+        }
         return renderChildren(el, ctx).join('\n\n');
+    }
+
+    function indent(s, n) {
+        const pad = ' '.repeat(n);
+        return s.split('\n').map(l => (l ? pad + l : l)).join('\n');
+    }
+
+    function renderList(el, ctx) {
+        const ordered = el.tagName === 'OL';
+        let n = ordered ? parseInt(el.getAttribute('start'), 10) : 1;
+        if (!Number.isFinite(n)) n = 1;
+        const items = [];
+        let lastWidth = 2;
+        for (const child of el.children) {
+            if (child.tagName === 'LI') {
+                const marker = ordered ? `${n++}.` : CONFIG.bullet;
+                const item = renderListItem(child, marker, ctx);
+                if (item) items.push(item);
+                lastWidth = marker.length + 1;
+            } else if (child.tagName === 'UL' || child.tagName === 'OL') {
+                // 不合规但很常见：<ul><li>a</li><ul>…</ul></ul>，子列表直接挂在 ul 下而不是 li 里
+                const sub = renderList(child, ctx);
+                if (!sub) continue;
+                if (items.length) items[items.length - 1] += '\n' + indent(sub, lastWidth);
+                else items.push(sub);
+            }
+        }
+        return items.join('\n');
+    }
+
+    /** 续行缩进 = 标记宽度（`- ` 2 格，`10. ` 4 格），少一格子列表就会被当成同级。 */
+    function renderListItem(li, marker, ctx) {
+        let task = '';
+        const cb = li.querySelector('input[type="checkbox"]');
+        if (cb && cb.closest('li') === li) {
+            task = cb.checked || cb.hasAttribute('checked') ? '[x] ' : '[ ] ';
+            cb.remove(); // 操作的是克隆，不影响页面
+        }
+        const blocks = renderChildren(li, ctx);
+        // 宽松列表（li 里有 <p>）项内各块之间空一行，紧凑列表只换行
+        const loose = [...li.children].some(c => c.tagName === 'P');
+        const body = blocks.join(loose ? '\n\n' : '\n');
+        const width = marker.length + 1;
+        if (!body) return task ? `${marker} ${task.trim()}` : '';
+        return `${marker} ${task}` + indent(body, width).slice(width);
     }
 
     function htmlToMarkdown(root) {
@@ -191,7 +244,7 @@
 
     const NOISE_SELECTOR = [
         'script', 'style', 'noscript', 'template', 'iframe', 'object', 'embed', 'canvas', 'svg',
-        'nav', 'aside', 'footer', 'form', 'button', 'select', 'textarea', 'input', 'label', 'dialog',
+        'nav', 'aside', 'footer', 'form', 'button', 'select', 'textarea', 'input:not([type="checkbox"])', 'label', 'dialog',
         '[role="navigation"]', '[role="complementary"]', '[role="dialog"]', '[hidden]',
         '.sr-only', '.visually-hidden', '.screen-reader-text',
         'ins.adsbygoogle', '[id^="div-gpt-ad"]', '[data-ad-slot]', '[data-ad]',

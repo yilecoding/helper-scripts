@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>列表与引用</title></head>
+<body>
+<article>
+  <h1>列表与引用</h1>
+  <ul>
+    <li>苹果</li>
+    <li>香蕉
+      <ul>
+        <li>小米蕉</li>
+        <li>皇帝蕉
+          <ol><li>产地一</li><li>产地二</li></ol>
+        </li>
+      </ul>
+    </li>
+    <li><strong>橙子</strong></li>
+  </ul>
+
+  <ol start="9">
+    <li>第九步</li>
+    <li>第十步
+      <ul><li>十的子项</li></ul>
+    </li>
+    <li>第十一步</li>
+  </ol>
+
+  <ul class="contains-task-list">
+    <li class="task-list-item"><input type="checkbox" disabled checked> 写测试</li>
+    <li class="task-list-item"><input type="checkbox" disabled> 写文档</li>
+  </ul>
+
+  <ul>
+    <li>外层</li>
+    <ul><li>直接挂在 ul 下的子列表</li></ul>
+  </ul>
+
+  <ul>
+    <li><p>宽松列表第一段。</p><p>宽松列表第二段。</p></li>
+    <li><p>第二项。</p></li>
+  </ul>
+
+  <blockquote>
+    <p>引用第一段。</p>
+    <blockquote><p>嵌套引用。</p></blockquote>
+    <ul><li>引用里的列表</li></ul>
+  </blockquote>
+</article>
+</body>
+</html>

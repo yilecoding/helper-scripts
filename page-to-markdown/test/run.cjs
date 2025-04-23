@@ -70,6 +70,33 @@ function hasNot(md, frag) {
         await page.close()
     })
 
+    await t.test('列表：无序 / 有序（start）/ 嵌套缩进 / 任务列表 / 不合规嵌套', async () => {
+        const page = await open('lists.html')
+        const md = await copyFrom(page)
+        has(md, [
+            '- 苹果',
+            '- 香蕉',
+            '  - 小米蕉',
+            '  - 皇帝蕉',
+            '    1. 产地一',
+            '    2. 产地二',
+            '- **橙子**',
+        ].join('\n'))
+        // 两位数序号的续行缩进 4 格
+        has(md, '9. 第九步\n10. 第十步\n    - 十的子项\n11. 第十一步')
+        has(md, '- [x] 写测试\n- [ ] 写文档')
+        has(md, '- 外层\n  - 直接挂在 ul 下的子列表')
+        has(md, '- 宽松列表第一段。\n\n  宽松列表第二段。\n- 第二项。')
+        await page.close()
+    })
+
+    await t.test('引用：多段 / 嵌套 / 引用里的列表', async () => {
+        const page = await open('lists.html')
+        const md = await copyFrom(page)
+        has(md, '> 引用第一段。\n>\n> > 嵌套引用。\n>\n> - 引用里的列表')
+        await page.close()
+    })
+
     await close()
     t.done()
 })()
