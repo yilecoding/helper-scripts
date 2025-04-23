@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>用 Rust 写一个 HTTP 服务器 - 某某技术博客</title>
+<style>.hide-me { display: none } .ghost { visibility: hidden }</style>
+</head>
+<body>
+<header class="site-header">
+  <nav class="navbar">
+    <a href="/">首页</a> <a href="/archive">归档</a> <a href="/tags">标签</a> <a href="/about">关于</a>
+  </nav>
+</header>
+
+<div class="layout">
+  <div class="main-column">
+    <div class="post-wrapper">
+      <h1 class="post-title">用 Rust 写一个 HTTP 服务器</h1>
+      <div class="post-meta"><a href="/u/zhang">张三</a> · <a href="/c/rust">Rust</a> · <a href="/t/http">HTTP</a></div>
+      <div class="post-body">
+        <p>很多人学 Rust 的第一个项目都是命令行工具，但写一个 HTTP 服务器能更快地接触到所有权、生命周期和并发这几个核心概念，而且每一步都能在浏览器里看到结果。</p>
+        <p>我们从标准库的 TcpListener 开始，不引入任何第三方依赖，先把请求行解析出来，再一步步加上路由、线程池和优雅退出。整篇文章大约需要一个小时，代码都可以直接复制运行。</p>
+        <div class="ad-banner"><a href="https://ads.example.com">点击领取云服务器优惠券</a></div>
+        <h2>监听端口</h2>
+        <p>TcpListener::bind 返回一个 Result，绑定失败通常是端口被占用，或者在没有权限的低端口上监听。这里直接 unwrap，生产代码里应该把错误向上传递，并打印出具体的地址。</p>
+        <script>window.trackRead && trackRead()</script>
+        <p class="hide-me">这段是隐藏的，不应该出现在结果里，因为它在页面上看不见。</p>
+        <p class="ghost">这段是 visibility hidden 的占位文字，也不应该出现。</p>
+        <p>每个连接交给线程池处理以后，主线程就可以继续 accept 下一个连接了。线程池的大小取决于你的机器，一般设置成 CPU 核数的两倍就足够应付这个示例。</p>
+        <div class="share-buttons"><a href="#wx">微信</a> <a href="#wb">微博</a> <a href="#tw">Twitter</a></div>
+      </div>
+    </div>
+
+    <section class="comments" id="comments">
+      <h3>评论（3）</h3>
+      <div class="comment"><p>写得很好，我照着做了一遍，在 Windows 上也能跑起来，不过需要把端口改成 8080，因为 80 端口需要管理员权限，另外防火墙会弹一次确认框，点允许就行了。</p></div>
+      <div class="comment"><p>请问线程池那部分为什么不用 tokio？我看很多教程都是直接上异步运行时的，这样写会不会性能比较差，有没有做过压测对比，想看看具体的数字和测试方法。</p></div>
+      <div class="comment"><p>楼上，作者说了不引入第三方依赖，先理解原理再用框架，这个顺序我觉得是对的，很多人一上来就用框架，出了问题根本不知道从哪里查起，最后只能到处问。</p></div>
+    </section>
+  </div>
+
+  <aside class="sidebar">
+    <div class="widget"><h3>热门文章</h3>
+      <ul><li><a href="/p/1">Go 并发模式详解，从入门到放弃再到入门</a></li><li><a href="/p/2">Python 装饰器的十种写法</a></li><li><a href="/p/3">一文读懂 TCP 三次握手与四次挥手</a></li></ul>
+    </div>
+    <div class="widget"><p>本站所有文章均为原创，转载请注明出处，商业转载请联系作者获得授权，非商业转载请保留原文链接与作者署名，谢谢合作。</p></div>
+  </aside>
+</div>
+
+<footer class="site-footer"><p>© 2026 某某技术博客，保留所有权利。本站由静态站点生成器构建，托管在某某云上，备案号略。</p></footer>
+</body>
+</html>

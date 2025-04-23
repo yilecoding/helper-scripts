@@ -56,6 +56,20 @@ function hasNot(md, frag) {
         await page.close()
     })
 
+    await t.test('正文提取：选中文章，排除导航 / 侧栏 / 评论 / 页脚 / 广告 / 隐藏元素', async () => {
+        const page = await open('article.html')
+        const md = await copyFrom(page)
+        has(md, '很多人学 Rust 的第一个项目都是命令行工具')
+        has(md, '## 监听端口')
+        has(md, '主线程就可以继续 accept 下一个连接了')
+        for (const noise of ['首页', '归档', '评论（3）', '写得很好', '热门文章', '本站所有文章均为原创', '保留所有权利',
+            '优惠券', 'trackRead', '这段是隐藏的', 'visibility hidden', '微博']) {
+            hasNot(md, noise)
+        }
+        t.eq(h.errors(page).map(String), [])
+        await page.close()
+    })
+
     await close()
     t.done()
 })()
