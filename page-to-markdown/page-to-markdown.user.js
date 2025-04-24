@@ -3,7 +3,7 @@
 // @name:zh-CN   网页正文转 Markdown|一键复制 / 下载干净的 Markdown
 // @name:en      Page to Markdown | Copy or download the article as clean Markdown
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.04.23.3
+// @version      2025.04.24.4
 // @description  把文章页的正文一键转成干净的 Markdown，复制到剪贴板或下载为 .md 文件。
 // @description:zh-CN  把文章页的正文一键转成干净的 Markdown，复制到剪贴板或下载为 .md 文件。
 // @description:en  Turn the main article of any web page into clean Markdown — copy it to the clipboard or download it as a .md file.
@@ -94,6 +94,8 @@
                 return wrap(inlineChildren(el, ctx), '**');
             case 'EM': case 'I':
                 return wrap(inlineChildren(el, ctx), '*');
+            case 'CODE': case 'KBD': case 'SAMP': case 'TT':
+                return codeSpan(el.textContent);
             case 'A': {
                 const text = inlineChildren(el, ctx).trim();
                 const href = el.getAttribute('href');
@@ -161,12 +163,95 @@
             case 'HR': return '---';
             case 'UL': case 'OL': return renderList(el, ctx);
             case 'LI': return renderListItem(el, CONFIG.bullet, ctx); // 选区里截出来的孤儿 li
+            case 'PRE': return renderCodeBlock(el);
             case 'BLOCKQUOTE': {
                 const inner = renderChildren(el, ctx).join('\n\n');
                 return inner ? inner.split('\n').map(l => (l ? '> ' + l : '>')).join('\n') : '';
             }
         }
         return renderChildren(el, ctx).join('\n\n');
+    }
+
+    /** 内容里有反引号就用更长的围栏，且贴边的反引号要用空格隔开。 */
+    function codeSpan(text) {
+        text = text.replace(/\s+/g, ' ');
+        if (!text.trim()) return text;
+        const longest = Math.max(0, ...(text.match(/`+/g) || []).map(r => r.length));
+        const fence = '`'.repeat(longest + 1);
+        const pad = /^`|`$/.test(text) ? ' ' : '';
+        return fence + pad + text + pad + fence;
+    }
+
+    /*
+     * 行号。各家高亮器把行号塞进 <pre> 的方式都不一样，textContent 会把它们和代码拼在一起：
+     *   Prism line-numbers   <code> 里多一个 span.line-numbers-rows（空 span，但删掉更稳）
+     *   highlightjs-line-numbers  table.hljs-ln，每行 td.hljs-ln-numbers + td.hljs-ln-code
+     *   CSDN                 <pre> 里多一个 ul.pre-numbering
+     *   Hexo / Pygments      外层 table，td.gutter / td.linenos 是一整个装行号的 <pre>
+     */
+    const GUTTER_SELECTOR = [
+        '.line-numbers-rows', '.hljs-ln-numbers', '.pre-numbering', 'td.gutter', 'td.linenos',
+        '.linenodiv', 'span.linenos', 'span.lineno', '.line-number', '.code-line-number',
+    ].join(',');
+
+    /** <pre> 的文本：<br> 和逐行的块元素（div/p/li/tr）都要变成换行，只取 textContent 会把行粘在一起。 */
+    function preText(pre) {
+        let out = '';
+        const walk = node => {
+            for (const c of node.childNodes) {
+                if (c.nodeType === 3) {
+                    out += c.data;
+                } else if (c.nodeType === 1) {
+                    if (c.tagName === 'BR') { out += '\n'; continue; }
+                    if (c.matches(GUTTER_SELECTOR) || SKIP_TAGS.has(c.tagName)) continue;
+                    walk(c);
+                    if (/^(DIV|P|LI|TR)$/.test(c.tagName) && out && !out.endsWith('\n')) out += '\n';
+                }
+            }
+        };
+        walk(pre);
+        return out.replace(/\u00a0/g, ' ').replace(/^\n+|\s+$/g, '');
+    }
+
+    const LANG_STOP = new Set([
+        'hljs', 'highlight', 'highlighter-rouge', 'line-numbers', 'linenums', 'prettyprint', 'notranslate',
+        'code', 'source', 'sourcecode', 'codehilite', 'wrap', 'nowrap', 'copyable', 'block', 'pre', 'default',
+    ]);
+    const LANG_NONE = new Set(['none', 'nohighlight', 'plaintext', 'plain', 'text', 'txt']);
+
+    function langFromEl(el) {
+        const attr = el.getAttribute('data-lang') || el.getAttribute('data-language');
+        if (attr) return attr;
+        const cls = typeof el.className === 'string' ? el.className : '';
+        if (!cls) return '';
+        const m = cls.match(/(?:^|\s)(?:language|lang|highlight-source)-([\w+#.-]+)/) || cls.match(/brush:\s*([\w+#-]+)/);
+        if (m) return m[1];
+        // `hljs python`、`highlight js`、`sourceCode python`：标记类旁边那个就是语言
+        if (/(^|\s)(hljs|highlight|sourceCode)(\s|$)/.test(cls)) {
+            const tok = cls.split(/\s+/).find(t => t && !LANG_STOP.has(t.toLowerCase()) && !/^hljs-/.test(t) && /^[a-z][\w+#.-]{0,19}$/i.test(t));
+            if (tok) return tok;
+        }
+        return '';
+    }
+
+    function detectLang(pre) {
+        const cands = [pre.querySelector('code'), pre];
+        // 往上找几层：Hexo 的语言在 figure.highlight 上，中间隔着 table/tbody/tr/td
+        for (let p = pre.parentElement, i = 0; p && i < 5; p = p.parentElement, i++) cands.push(p);
+        for (const el of cands) {
+            if (!el) continue;
+            const lang = langFromEl(el).toLowerCase();
+            if (lang) return LANG_NONE.has(lang) ? '' : lang;
+        }
+        return '';
+    }
+
+    function renderCodeBlock(pre) {
+        const code = preText(pre);
+        if (!code.trim()) return '';
+        const longest = Math.max(0, ...(code.match(/`{3,}/g) || []).map(r => r.length));
+        const fence = longest >= CONFIG.fence.length ? '`'.repeat(longest + 1) : CONFIG.fence;
+        return `${fence}${detectLang(pre)}\n${code}\n${fence}`;
     }
 
     function indent(s, n) {
@@ -395,6 +480,7 @@
     function cleanTree(root) {
         for (const el of root.querySelectorAll('[data-p2md-hidden]')) el.remove();
         for (const el of root.querySelectorAll(NOISE_SELECTOR)) el.remove();
+        for (const el of root.querySelectorAll(GUTTER_SELECTOR)) el.remove();
         for (const el of root.querySelectorAll('[aria-hidden="true"]')) {
             // 装饰图标 / 标题锚点常带 aria-hidden；内容大的不删（有站点在弹窗打开时给整个 main 挂它）
             if (normText(el).length < 100 && !el.querySelector('img')) el.remove();

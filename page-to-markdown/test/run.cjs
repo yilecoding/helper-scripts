@@ -97,6 +97,29 @@ function hasNot(md, frag) {
         await page.close()
     })
 
+    await t.test('行内代码：反引号围栏', async () => {
+        const page = await open('code.html')
+        const md = await copyFrom(page)
+        has(md, '行内代码 `npm install`，带反引号的 ``a `b` c``，按键 `Ctrl`。')
+        await page.close()
+    })
+
+    await t.test('代码块：推断语言 + 去掉行号', async () => {
+        const page = await open('code.html')
+        const md = await copyFrom(page)
+        has(md, '```js\nconst a = 1;\nconst b = 2;\n```')                // Prism line-numbers
+        has(md, '```python\ndef f(x):\n    return x * 2\n```')         // hljs + hljs-ln 表格
+        has(md, '```\nSELECT 1;\nSELECT 2;\n```')                       // CSDN pre-numbering
+        has(md, '```go\npackage main\nfunc main() {}\n```')              // Hexo figure.highlight + gutter
+        has(md, '```rust\nfn main() {\n    println!("hi");\n}\n```')    // GitHub highlight-source-*
+        has(md, '```bash\necho 1\n```')                                  // pandoc sourceCode
+        has(md, '```toml\n[package]\nname = "demo"\n```')               // data-lang + 每行一个 div
+        has(md, '````markdown\n```js\nx\n```\n````')                   // 内容里有 ``` 时加长围栏
+        has(md, '```\nplain   text\n```')                                // plaintext 不写语言，空格原样保留
+        hasNot(md, '\n1\n2\n')
+        await page.close()
+    })
+
     await close()
     t.done()
 })()
