@@ -3,7 +3,7 @@
 // @name:zh-CN   网页正文转 Markdown|一键复制 / 下载干净的 Markdown
 // @name:en      Page to Markdown | Copy or download the article as clean Markdown
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.04.24.4
+// @version      2025.04.25.5
 // @description  把文章页的正文一键转成干净的 Markdown，复制到剪贴板或下载为 .md 文件。
 // @description:zh-CN  把文章页的正文一键转成干净的 Markdown，复制到剪贴板或下载为 .md 文件。
 // @description:en  Turn the main article of any web page into clean Markdown — copy it to the clipboard or download it as a .md file.
@@ -164,6 +164,7 @@
             case 'UL': case 'OL': return renderList(el, ctx);
             case 'LI': return renderListItem(el, CONFIG.bullet, ctx); // 选区里截出来的孤儿 li
             case 'PRE': return renderCodeBlock(el);
+            case 'TABLE': return renderTable(el, ctx);
             case 'BLOCKQUOTE': {
                 const inner = renderChildren(el, ctx).join('\n\n');
                 return inner ? inner.split('\n').map(l => (l ? '> ' + l : '>')).join('\n') : '';
@@ -252,6 +253,52 @@
         const longest = Math.max(0, ...(code.match(/`{3,}/g) || []).map(r => r.length));
         const fence = longest >= CONFIG.fence.length ? '`'.repeat(longest + 1) : CONFIG.fence;
         return `${fence}${detectLang(pre)}\n${code}\n${fence}`;
+    }
+
+    /*
+     * GFM 表格。单元格里的 `|` 必须转义成 `\|` —— 连行内代码里的也要，因为 GFM 是先按 `|` 切列
+     * 再解析行内语法的；换行只能写成 <br>，否则整行表格断掉。
+     * 带 <pre>、嵌套表格或只有一列的表格多半是排版用的（Hexo 代码块、老站布局），直接展开内容。
+     */
+    function renderTable(table, ctx) {
+        const rows = [...table.rows];
+        if (!rows.length) return '';
+        const isLayout = table.querySelector('pre, table') || rows.every(r => r.cells.length <= 1);
+        if (isLayout) return renderChildren(table, ctx).join('\n\n');
+
+        const grid = [];
+        const align = [];
+        for (const tr of rows) {
+            const cells = [];
+            for (const td of tr.cells) {
+                if (grid.length === 0) align[cells.length] = cellAlign(td);
+                cells.push(cellText(td, ctx));
+                const span = Math.min(parseInt(td.getAttribute('colspan'), 10) || 1, 50);
+                for (let i = 1; i < span; i++) cells.push('');
+            }
+            grid.push(cells);
+        }
+        const cols = Math.max(...grid.map(r => r.length));
+        const line = cells => '| ' + Array.from({ length: cols }, (_, i) => cells[i] || '').join(' | ') + ' |';
+        const sep = Array.from({ length: cols }, (_, i) => {
+            const a = align[i];
+            return a === 'center' ? ':---:' : a === 'right' ? '---:' : a === 'left' ? ':---' : '---';
+        });
+        // 没有 thead 也只能拿第一行当表头，GFM 表格必须有表头
+        return [line(grid[0]), '| ' + sep.join(' | ') + ' |', ...grid.slice(1).map(line)].join('\n');
+    }
+
+    function cellAlign(td) {
+        const a = (td.getAttribute('align') || td.style.textAlign || '').toLowerCase();
+        return /^(left|center|right)$/.test(a) ? a : '';
+    }
+
+    function cellText(td, ctx) {
+        return renderChildren(td, ctx).join('\n')
+            .replace(/\\\n/g, '<br>')
+            .replace(/\n+/g, '<br>')
+            .replace(/\|/g, '\\|')
+            .trim();
     }
 
     function indent(s, n) {
@@ -435,6 +482,12 @@
         // 只有一个孩子的包装层往上提，保证兄弟合并时能看到真正的兄弟
         while (top.parentElement && top.parentElement !== doc.body && top.parentElement.children.length === 1) {
             top = top.parentElement;
+        }
+        // 页面作者已经用唯一的 <article> 标出了正文时信它：正文短、表格多的页面，
+        // 最高分常常落在 article 里的某个单元格上，兄弟合并又捞不回分数低的表格和列表
+        const art = top.closest('article, [itemprop="articleBody"]');
+        if (art && art !== top && doc.querySelectorAll('article').length <= 1 && !unlikely(art) && linkDensity(art) < 0.5) {
+            top = art;
         }
         const parent = top.parentElement;
         if (!parent) return [top];

@@ -120,6 +120,23 @@ function hasNot(md, frag) {
         await page.close()
     })
 
+    await t.test('表格：GFM、对齐、| 与换行转义、colspan、单元格里的块', async () => {
+        const page = await open('tables.html')
+        const md = await copyFrom(page)
+        has(md, [
+            '| 命令 | 说明 | 耗时 |',
+            '| --- | :---: | ---: |',
+            '| `a \\| b` | 管道：把 a 的输出 \\| 交给 b | 1s |',
+            '| 多行 | 第一行<br>第二行 | [链接](' + base + '/t) |',
+            '| 跨两列 |  | 3s |',
+            '| 段落一<br>段落二 |  | - |',
+        ].join('\n'))
+        has(md, '| 无表头 A | 无表头 B |\n| --- | --- |\n| 1 | 2 |')
+        has(md, '\n排版用的单列表格，内容应该直接展开成段落。')
+        hasNot(md, '| 排版用的')
+        await page.close()
+    })
+
     await close()
     t.done()
 })()
