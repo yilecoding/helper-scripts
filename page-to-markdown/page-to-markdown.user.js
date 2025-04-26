@@ -3,7 +3,7 @@
 // @name:zh-CN   网页正文转 Markdown|一键复制 / 下载干净的 Markdown
 // @name:en      Page to Markdown | Copy or download the article as clean Markdown
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.04.25.5
+// @version      2025.04.26.6
 // @description  把文章页的正文一键转成干净的 Markdown，复制到剪贴板或下载为 .md 文件。
 // @description:zh-CN  把文章页的正文一键转成干净的 Markdown，复制到剪贴板或下载为 .md 文件。
 // @description:en  Turn the main article of any web page into clean Markdown — copy it to the clipboard or download it as a .md file.
@@ -96,16 +96,84 @@
                 return wrap(inlineChildren(el, ctx), '*');
             case 'CODE': case 'KBD': case 'SAMP': case 'TT':
                 return codeSpan(el.textContent);
-            case 'A': {
-                const text = inlineChildren(el, ctx).trim();
-                const href = el.getAttribute('href');
-                if (!href || /^javascript:/i.test(href)) return text;
-                if (!text) return '';
-                return `[${text}](${absUrl(href)})`;
+            case 'DEL': case 'S': case 'STRIKE':
+                return wrap(inlineChildren(el, ctx), '~~');
+            case 'SUP': case 'SUB': {
+                const t = inlineChildren(el, ctx).trim();
+                return t ? `<${tag.toLowerCase()}>${t}</${tag.toLowerCase()}>` : '';
             }
-            default:
-                return inlineChildren(el, ctx);
+            case 'IMG':
+                return renderImage(el);
+            case 'A':
+                return renderLink(el, ctx);
+            default: {
+                const inner = inlineChildren(el, ctx);
+                // 块元素被压进行内（链接卡片里的 <h3><p>）时，前后补空格，别把字粘在一起
+                return BLOCK_TAGS.has(tag) ? ' ' + inner + ' ' : inner;
+            }
         }
+    }
+
+    /** 括号和空格编码掉：维基百科那种 `Foo_(bar)` 的地址放进 `(...)` 里会提前截断。 */
+    function fmtUrl(u) {
+        return u.replace(/[()\s<>]/g, c => '%' + c.charCodeAt(0).toString(16).toUpperCase().padStart(2, '0'));
+    }
+
+    function fmtTitle(t) {
+        t = (t || '').replace(/\s+/g, ' ').trim();
+        return t ? ` "${t.replace(/["\\]/g, '\\$&')}"` : '';
+    }
+
+    function renderLink(el, ctx) {
+        const text = inlineChildren(el, ctx).trim();
+        const href = el.getAttribute('href');
+        if (!href || /^(javascript|data|vbscript):/i.test(href.trim())) return text;
+        if (!text) return '';
+        const url = absUrl(href);
+        if (normText(el) === url && /^https?:/i.test(url)) return `<${url}>`;
+        return `[${text}](${fmtUrl(url)}${fmtTitle(el.getAttribute('title'))})`;
+    }
+
+    /*
+     * 懒加载图片：真地址在 data-src 一类属性里，src 是 1×1 占位图（往往是 data: URI）。
+     * 所以先看 data-*，再看 srcset（取最大的那张），最后才是 src。
+     */
+    const LAZY_ATTRS = ['data-src', 'data-original', 'data-lazy-src', 'data-actualsrc', 'data-original-src', 'data-url', 'data-lazyload'];
+
+    function bestFromSrcset(srcset) {
+        let best = null;
+        let bestW = -1;
+        // URL 里可能有逗号（cloudinary 的 w_100,h_100），不能按裸逗号切：
+        // URL 贪婪吃到空白为止，只有它后面（或描述符后面）的逗号才是分隔符
+        const re = /\s*([^\s,]\S*)(?:\s+([\d.]+)([wx]))?\s*(?:,|$)/g;
+        let m;
+        while ((m = re.exec(srcset)) && m[0]) {
+            const w = m[2] ? parseFloat(m[2]) * (m[3] === 'x' ? 1000 : 1) : 0;
+            if (w > bestW) { best = m[1]; bestW = w; }
+        }
+        return best;
+    }
+
+    function imageSrc(img) {
+        for (const a of LAZY_ATTRS) {
+            const v = img.getAttribute(a);
+            if (v && !/^data:/i.test(v.trim())) return absUrl(v.trim());
+        }
+        const srcset = img.getAttribute('data-srcset') || img.getAttribute('srcset');
+        if (srcset) {
+            const best = bestFromSrcset(srcset);
+            if (best) return absUrl(best);
+        }
+        const src = (img.getAttribute('src') || '').trim();
+        if (!src || (/^data:/i.test(src) && src.length < 200)) return ''; // 占位小图
+        return /^data:/i.test(src) ? src : absUrl(src);
+    }
+
+    function renderImage(img) {
+        const src = imageSrc(img);
+        if (!src) return '';
+        const alt = (img.getAttribute('alt') || '').replace(/\s+/g, ' ').trim().replace(/[[\]\\]/g, '\\$&');
+        return `![${alt}](${fmtUrl(src)}${fmtTitle(img.getAttribute('title'))})`;
     }
 
     function inlineChildren(el, ctx) {
@@ -165,6 +233,7 @@
             case 'LI': return renderListItem(el, CONFIG.bullet, ctx); // 选区里截出来的孤儿 li
             case 'PRE': return renderCodeBlock(el);
             case 'TABLE': return renderTable(el, ctx);
+            case 'A': return finishInline(renderLink(el, ctx)); // 包着块元素的链接（卡片）压成一行
             case 'BLOCKQUOTE': {
                 const inner = renderChildren(el, ctx).join('\n\n');
                 return inner ? inner.split('\n').map(l => (l ? '> ' + l : '>')).join('\n') : '';

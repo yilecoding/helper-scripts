@@ -137,6 +137,33 @@ function hasNot(md, frag) {
         await page.close()
     })
 
+    await t.test('链接与图片：转绝对 URL、懒加载 data-src / srcset、标题、自动链接', async () => {
+        // 模拟真实域名，看相对地址是不是按页面地址解析
+        const page = await browser.newPage()
+        await h.install(page, SCRIPT)
+        const html = require('fs').readFileSync(path.join(__dirname, 'fixtures/links.html'), 'utf8')
+        await page.route(/^https?:\/\//, r => r.abort()) // 测试不出网；后注册的路由优先
+        await page.route('https://blog.example.com/**', r => r.fulfill({ contentType: 'text/html; charset=utf-8', body: html }))
+        await page.goto('https://blog.example.com/posts/2026/hello.html')
+        const md = await copyFrom(page)
+        has(md, '相对链接 [关于](https://blog.example.com/posts/about.html)')
+        has(md, '根相对 [标签](https://blog.example.com/tags/rust)')
+        has(md, '锚点 [第二节](https://blog.example.com/posts/2026/hello.html#sec-2)')
+        has(md, '带标题 [示例](https://example.org/ "示例 \\"站\\"")')
+        has(md, '自动链接 <https://example.org/path>')
+        has(md, '维基 [Rust](https://en.wikipedia.org/wiki/Rust_%28programming_language%29)')
+        has(md, '脚本 点我，删除线 ~~旧~~~~价~~，上标 x<sup>2</sup>。')
+        has(md, '![封面 \\[大图\\]](https://blog.example.com/posts/2026/img/cover.png)')
+        has(md, '![懒加载](https://blog.example.com/uploads/lazy.jpg)')
+        has(md, '![srcset](https://cdn.example.com/w_800,h_600/l.jpg)')
+        has(md, '![知乎](https://pic.example.com/zhihu.jpg)')
+        has(md, '[![缩略图](https://blog.example.com/thumb.png "点开看大图")](https://blog.example.com/big.png)')
+        has(md, '\n[卡片标题 卡片摘要](https://blog.example.com/p/42)\n')
+        has(md, '空链接 不输出。')
+        hasNot(md, 'data:image')
+        await page.close()
+    })
+
     await close()
     t.done()
 })()
