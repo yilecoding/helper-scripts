@@ -3,7 +3,7 @@
 // @name:zh-CN   网页正文转 Markdown|一键复制 / 下载干净的 Markdown
 // @name:en      Page to Markdown | Copy or download the article as clean Markdown
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.04.26.6
+// @version      2025.04.28.7
 // @description  把文章页的正文一键转成干净的 Markdown，复制到剪贴板或下载为 .md 文件。
 // @description:zh-CN  把文章页的正文一键转成干净的 Markdown，复制到剪贴板或下载为 .md 文件。
 // @description:en  Turn the main article of any web page into clean Markdown — copy it to the clipboard or download it as a .md file.
@@ -11,6 +11,7 @@
 // @match        *://*/*
 // @grant        GM_registerMenuCommand
 // @grant        GM_setClipboard
+// @grant        GM_download
 // @license      CC BY-NC-SA
 // @run-at       document-idle
 // @noframes
@@ -36,6 +37,9 @@
         bullet: '-',        // 无序列表标记
         fence: '```',       // 代码块围栏
         toastMs: 2500,      // 提示条停留时间
+        frontMatter: true,  // 顶部加 YAML front-matter（title / url / author / date / captured）
+        titleHeading: true, // 正文里没有 h1 时在开头补一个 `# 标题`
+        maxNameLen: 80,     // 下载文件名最长字符数（不含 .md）
     };
 
     // =========================================================================
@@ -620,6 +624,129 @@
     }
 
     // =========================================================================
+    // 输出：front-matter / 文件名 / 下载
+    // =========================================================================
+
+    /** JSON-LD 里的 Article（可能套在数组或 @graph 里）。 */
+    function jsonLdArticle() {
+        for (const s of document.querySelectorAll('script[type="application/ld+json"]')) {
+            let data;
+            try { data = JSON.parse(s.textContent); } catch (e) { continue; }
+            const stack = [data];
+            while (stack.length) {
+                const o = stack.pop();
+                if (!o || typeof o !== 'object') continue;
+                if (Array.isArray(o)) { stack.push(...o); continue; }
+                if (o['@graph']) stack.push(o['@graph']);
+                const type = [].concat(o['@type'] || []).join(' ');
+                if (/Article|BlogPosting|Report|Posting/.test(type) || o.headline) return o;
+            }
+        }
+        return {};
+    }
+
+    function ldAuthor(a) {
+        if (!a) return '';
+        if (typeof a === 'string') return a;
+        if (Array.isArray(a)) return a.map(ldAuthor).filter(Boolean).join(', ');
+        return a.name || '';
+    }
+
+    function pageMeta() {
+        const pick = sel => {
+            const el = document.querySelector(sel);
+            if (!el) return '';
+            return (el.getAttribute('content') || el.getAttribute('datetime') || el.textContent || '').replace(/\s+/g, ' ').trim();
+        };
+        const ld = jsonLdArticle();
+        // article:author 经常是作者主页 URL，不是名字
+        const ogAuthor = pick('meta[property="article:author"]');
+        return {
+            title: pick('meta[property="og:title"]') || (typeof ld.headline === 'string' ? ld.headline : '') ||
+                document.title.trim() || pick('h1'),
+            url: location.href,
+            author: pick('meta[name="author"]') || ldAuthor(ld.author) || (/^https?:/.test(ogAuthor) ? '' : ogAuthor) ||
+                pick('[itemprop="author"] [itemprop="name"]') || pick('[rel="author"]'),
+            date: pick('meta[property="article:published_time"]') || ld.datePublished ||
+                pick('meta[itemprop="datePublished"]') || pick('meta[name="publishdate"]') || pick('meta[name="pubdate"]') ||
+                pick('meta[name="date"]') || pick('time[datetime]'),
+        };
+    }
+
+    /** 本地时间带时区偏移，toISOString() 是 UTC，读起来差 8 小时。 */
+    function localIso(d = new Date()) {
+        const pad = n => String(Math.abs(n)).padStart(2, '0');
+        const off = -d.getTimezoneOffset();
+        return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}` +
+            `${off >= 0 ? '+' : '-'}${pad(Math.floor(Math.abs(off) / 60))}:${pad(Math.abs(off) % 60)}`;
+    }
+
+    /** 一律加双引号：标题里的 `: `、`#`、开头的 `[` 都会让不加引号的 YAML 解析出错。 */
+    function yamlStr(s) {
+        return '"' + String(s).replace(/[\u0000-\u001f]/g, ' ').replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"';
+    }
+
+    /** hasH1 看 DOM 而不是在 Markdown 里搜 `# `：代码块里的 shell 注释也是 `# ` 开头。 */
+    function buildDocument(body, meta, hasH1) {
+        let out = body.trim();
+        if (CONFIG.titleHeading && meta.title && !hasH1) {
+            out = '# ' + escapeText(meta.title.replace(/\s+/g, ' ')) + '\n\n' + out;
+        }
+        if (CONFIG.frontMatter) {
+            const fm = ['---', `title: ${yamlStr(meta.title)}`, `url: ${yamlStr(meta.url)}`];
+            if (meta.author) fm.push(`author: ${yamlStr(meta.author)}`);
+            if (meta.date) fm.push(`date: ${yamlStr(meta.date)}`);
+            fm.push(`captured: ${yamlStr(localIso())}`, '---');
+            out = fm.join('\n') + '\n\n' + out;
+        }
+        return out + '\n';
+    }
+
+    /** Windows 非法字符、控制字符、首尾的点和空格、保留设备名（CON、NUL…）都要处理。 */
+    function safeFileName(s) {
+        let n = String(s || '').replace(/[\\/:*?"<>|\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ')
+            .replace(/^[.\s]+|[.\s]+$/g, '');
+        // 按码点截断，别把 emoji 的代理对切成半个
+        if ([...n].length > CONFIG.maxNameLen) n = [...n].slice(0, CONFIG.maxNameLen).join('').replace(/[.\s]+$/, '');
+        if (/^(con|prn|aux|nul|com\d|lpt\d)$/i.test(n)) n += '_';
+        return n || 'page';
+    }
+
+    /*
+     * 先走 GM_download，失败再退回 <a download>。
+     * Tampermonkey 的 GM_download 受「下载」设置里的扩展名白名单约束（.md 未必在内），被拒是回调 onerror
+     * 而不是抛异常，所以退路挂在 onerror 和 catch 两处（未在真实 Tampermonkey 上实测被拒的情形）。
+     * Blob URL 延迟回收：GM_download 是异步取数据的，立即 revoke 会下载到空文件。
+     */
+    function downloadText(text, name) {
+        const url = URL.createObjectURL(new Blob([text], { type: 'text/markdown;charset=utf-8' }));
+        setTimeout(() => URL.revokeObjectURL(url), 60000);
+        const viaAnchor = () => {
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = name;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+        };
+        if (typeof GM_download === 'function') {
+            try {
+                GM_download({
+                    url, name,
+                    onerror: e => {
+                        console.warn(TAG, 'GM_download 失败，改用 <a download>：', e && (e.error || e));
+                        viaAnchor();
+                    },
+                });
+                return;
+            } catch (e) {
+                console.warn(TAG, 'GM_download 不可用：', e);
+            }
+        }
+        viaAnchor();
+    }
+
+    // =========================================================================
     // 界面：提示条
     // =========================================================================
 
@@ -641,12 +768,35 @@
     // 入口
     // =========================================================================
 
-    function copyMarkdown() {
-        const md = htmlToMarkdown(cloneForConvert(findContent()));
-        GM_setClipboard(md, 'text');
-        toast(`已复制 Markdown（${md.length} 字）`);
-        console.log(TAG, '已复制', md.length, '字');
+    /** 转换并输出。action: 'copy' | 'download'。 */
+    function output(root, action) {
+        const body = htmlToMarkdown(root);
+        if (!body.trim()) {
+            toast('没有提取到内容');
+            return;
+        }
+        const meta = pageMeta();
+        const md = buildDocument(body, meta, !!root.querySelector('h1'));
+        if (action === 'download') {
+            const name = safeFileName(meta.title) + '.md';
+            downloadText(md, name);
+            toast(`已下载 ${name}`);
+        } else {
+            GM_setClipboard(md, 'text');
+            toast(`已复制 Markdown（${md.length} 字）`);
+        }
+        console.log(TAG, action, md.length, '字');
     }
 
-    GM_registerMenuCommand('复制正文为 Markdown', copyMarkdown);
+    function convertPage(action) {
+        try {
+            output(cloneForConvert(findContent()), action);
+        } catch (e) {
+            console.error(TAG, e);
+            toast('转换失败：' + e.message);
+        }
+    }
+
+    GM_registerMenuCommand('复制正文为 Markdown', () => convertPage('copy'));
+    GM_registerMenuCommand('下载正文为 Markdown', () => convertPage('download'));
 })();

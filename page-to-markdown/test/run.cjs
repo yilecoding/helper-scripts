@@ -39,7 +39,7 @@ function hasNot(md, frag) {
     await t.test('注册菜单', async () => {
         const page = await open('basic.html')
         const gm = await h.gm(page)
-        t.assert(gm.menu.includes('复制正文为 Markdown'), JSON.stringify(gm.menu))
+        t.eq(gm.menu, ['复制正文为 Markdown', '下载正文为 Markdown'])
         await page.close()
     })
 
@@ -161,6 +161,37 @@ function hasNot(md, frag) {
         has(md, '\n[卡片标题 卡片摘要](https://blog.example.com/p/42)\n')
         has(md, '空链接 不输出。')
         hasNot(md, 'data:image')
+        await page.close()
+    })
+
+    await t.test('front-matter：og:title / JSON-LD 作者 / 发布时间 / 抓取时间，标题补成 h1', async () => {
+        const page = await open('meta.html')
+        const md = await copyFrom(page)
+        const lines = md.split('\n')
+        t.eq(lines.slice(0, 5), [
+            '---',
+            'title: "C++ / Rust: 谁更快？\\"实测\\" <2026>|*"',
+            'url: "' + base + '/meta.html"',
+            'author: "李四, 王五"',
+            'date: "2026-10-01T08:00:00+08:00"',
+        ])
+        t.assert(/^captured: "\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d[+-]\d\d:\d\d"$/.test(lines[5]), lines[5])
+        t.eq(lines[6], '---')
+        // 正文没有 h1 → 补一个；代码块里的 `# 先装依赖` 不能被当成 h1
+        has(md, '---\n\n# C++ / Rust: 谁更快？"实测" <2026>|\\*\n\n## 性能对比')
+        has(md, '```bash\n# 先装依赖\ncargo build --release\n```')
+        await page.close()
+    })
+
+    await t.test('下载：文件名去非法字符，内容与复制一致', async () => {
+        const page = await open('meta.html')
+        await h.menu(page, '下载正文为 Markdown')
+        const gm = await h.gm(page)
+        t.eq(gm.downloads.length, 1)
+        t.eq(gm.downloads[0].name, 'C++ Rust 谁更快？ 实测 2026.md')
+        const text = await page.evaluate(u => fetch(u).then(r => r.text()), gm.downloads[0].url)
+        has(text, 'title: "C++ / Rust: 谁更快？')
+        has(text, '这篇文章用同一组基准测试比较了两种语言')
         await page.close()
     })
 
