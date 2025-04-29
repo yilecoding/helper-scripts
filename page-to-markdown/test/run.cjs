@@ -39,7 +39,7 @@ function hasNot(md, frag) {
     await t.test('注册菜单', async () => {
         const page = await open('basic.html')
         const gm = await h.gm(page)
-        t.eq(gm.menu, ['复制正文为 Markdown', '下载正文为 Markdown'])
+        t.eq(gm.menu, ['复制正文为 Markdown', '下载正文为 Markdown', '手动选择区域'])
         await page.close()
     })
 
@@ -192,6 +192,92 @@ function hasNot(md, frag) {
         const text = await page.evaluate(u => fetch(u).then(r => r.text()), gm.downloads[0].url)
         has(text, 'title: "C++ / Rust: 谁更快？')
         has(text, '这篇文章用同一组基准测试比较了两种语言')
+        await page.close()
+    })
+
+    await t.test('有选中文本时优先转换选区', async () => {
+        const page = await open('article.html')
+        await page.evaluate(() => {
+            const p = [...document.querySelectorAll('.post-body p')][1]
+            const r = document.createRange()
+            r.setStart(p.firstChild, 0)
+            r.setEnd(p.firstChild, 28)
+            getSelection().removeAllRanges()
+            getSelection().addRange(r)
+        })
+        const md = await copyFrom(page)
+        has(md, '\n我们从标准库的 TcpListener 开始，不引入任何\n')
+        hasNot(md, '很多人学 Rust')
+        hasNot(md, '监听端口')
+        await page.close()
+    })
+
+    await t.test('选区落在代码块里：补回 pre 外壳和语言', async () => {
+        const page = await open('code.html')
+        await page.evaluate(() => {
+            const code = document.querySelector('pre.language-js code')
+            const r = document.createRange()
+            r.setStart(code.firstChild, 0)
+            r.setEnd(code.firstChild, 20)
+            getSelection().removeAllRanges()
+            getSelection().addRange(r)
+        })
+        const md = await copyFrom(page)
+        has(md, '```js\nconst a = 1;\nconst b\n```')
+        await page.close()
+    })
+
+    /** 鼠标移到元素中心。 */
+    async function hover(page, selector) {
+        const box = await page.locator(selector).first().boundingBox()
+        const x = box.x + box.width / 2, y = box.y + Math.min(box.height / 2, 10)
+        await page.mouse.move(x, y)
+        return { x, y }
+    }
+
+    await t.test('手动选区：悬停 + 点击转换该元素，链接不跳转', async () => {
+        const page = await open('article.html')
+        await h.menu(page, '手动选择区域')
+        t.assert(await page.locator('[data-p2md-picker]').count() === 1, '没有出现高亮层')
+        const pt = await hover(page, '.navbar a')
+        await page.mouse.click(pt.x, pt.y)
+        const gm = await h.gm(page)
+        t.eq(page.url(), base + '/article.html', '点击被页面当成了导航')
+        has(gm.clipboard.text, '[首页](' + base + '/)')
+        hasNot(gm.clipboard.text, '很多人学 Rust')
+        t.eq(await page.locator('[data-p2md-picker]').count(), 0, '转换后应退出选区模式')
+        await page.close()
+    })
+
+    await t.test('手动选区：↑ / 滚轮 扩到父元素，↓ / 滚轮 缩回', async () => {
+        const page = await open('article.html')
+        await h.menu(page, '手动选择区域')
+        const pt = await hover(page, '.comment p')
+        await page.keyboard.press('ArrowUp')   // → div.comment
+        await page.keyboard.press('ArrowUp')   // → section.comments
+        await page.mouse.wheel(0, -100)        // → div.main-column
+        await page.mouse.wheel(0, 100)         // ← section.comments
+        const tip = await page.evaluate(() => document.querySelector('[data-p2md-picker]').shadowRoot.querySelector('.tip b').textContent)
+        t.eq(tip, 'section#comments.comments')
+        await page.mouse.click(pt.x, pt.y)
+        const md = (await h.gm(page)).clipboard.text
+        has(md, '### 评论（3）')
+        has(md, '写得很好')
+        has(md, '这个顺序我觉得是对的')
+        hasNot(md, '很多人学 Rust')
+        await page.close()
+    })
+
+    await t.test('手动选区：Esc 退出后点击恢复正常', async () => {
+        const page = await open('article.html')
+        await h.menu(page, '手动选择区域')
+        await hover(page, '.post-body p')
+        await page.keyboard.press('Escape')
+        t.eq(await page.locator('[data-p2md-picker]').count(), 0)
+        const pt = await hover(page, '.navbar a[href="/archive"]')
+        await page.mouse.click(pt.x, pt.y)
+        await page.waitForURL(base + '/archive')
+        t.eq((await h.gm(page)).clipboard, null)
         await page.close()
     })
 

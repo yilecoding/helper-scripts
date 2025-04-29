@@ -3,7 +3,7 @@
 // @name:zh-CN   网页正文转 Markdown|一键复制 / 下载干净的 Markdown
 // @name:en      Page to Markdown | Copy or download the article as clean Markdown
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.04.28.7
+// @version      2025.04.29.8
 // @description  把文章页的正文一键转成干净的 Markdown，复制到剪贴板或下载为 .md 文件。
 // @description:zh-CN  把文章页的正文一键转成干净的 Markdown，复制到剪贴板或下载为 .md 文件。
 // @description:en  Turn the main article of any web page into clean Markdown — copy it to the clipboard or download it as a .md file.
@@ -585,7 +585,11 @@
      * cloneNode(true) 保持结构一致，所以两边 querySelectorAll('*') 的顺序一一对应，
      * 按下标把「隐藏」标记抄到克隆上，再在克隆上做删除。
      */
-    function cloneForConvert(els) {
+    /**
+     * manual：用户自己点选 / 框选的内容。只清硬噪声（脚本、隐藏、表单…），
+     * 不按 class 关键词删 —— 否则用户特意点了评论区，`.comment` 会被当噪声删光，结果是空的。
+     */
+    function cloneForConvert(els, manual = false) {
         const wrapEl = document.createElement('div');
         for (const live of els) {
             const clone = live.cloneNode(true);
@@ -599,20 +603,26 @@
             }
             wrapEl.appendChild(clone);
         }
-        cleanTree(wrapEl);
+        cleanTree(wrapEl, !manual);
         return wrapEl;
     }
 
-    function cleanTree(root) {
-        for (const el of root.querySelectorAll('[data-p2md-hidden]')) el.remove();
-        for (const el of root.querySelectorAll(NOISE_SELECTOR)) el.remove();
-        for (const el of root.querySelectorAll(GUTTER_SELECTOR)) el.remove();
+    /** root 的直接子节点是选中的内容本身，永远不删（用户点的就是一个 <nav> 时也照转）。 */
+    function cleanTree(root, heuristics = true) {
+        const keep = new Set(root.children);
+        const drop = sel => {
+            for (const el of root.querySelectorAll(sel)) if (!keep.has(el)) el.remove();
+        };
+        drop('[data-p2md-hidden]');
+        drop(NOISE_SELECTOR);
+        drop(GUTTER_SELECTOR);
         for (const el of root.querySelectorAll('[aria-hidden="true"]')) {
             // 装饰图标 / 标题锚点常带 aria-hidden；内容大的不删（有站点在弹窗打开时给整个 main 挂它）
-            if (normText(el).length < 100 && !el.querySelector('img')) el.remove();
+            if (!keep.has(el) && normText(el).length < 100 && !el.querySelector('img')) el.remove();
         }
+        if (!heuristics) return;
         for (const el of [...root.querySelectorAll('*')]) {
-            if (!root.contains(el)) continue; // 祖先已被删
+            if (keep.has(el) || !root.contains(el)) continue; // 祖先已被删
             const s = (typeof el.className === 'string' ? el.className : '') + ' ' + el.id;
             if (RE.ad.test(s) || (RE.unlikely.test(s) && !RE.maybe.test(s))) { el.remove(); continue; }
             // 链接堆（相关文章、标签云）：负权重或纯 div，链接占比高、文字少
@@ -765,6 +775,172 @@
     }
 
     // =========================================================================
+    // 选中文本
+    // =========================================================================
+
+    /*
+     * range.cloneContents() 只给出选区里的碎片：在 <pre> 里选半段代码，拿到的只是几个文本节点，
+     * 外面的 <pre class="language-js"> 没了，就既不是代码块也没有语言。
+     * 所以从公共祖先往上，到最近的 pre / 列表 / 表格 / 引用为止，把这段祖先浅拷贝回来套在外面。
+     */
+    function selectionRoot() {
+        const sel = window.getSelection();
+        if (!sel || sel.isCollapsed || !sel.rangeCount || !sel.toString().trim()) return null;
+        const wrapEl = document.createElement('div');
+        for (let i = 0; i < sel.rangeCount; i++) {
+            const range = sel.getRangeAt(i);
+            let anc = range.commonAncestorContainer;
+            if (anc.nodeType !== 1) anc = anc.parentElement;
+            let node = range.cloneContents();
+            const outer = anc && anc.closest('pre, ul, ol, table, blockquote');
+            if (outer) {
+                for (let p = anc; p; p = p.parentElement) {
+                    const shell = p.cloneNode(false);
+                    shell.appendChild(node);
+                    node = shell;
+                    if (p === outer) break;
+                }
+            }
+            wrapEl.appendChild(node);
+        }
+        cleanTree(wrapEl, false);
+        return wrapEl;
+    }
+
+    // =========================================================================
+    // 手动选区模式
+    // =========================================================================
+
+    /*
+     * 自动提取不准时的退路：悬停高亮、点击转换。
+     * 高亮框放在 pointer-events:none 的 shadow 宿主里，既不挡 mousemove 的命中，也不吃页面 CSS。
+     * 点击要在捕获阶段拦掉，并且连 mousedown/pointerdown 一起拦 —— 不少 SPA 的路由在 mousedown 就跳了。
+     */
+    const Picker = (() => {
+        let active = false;
+        let host, box, tip;
+        let hovered = null;
+        let current = null;
+        let trail = [];      // 扩到父元素时记下来路，↓ / 滚轮向下按原路缩回
+        let prevCursor = '';
+
+        function buildUi() {
+            host = document.createElement('div');
+            host.setAttribute('data-p2md-picker', '');
+            Object.assign(host.style, { position: 'fixed', inset: '0', pointerEvents: 'none', zIndex: 2147483647 });
+            const root = host.attachShadow({ mode: 'open' });
+            root.innerHTML = `
+                <style>
+                    .box { position: fixed; border: 2px solid #e8590c; background: rgba(232, 89, 12, .12);
+                           box-sizing: border-box; transition: all .06s; }
+                    .tip { position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); max-width: 90vw;
+                           padding: 6px 12px; border-radius: 6px; background: rgba(30, 30, 30, .92); color: #fff;
+                           font: 12px/1.6 system-ui, sans-serif; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+                    .tip b { color: #ffa94d; font-weight: 600; }
+                </style>
+                <div class="box"></div><div class="tip"></div>`;
+            box = root.querySelector('.box');
+            tip = root.querySelector('.tip');
+            document.documentElement.appendChild(host);
+        }
+
+        function describe(el) {
+            let d = el.tagName.toLowerCase();
+            if (el.id) d += '#' + el.id;
+            const cls = typeof el.className === 'string' ? el.className.trim().split(/\s+/).filter(Boolean).slice(0, 2) : [];
+            if (cls.length) d += '.' + cls.join('.');
+            return d;
+        }
+
+        function show(el) {
+            current = el;
+            const r = el.getBoundingClientRect();
+            Object.assign(box.style, { left: r.left + 'px', top: r.top + 'px', width: r.width + 'px', height: r.height + 'px' });
+            tip.innerHTML = '';
+            const b = document.createElement('b');
+            b.textContent = describe(el);
+            tip.append(b, '　点击复制 · Shift+点击下载 · ↑/滚轮上 扩大 · ↓/滚轮下 缩小 · Esc 退出');
+        }
+
+        function expand() {
+            const p = current && current.parentElement;
+            if (!p || p === document.documentElement) return;
+            trail.push(current);
+            show(p);
+        }
+
+        function shrink() {
+            if (trail.length) show(trail.pop());
+        }
+
+        const swallow = e => {
+            e.preventDefault();
+            e.stopPropagation();
+            e.stopImmediatePropagation();
+        };
+
+        const handlers = {
+            mousemove(e) {
+                const t = e.target;
+                if (!(t instanceof Element) || t === hovered) return;
+                hovered = t;
+                trail = [];
+                show(t);
+            },
+            click(e) {
+                swallow(e);
+                const el = current;
+                stop();
+                if (el) {
+                    try {
+                        output(cloneForConvert([el], true), e.shiftKey ? 'download' : 'copy');
+                    } catch (err) {
+                        console.error(TAG, err);
+                        toast('转换失败：' + err.message);
+                    }
+                }
+            },
+            mousedown: swallow, mouseup: swallow, pointerdown: swallow, pointerup: swallow, dblclick: swallow, auxclick: swallow,
+            wheel(e) {
+                swallow(e);
+                if (e.deltaY < 0) expand();
+                else if (e.deltaY > 0) shrink();
+            },
+            keydown(e) {
+                if (e.key === 'Escape') { swallow(e); stop(); toast('已退出手动选择'); }
+                else if (e.key === 'ArrowUp') { swallow(e); expand(); }
+                else if (e.key === 'ArrowDown') { swallow(e); shrink(); }
+            },
+            scroll() {
+                if (current) show(current);
+            },
+        };
+
+        function start() {
+            if (active) return;
+            active = true;
+            hovered = current = null;
+            trail = [];
+            buildUi();
+            prevCursor = document.documentElement.style.cursor;
+            document.documentElement.style.cursor = 'crosshair';
+            for (const [type, fn] of Object.entries(handlers)) window.addEventListener(type, fn, { capture: true, passive: false });
+            toast('手动选择：移动鼠标选元素，点击转换，Esc 退出');
+        }
+
+        function stop() {
+            if (!active) return;
+            active = false;
+            for (const [type, fn] of Object.entries(handlers)) window.removeEventListener(type, fn, { capture: true });
+            document.documentElement.style.cursor = prevCursor;
+            host.remove();
+            hovered = current = null;
+        }
+
+        return { start, stop, get active() { return active; } };
+    })();
+
+    // =========================================================================
     // 入口
     // =========================================================================
 
@@ -788,9 +964,10 @@
         console.log(TAG, action, md.length, '字');
     }
 
+    /** 有选中文本时优先转换选区。 */
     function convertPage(action) {
         try {
-            output(cloneForConvert(findContent()), action);
+            output(selectionRoot() || cloneForConvert(findContent()), action);
         } catch (e) {
             console.error(TAG, e);
             toast('转换失败：' + e.message);
@@ -799,4 +976,5 @@
 
     GM_registerMenuCommand('复制正文为 Markdown', () => convertPage('copy'));
     GM_registerMenuCommand('下载正文为 Markdown', () => convertPage('download'));
+    GM_registerMenuCommand('手动选择区域', () => Picker.start());
 })();
