@@ -3,7 +3,7 @@
 // @name:zh-CN   网页正文转 Markdown|一键复制 / 下载干净的 Markdown
 // @name:en      Page to Markdown | Copy or download the article as clean Markdown
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.04.29.8
+// @version      2025.04.29.9
 // @description  把文章页的正文一键转成干净的 Markdown，复制到剪贴板或下载为 .md 文件。
 // @description:zh-CN  把文章页的正文一键转成干净的 Markdown，复制到剪贴板或下载为 .md 文件。
 // @description:en  Turn the main article of any web page into clean Markdown — copy it to the clipboard or download it as a .md file.
@@ -56,27 +56,78 @@
     const SKIP_TAGS = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE', 'HEAD', 'META', 'LINK']);
 
     /** 硬换行先用占位符，等整段拼完再决定是 `\` 换行还是分段（见 finishInline）。 */
-    const BR = '';
+    const BR = '\uE001';
 
     function isBlock(el) {
         return BLOCK_TAGS.has(el.tagName) || !!el.querySelector(BLOCK_SELECTOR);
     }
 
-    function escapeText(s) {
-        return s
-            .replace(/\\(?=[!-/:-@[-`{-~])/g, '\\\\')
-            .replace(/[*_`]/g, '\\$&');
+    const isSpace = c => c !== undefined && /\s/.test(c);
+    const isWord = c => c !== undefined && /[\p{L}\p{N}]/u.test(c);
+
+    /*
+     * 正文里的转义要克制：不转 `.`、不转单词中间的 `_`（snake_case），只转真会被误解析的。
+     *   *  ~   两边都是空白才安全（`a * b`）；`2*3*4`、`3~5` 里的会被当成强调 / 删除线
+     *   _      两边都是字母数字（单词中间）或都是空白时安全
+     *   ]      后面跟 ( [ : 才可能拼出链接 / 引用定义，转它一个就够；链接文字里 [ ] 都转
+     *   <      后面是字母、/、!、? 时可能被当成 HTML 标签
+     *   \      后面是 ASCII 标点或在末尾（会吃掉紧跟的 ** 闭合符）
+     * 行首的 # - + 1. > 在 escapeLineStart 里处理。
+     */
+    function escapeText(s, ctx = {}) {
+        s = s.replace(/[\uE000-\uE00F]/g, ''); // 本脚本内部用的占位符
+        return s.replace(/[\\`*_~[\]<&]/g, (c, i) => {
+            const a = s[i - 1];
+            const b = s[i + 1];
+            switch (c) {
+                case '\\': return /[!-/:-@[-`{-~]/.test(b || '!') ? '\\\\' : c;
+                case '`': return '\\`';
+                case '*': case '~': return isSpace(a) && isSpace(b) ? c : '\\' + c;
+                case '_': return (isWord(a) && isWord(b)) || (isSpace(a) && isSpace(b)) ? c : '\\_';
+                case '[': return ctx.inLink ? '\\[' : c;
+                case ']': return ctx.inLink || /[([:]/.test(b || '') ? '\\]' : c;
+                case '<': return /[A-Za-z/!?]/.test(b || '') ? '\\<' : c;
+                case '&': return /^&#?\w+;/.test(s.slice(i)) ? '\\&' : c;
+            }
+            return c;
+        });
     }
 
-    function textOf(node) {
-        return escapeText(node.data.replace(/\s+/g, ' '));
+    function textOf(node, ctx) {
+        return escapeText(node.data.replace(/\s+/g, ' '), ctx);
     }
 
-    /** 把首尾空白挪到标记外面：`<b> 粗 </b>` → ` **粗** `，否则 `** 粗 **` 不生效。 */
-    function wrap(s, open, close = open) {
+    /*
+     * 强调符号先输出成占位符，整篇拼完再在 resolveEmphasis 里定成 ** 还是 <strong>。
+     * 原因是 CommonMark 的定界规则：内容以标点结尾时，闭合的 ** 后面必须是空白或标点才算数。
+     * `**注意：**这里` 在中文里极常见，但不会渲染成加粗 —— 这要看到外面紧挨着的字才能判断，
+     * 而转换单个元素时还不知道后面跟的是什么。
+     */
+    const EM = { s: ['**', 'strong'], e: ['*', 'em'], d: ['~~', 'del'] };
+
+    /** 首尾空白挪到标记外面：`<b> 粗 </b>` → ` **粗** `，否则 `** 粗 **` 不生效。 */
+    function wrap(s, kind) {
         const m = s.match(/^(\s*)([\s\S]*?)(\s*)$/);
         if (!m[2]) return s;
-        return m[1] + open + m[2] + close + m[3];
+        return `${m[1]}\uE002${kind}\uE002${m[2]}\uE003${kind}\uE003${m[3]}`;
+    }
+
+    function resolveEmphasis(md) {
+        const edge = c => c === undefined || /[\s\p{P}\p{S}\uE002\uE003]/u.test(c);
+        const punct = c => c === undefined || /[\p{P}\p{S}\uE002\uE003]/u.test(c);
+        const re = /\uE002([sed])\uE002([\s\S]*?)\uE003\1\uE003/g;
+        // 外层先定、内层下一轮；内层的占位符在外层看来就是标点（最终也会变成 * 或 <tag>）
+        for (let guard = 0; re.test(md) && guard < 20; guard++) {
+            re.lastIndex = 0;
+            md = md.replace(re, (all, kind, inner, off, str) => {
+                const [delim, tag] = EM[kind];
+                const before = str[off - 1];
+                const after = str[off + all.length];
+                const html = (punct(inner[0]) && !edge(before)) || (punct(inner[inner.length - 1]) && !edge(after));
+                return html ? `<${tag}>${inner}</${tag}>` : delim + inner + delim;
+            });
+        }
+        return md;
     }
 
     function absUrl(u) {
@@ -95,13 +146,13 @@
             case 'BR':
                 return BR;
             case 'STRONG': case 'B':
-                return wrap(inlineChildren(el, ctx), '**');
+                return wrap(inlineChildren(el, ctx), 's');
             case 'EM': case 'I':
-                return wrap(inlineChildren(el, ctx), '*');
+                return wrap(inlineChildren(el, ctx), 'e');
             case 'CODE': case 'KBD': case 'SAMP': case 'TT':
                 return codeSpan(el.textContent);
             case 'DEL': case 'S': case 'STRIKE':
-                return wrap(inlineChildren(el, ctx), '~~');
+                return wrap(inlineChildren(el, ctx), 'd');
             case 'SUP': case 'SUB': {
                 const t = inlineChildren(el, ctx).trim();
                 return t ? `<${tag.toLowerCase()}>${t}</${tag.toLowerCase()}>` : '';
@@ -129,7 +180,7 @@
     }
 
     function renderLink(el, ctx) {
-        const text = inlineChildren(el, ctx).trim();
+        const text = inlineChildren(el, { ...ctx, inLink: true }).trim();
         const href = el.getAttribute('href');
         if (!href || /^(javascript|data|vbscript):/i.test(href.trim())) return text;
         if (!text) return '';
@@ -183,20 +234,35 @@
     function inlineChildren(el, ctx) {
         let out = '';
         for (const n of el.childNodes) {
-            if (n.nodeType === 3) out += textOf(n);
+            if (n.nodeType === 3) out += textOf(n, ctx);
             else if (n.nodeType === 1) out += renderInline(n, ctx);
         }
         return out;
     }
 
     /** 一段行内内容收尾：合并空白、处理换行占位符。 */
-    function finishInline(s) {
+    function finishInline(s, ctx = {}) {
         s = s.replace(/ {2,}/g, ' ')
-            .replace(/ * */g, BR)
-            .replace(/^+|+$/g, '');
+            .replace(/ *\uE001 */g, BR)
+            .replace(/^\uE001+|\uE001+$/g, '');
         // 连续两个以上 <br> 当分段用（不少中文站用 <br><br> 代替 <p>）
-        s = s.replace(/{2,}/g, '\n\n').replace(//g, '\\\n');
-        return s.trim();
+        s = s.replace(/\uE001{2,}/g, '\n\n').replace(/\uE001/g, '\\\n');
+        s = s.trim();
+        // 表格单元格里不会有块语法，单独一个 `-` 是常见的「无」
+        return ctx.inTable ? s : s.split('\n').map(escapeLineStart).join('\n');
+    }
+
+    /*
+     * 行首才有意义的块语法。只在一段行内内容拼完以后按行处理 —— 单个文本节点不知道自己是不是在行首，
+     * 在文本节点里转会把句中的「1. 」「- 」也转掉。
+     */
+    function escapeLineStart(line) {
+        return line
+            .replace(/^(#{1,6})(?=\s|$)/, '\\$1')
+            .replace(/^([-+*])(?=\s)/, '\\$1')
+            .replace(/^(\d{1,9})([.)])(?=\s|$)/, '$1\\$2')
+            .replace(/^>/, '\\>')
+            .replace(/^(=+|-+)\s*$/, '\\$1');
     }
 
     /** 渲染子节点为若干块，连续的行内节点拼成一段。 */
@@ -204,13 +270,13 @@
         const out = [];
         let buf = '';
         const flush = () => {
-            const t = finishInline(buf);
+            const t = finishInline(buf, ctx);
             if (t) out.push(t);
             buf = '';
         };
         for (const n of parent.childNodes) {
             if (n.nodeType === 3) {
-                buf += textOf(n);
+                buf += textOf(n, ctx);
             } else if (n.nodeType === 1 && !SKIP_TAGS.has(n.tagName)) {
                 if (isBlock(n)) {
                     flush();
@@ -367,7 +433,7 @@
     }
 
     function cellText(td, ctx) {
-        return renderChildren(td, ctx).join('\n')
+        return renderChildren(td, { ...ctx, inTable: true }).join('\n')
             .replace(/\\\n/g, '<br>')
             .replace(/\n+/g, '<br>')
             .replace(/\|/g, '\\|')
@@ -421,7 +487,7 @@
 
     function htmlToMarkdown(root) {
         const ctx = {};
-        return renderChildren(root, ctx).join('\n\n').trim() + '\n';
+        return resolveEmphasis(renderChildren(root, ctx).join('\n\n')).trim() + '\n';
     }
 
     // =========================================================================

@@ -195,6 +195,32 @@ function hasNot(md, frag) {
         await page.close()
     })
 
+    await t.test('转义：克制（. _ 不乱转），但行首块语法、字面链接、HTML 标签要转', async () => {
+        const page = await open('escape.html')
+        const md = await copyFrom(page)
+        has(md, '变量 snake_case_name 和 \\_\\_init\\_\\_ 方法，版本 3.14.15，网址 example.com，表达式 2\\*3\\*4，a * b，范围 3\\~5 天。')
+        has(md, '\n1\\. 这不是列表\n')
+        has(md, '\n2026\\. 年份开头也不是\n')
+        has(md, '\n\\# 这不是标题\n')
+        has(md, '\n\\- 这也不是列表\n')
+        has(md, '\n\\> 不是引用\n')
+        has(md, '上一行\\\n\\---')
+        has(md, '字面量 [文字\\](地址) 和 \\<div> 标签，\\&nbsp; 实体，还有 \\`反引号\\`。')
+        has(md, '路径 C:\\Users\\name，正则 \\d+，转义 \\\\\\*。')
+        has(md, '链接文字里的方括号 [\\[1\\] 参考](' + base + '/ref)。')
+        has(md, '\n## \\# 井号开头的标题\n')
+        await page.close()
+    })
+
+    await t.test('加粗贴着中文标点：** 不生效时退回 <strong>', async () => {
+        // CommonMark 的定界符规则：闭合的 ** 前面是标点、后面紧跟文字时不算右定界，加粗失效
+        const page = await open('escape.html')
+        const md = await copyFrom(page)
+        has(md, '<strong>注意：</strong>这里加粗贴着中文标点，<strong>“引号”</strong>也一样；**Note:** English is fine, *(aside)*.')
+        has(md, '结尾反斜杠 **C:\\\\** 不能吃掉加粗。')
+        await page.close()
+    })
+
     await t.test('有选中文本时优先转换选区', async () => {
         const page = await open('article.html')
         await page.evaluate(() => {
