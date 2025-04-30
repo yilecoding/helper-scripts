@@ -59,7 +59,9 @@ function hasNot(md, frag) {
     await t.test('正文提取：选中文章，排除导航 / 侧栏 / 评论 / 页脚 / 广告 / 隐藏元素', async () => {
         const page = await open('article.html')
         const md = await copyFrom(page)
-        has(md, '很多人学 Rust 的第一个项目都是命令行工具')
+        // <title> 里的「 - 某某技术博客」去掉：页面上唯一的 h1 被 <title> 包含时用 h1
+        has(md, 'title: "用 Rust 写一个 HTTP 服务器"\n')
+        has(md, '---\n\n# 用 Rust 写一个 HTTP 服务器\n\n很多人学 Rust 的第一个项目都是命令行工具')
         has(md, '## 监听端口')
         has(md, '主线程就可以继续 accept 下一个连接了')
         for (const noise of ['首页', '归档', '评论（3）', '写得很好', '热门文章', '本站所有文章均为原创', '保留所有权利',
@@ -85,7 +87,8 @@ function hasNot(md, frag) {
         // 两位数序号的续行缩进 4 格
         has(md, '9. 第九步\n10. 第十步\n    - 十的子项\n11. 第十一步')
         has(md, '- [x] 写测试\n- [ ] 写文档')
-        has(md, '- 外层\n  - 直接挂在 ul 下的子列表')
+        // 紧跟在任务列表后面，换成 * 才不会被并进上一个列表
+        has(md, '* 外层\n  - 直接挂在 ul 下的子列表')
         has(md, '- 宽松列表第一段。\n\n  宽松列表第二段。\n- 第二项。')
         await page.close()
     })
@@ -218,6 +221,17 @@ function hasNot(md, frag) {
         const md = await copyFrom(page)
         has(md, '<strong>注意：</strong>这里加粗贴着中文标点，<strong>“引号”</strong>也一样；**Note:** English is fine, *(aside)*.')
         has(md, '结尾反斜杠 **C:\\\\** 不能吃掉加粗。')
+        await page.close()
+    })
+
+    await t.test('边界：相邻同类列表不被合并、CSS 显示成块的行内元素单独成段', async () => {
+        const page = await open('edge.html')
+        const md = await copyFrom(page)
+        has(md, '- 甲\n\n* 乙\n\n1. 一\n\n1) 二')
+        has(md, '\n第一行\n\n第二行\n')
+        has(md, '\n自定义元素段落一\n\n自定义元素段落二\n')
+        has(md, '\n**小标题样式的加粗**\n\n正文紧跟其后。\n')
+        has(md, '\n图前\n\n![](' + base + '/a.png)\n\n图后\n')
         await page.close()
     })
 

@@ -3,7 +3,7 @@
 // @name:zh-CN   网页正文转 Markdown|一键复制 / 下载干净的 Markdown
 // @name:en      Page to Markdown | Copy or download the article as clean Markdown
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.04.29.9
+// @version      2025.04.30.10
 // @description  把文章页的正文一键转成干净的 Markdown，复制到剪贴板或下载为 .md 文件。
 // @description:zh-CN  把文章页的正文一键转成干净的 Markdown，复制到剪贴板或下载为 .md 文件。
 // @description:en  Turn the main article of any web page into clean Markdown — copy it to the clipboard or download it as a .md file.
@@ -52,14 +52,15 @@
         'H6', 'HEADER', 'HGROUP', 'HR', 'LI', 'MAIN', 'MENU', 'NAV', 'OL', 'P', 'PRE', 'SECTION',
         'SUMMARY', 'TABLE', 'TBODY', 'TD', 'TFOOT', 'TH', 'THEAD', 'TR', 'UL',
     ]);
-    const BLOCK_SELECTOR = [...BLOCK_TAGS].join(',').toLowerCase();
+    // data-p2md-block：标签是行内的，但页面 CSS 把它显示成块（见 cloneForConvert）
+    const BLOCK_SELECTOR = [...BLOCK_TAGS].join(',').toLowerCase() + ',[data-p2md-block]';
     const SKIP_TAGS = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE', 'HEAD', 'META', 'LINK']);
 
     /** 硬换行先用占位符，等整段拼完再决定是 `\` 换行还是分段（见 finishInline）。 */
     const BR = '\uE001';
 
     function isBlock(el) {
-        return BLOCK_TAGS.has(el.tagName) || !!el.querySelector(BLOCK_SELECTOR);
+        return BLOCK_TAGS.has(el.tagName) || el.hasAttribute('data-p2md-block') || !!el.querySelector(BLOCK_SELECTOR);
     }
 
     const isSpace = c => c !== undefined && /\s/.test(c);
@@ -274,15 +275,26 @@
             if (t) out.push(t);
             buf = '';
         };
+        // 两个同类列表挨着时，CommonMark 会把它们并成一个（空行也拦不住），
+        // 后一个换标记（- ↔ *，1. ↔ 1)）才能断开
+        let prevList = null;
+        let alt = false;
         for (const n of parent.childNodes) {
             if (n.nodeType === 3) {
                 buf += textOf(n, ctx);
+                if (n.data.trim()) prevList = null;
             } else if (n.nodeType === 1 && !SKIP_TAGS.has(n.tagName)) {
                 if (isBlock(n)) {
                     flush();
-                    const b = renderBlock(n, ctx);
-                    if (b) out.push(b);
+                    const isList = n.tagName === 'UL' || n.tagName === 'OL';
+                    alt = isList && prevList === n.tagName ? !alt : false;
+                    const b = renderBlock(n, isList ? { ...ctx, altList: alt } : ctx);
+                    if (b) {
+                        out.push(b);
+                        prevList = isList ? n.tagName : null;
+                    }
                 } else {
+                    prevList = null;
                     buf += renderInline(n, ctx);
                 }
             }
@@ -309,6 +321,9 @@
                 return inner ? inner.split('\n').map(l => (l ? '> ' + l : '>')).join('\n') : '';
             }
         }
+        // 被 CSS 显示成块的行内元素（公众号里 display:block 的 <strong> 小标题、块级 <img>）：
+        // 按行内渲染保住加粗 / 图片，再单独成段
+        if (!BLOCK_TAGS.has(tag) && !el.querySelector(BLOCK_SELECTOR)) return finishInline(renderInline(el, ctx), ctx);
         return renderChildren(el, ctx).join('\n\n');
     }
 
@@ -446,14 +461,17 @@
     }
 
     function renderList(el, ctx) {
+        const alt = ctx.altList;
+        ctx = { ...ctx, altList: false };
         const ordered = el.tagName === 'OL';
+        const bullet = alt ? (CONFIG.bullet === '*' ? '-' : '*') : CONFIG.bullet;
         let n = ordered ? parseInt(el.getAttribute('start'), 10) : 1;
         if (!Number.isFinite(n)) n = 1;
         const items = [];
         let lastWidth = 2;
         for (const child of el.children) {
             if (child.tagName === 'LI') {
-                const marker = ordered ? `${n++}.` : CONFIG.bullet;
+                const marker = ordered ? `${n++}${alt ? ')' : '.'}` : bullet;
                 const item = renderListItem(child, marker, ctx);
                 if (item) items.push(item);
                 lastWidth = marker.length + 1;
@@ -665,6 +683,8 @@
                 for (let i = 0; i < L.length; i++) {
                     const cs = getComputedStyle(L[i]);
                     if (cs.display === 'none' || cs.visibility === 'hidden') C[i].setAttribute('data-p2md-hidden', '');
+                    else if (/^(block|flex|grid|list-item|table|flow-root)$/.test(cs.display) &&
+                        !BLOCK_TAGS.has(L[i].tagName) && L[i].tagName !== 'BR') C[i].setAttribute('data-p2md-block', '');
                 }
             }
             wrapEl.appendChild(clone);
@@ -735,11 +755,16 @@
             return (el.getAttribute('content') || el.getAttribute('datetime') || el.textContent || '').replace(/\s+/g, ' ').trim();
         };
         const ld = jsonLdArticle();
+        // <title> 常带「 - 站点名」后缀；页面上唯一的 h1 被 <title> 包含时，用 h1 更干净
+        let docTitle = document.title.replace(/\s+/g, ' ').trim();
+        const h1s = document.querySelectorAll('h1');
+        const h1 = h1s.length === 1 ? normText(h1s[0]) : '';
+        if (h1 && docTitle.includes(h1)) docTitle = h1;
         // article:author 经常是作者主页 URL，不是名字
         const ogAuthor = pick('meta[property="article:author"]');
         return {
             title: pick('meta[property="og:title"]') || (typeof ld.headline === 'string' ? ld.headline : '') ||
-                document.title.trim() || pick('h1'),
+                docTitle || pick('h1'),
             url: location.href,
             author: pick('meta[name="author"]') || ldAuthor(ld.author) || (/^https?:/.test(ogAuthor) ? '' : ogAuthor) ||
                 pick('[itemprop="author"] [itemprop="name"]') || pick('[rel="author"]'),
