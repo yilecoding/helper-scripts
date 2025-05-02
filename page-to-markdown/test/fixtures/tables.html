@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>表格</title></head>
+<body>
+<article>
+  <h1>表格</h1>
+  <table>
+    <thead><tr><th>命令</th><th align="center">说明</th><th style="text-align:right">耗时</th></tr></thead>
+    <tbody>
+      <tr><td><code>a | b</code></td><td>管道：把 a 的输出 | 交给 b</td><td>1s</td></tr>
+      <tr><td>多行</td><td>第一行<br>第二行</td><td><a href="/t">链接</a></td></tr>
+      <tr><td colspan="2">跨两列</td><td>3s</td></tr>
+      <tr><td><p>段落一</p><p>段落二</p></td><td></td><td>-</td></tr>
+    </tbody>
+  </table>
+
+  <table>
+    <tr><td>无表头 A</td><td>无表头 B</td></tr>
+    <tr><td>1</td><td>2</td></tr>
+  </table>
+
+  <table class="layout"><tr><td><p>排版用的单列表格，内容应该直接展开成段落。</p></td></tr></table>
+</article>
+</body>
+</html>

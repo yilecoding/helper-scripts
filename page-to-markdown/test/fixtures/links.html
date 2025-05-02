@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>链接与图片</title></head>
+<body>
+<article>
+  <h1>链接与图片</h1>
+  <p>相对链接 <a href="../about.html">关于</a>，根相对 <a href="/tags/rust">标签</a>，
+     锚点 <a href="#sec-2">第二节</a>，带标题 <a href="https://example.org/" title="示例 &quot;站&quot;">示例</a>。</p>
+  <p>自动链接 <a href="https://example.org/path">https://example.org/path</a>，
+     维基 <a href="https://en.wikipedia.org/wiki/Rust_(programming_language)">Rust</a>，
+     脚本 <a href="javascript:void(0)">点我</a>，删除线 <del>旧</del><s>价</s>，上标 x<sup>2</sup>。</p>
+  <p><img src="img/cover.png" alt="封面 [大图]"></p>
+  <p><img src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" data-src="/uploads/lazy.jpg" alt="懒加载"></p>
+  <p><img data-srcset="//cdn.example.com/s.jpg 320w, //cdn.example.com/w_800,h_600/l.jpg 800w, //cdn.example.com/m.jpg 640w" alt="srcset"></p>
+  <p><img data-actualsrc="https://pic.example.com/zhihu.jpg" src="data:image/svg+xml;utf8,&lt;svg/&gt;" alt="知乎"></p>
+  <p><a href="/big.png"><img src="/thumb.png" alt="缩略图" title="点开看大图"></a></p>
+  <a class="card" href="/p/42"><h3>卡片标题</h3><p>卡片摘要</p></a>
+  <p>空链接 <a href="/x"></a> 不输出。</p>
+</article>
+</body>
+</html>
