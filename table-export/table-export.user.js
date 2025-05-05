@@ -3,12 +3,13 @@
 // @name:zh-CN   网页表格导出 | 一键复制/下载 CSV、Excel、Markdown、JSON
 // @name:en      Table Export | Copy or download any web table as CSV / TSV / Markdown / JSON
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.05.05.2
-// @description  任意网页上的表格一键导出：识别原生 <table>（自动排除排版用的布局表格），正确展开 rowspan/colspan 合并单元格，从菜单把页面上所有表格下载为 CSV（带 BOM，Excel 直接打开不乱码）。
-// @description:zh-CN  任意网页上的表格一键导出：识别原生 <table>（自动排除排版用的布局表格），正确展开 rowspan/colspan 合并单元格，从菜单把页面上所有表格下载为 CSV（带 BOM，Excel 直接打开不乱码）。
-// @description:en  Export any table on any web page. Detects native <table> elements (skipping layout-only tables), expands rowspan/colspan merged cells, and downloads every table on the page as CSV (with UTF-8 BOM so Excel opens Chinese text correctly).
+// @version      2025.05.05.3
+// @description  任意网页上的表格一键导出：识别原生 <table>（自动排除排版用的布局表格），正确展开 rowspan/colspan 合并单元格。鼠标移到表格上，右上角浮出工具条：复制为 TSV（直接粘贴进 Excel）、下载 CSV（带 BOM，Excel 直接打开不乱码）；菜单里可一键导出页面上所有表格。
+// @description:zh-CN  任意网页上的表格一键导出：识别原生 <table>（自动排除排版用的布局表格），正确展开 rowspan/colspan 合并单元格。鼠标移到表格上，右上角浮出工具条：复制为 TSV（直接粘贴进 Excel）、下载 CSV（带 BOM，Excel 直接打开不乱码）；菜单里可一键导出页面上所有表格。
+// @description:en  Export any table on any web page. Detects native <table> elements (skipping layout-only tables), expands rowspan/colspan merged cells. Hover a table to get a small toolbar: copy as TSV (paste straight into Excel) or download CSV (with UTF-8 BOM so Excel opens Chinese text correctly). A menu command exports every table on the page at once.
 // @author       壹樂（V：ita1125）
 // @match        *://*/*
+// @grant        GM_setClipboard
 // @grant        GM_registerMenuCommand
 // @grant        GM_unregisterMenuCommand
 // @grant        GM_getValue
@@ -102,13 +103,35 @@
         return '';
     }
 
-    /** 页面上所有数据表（文档顺序）。 */
+    /**
+     * 悬停时用的快速判断：只数行列、看 textContent，不跑 innerText。
+     * innerText 会强制排版，几千行的表每次鼠标划过都读一遍会明显卡顿。
+     */
+    function quickReason(table) {
+        const structure = structureReason(table);
+        if (structure) return structure;
+        const rows = table.rows;
+        if (rows.length < CONFIG.minRows) return `只有 ${rows.length} 行`;
+        let cols = 0;
+        for (const row of rows) {
+            let n = 0;
+            for (const cell of row.cells) n += Math.max(1, cell.colSpan || 1);
+            cols = Math.max(cols, n);
+        }
+        if (cols < CONFIG.minCols) return '单列';
+        if (!table.textContent.trim()) return '没有文字';
+        return '';
+    }
+
+    const isDataTable = (table) => table.getClientRects().length > 0 && !quickReason(table);
+
+    /** 页面上所有数据表（文档顺序）。快速判断过了的，再用真实网格复核一次。 */
     function findTables(root = document) {
         const out = [];
         for (const table of root.querySelectorAll('table')) {
-            if (table.getClientRects().length === 0) continue;   // 整张表不可见
-            let grid = null;
-            const reason = structureReason(table) || contentReason((grid = readGrid(table)));
+            if (!isDataTable(table)) continue;
+            const grid = readGrid(table);
+            const reason = contentReason(grid);
             if (reason) {
                 log('跳过布局表格：', reason, table);
                 continue;
@@ -191,6 +214,15 @@
         return grid.map((r) => r.map(esc).join(',')).join('\r\n') + '\r\n';
     }
 
+    /**
+     * TSV 是给「粘贴进 Excel / WPS / Google 表格」用的，规则跟着 Excel 自己复制单元格时的格式走：
+     * 含制表符、换行、双引号的格子加双引号。不加的话单元格里的换行会被当成新的一行，整表错位。
+     */
+    function toTSV(grid) {
+        const esc = (s) => (/[\t"\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s);
+        return grid.map((r) => r.map(esc).join('\t')).join('\n');
+    }
+
     // =========================================================================
     // 文件名 / 下载
     // =========================================================================
@@ -212,7 +244,7 @@
 
     function download(name, text, mime) {
         // BOM 必须有：Excel 双击打开 CSV 时没有 BOM 就按本地编码（GBK）解析，中文全乱码
-        const blob = new Blob(['﻿' + text], { type: `${mime};charset=utf-8` });
+        const blob = new Blob(['\uFEFF' + text], { type: `${mime};charset=utf-8` });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
@@ -224,6 +256,178 @@
         // 不能立刻 revoke：Firefox 会在下载真正开始前就失去这个 URL
         setTimeout(() => URL.revokeObjectURL(url), 30000);
     }
+
+    /** 单张表在页面数据表里的序号，用于没有 caption 时的文件名。 */
+    function tableIndex(table) {
+        return Array.from(document.querySelectorAll('table')).filter(isDataTable).indexOf(table);
+    }
+
+    const ACTIONS = {
+        'copy-tsv': { label: '复制 TSV', title: '复制为制表符分隔文本，可直接粘贴进 Excel', run: (grid) => GM_setClipboard(toTSV(grid), 'text') },
+        'download-csv': { label: 'CSV', title: '下载 CSV 文件', run: (grid, name) => download(name + '.csv', toCSV(grid), 'text/csv') },
+    };
+
+    // =========================================================================
+    // 悬停工具条
+    // =========================================================================
+
+    /*
+     * 工具条挂在 <html> 下、position: fixed，按表格的「可见矩形」定位，而不是插进表格旁边：
+     *   - 插进表格的祖先里，会被 overflow: hidden/auto 的容器裁掉（横向滚动的宽表全是这种）
+     *   - 样式放进 shadow DOM，页面的 button { … } 之类全局样式进不来
+     *   - 宿主 pointer-events: none，只有按钮本身接收点击，空白处不挡表格
+     * 优先放在表格上沿的外侧，上面没地方了才压进表格右上角。
+     */
+    const Toolbar = (() => {
+        let host = null;
+        let bar = null;
+        let current = null;
+        let hideTimer = 0;
+        let raf = 0;
+
+        const CSS = `
+            .bar { position: fixed; display: none; gap: 2px; padding: 2px; pointer-events: auto;
+                   background: rgba(255,255,255,.96); border: 1px solid #c8ccd2; border-radius: 6px;
+                   box-shadow: 0 2px 8px rgba(0,0,0,.15); font: 12px/1.2 system-ui, sans-serif; }
+            .bar.show { display: flex; }
+            button { all: unset; cursor: pointer; padding: 3px 7px; border-radius: 4px; color: #1f2329; white-space: nowrap; }
+            button:hover { background: #e8f0fe; color: #1a56db; }
+            button.done { background: #e6f4ea; color: #137333; }
+        `;
+
+        function ensure() {
+            if (host && host.isConnected) return;
+            // 自定义标签名：页面里 div { … } 这类选择器碰不到宿主本身
+            host = document.createElement('table-export-toolbar');
+            host.style.cssText = 'all: initial; position: fixed; top: 0; left: 0; z-index: 2147483647; pointer-events: none;';
+            const root = host.attachShadow({ mode: 'open' });
+            root.innerHTML = `<style>${CSS}</style><div class="bar"></div>`;
+            bar = root.querySelector('.bar');
+            for (const [key, a] of Object.entries(ACTIONS)) {
+                const b = document.createElement('button');
+                b.dataset.action = key;
+                b.textContent = a.label;
+                b.title = a.title;
+                bar.appendChild(b);
+            }
+            // mousedown 默认行为会抢焦点、清掉用户在表格里的文字选区
+            bar.addEventListener('mousedown', (e) => e.preventDefault());
+            bar.addEventListener('click', onClick);
+            bar.addEventListener('mouseenter', cancelHide);
+            bar.addEventListener('mouseleave', scheduleHide);
+            document.documentElement.appendChild(host);
+        }
+
+        function onClick(e) {
+            const b = e.target.closest('button');
+            if (!b || !current) return;
+            const table = current;
+            try {
+                ACTIONS[b.dataset.action].run(readGrid(table), baseName(table, tableIndex(table)));
+                flash(b, '✓');
+            } catch (err) {
+                console.error(TAG, '导出失败', err);
+                flash(b, '失败');
+            }
+        }
+
+        function flash(b, text) {
+            const label = ACTIONS[b.dataset.action].label;
+            b.textContent = text;
+            b.classList.add('done');
+            setTimeout(() => {
+                b.textContent = label;
+                b.classList.remove('done');
+            }, 1200);
+        }
+
+        /** 表格真正露在外面的矩形：和每一层会裁剪的祖先、视口取交集。 */
+        function visibleRect(el) {
+            const r = el.getBoundingClientRect();
+            let { top, left, right, bottom } = r;
+            for (let p = el.parentElement; p && p !== document.documentElement; p = p.parentElement) {
+                const cs = getComputedStyle(p);
+                if (/hidden|auto|scroll|clip/.test(cs.overflowX + cs.overflowY)) {
+                    const pr = p.getBoundingClientRect();
+                    top = Math.max(top, pr.top);
+                    left = Math.max(left, pr.left);
+                    right = Math.min(right, pr.right);
+                    bottom = Math.min(bottom, pr.bottom);
+                }
+            }
+            const vw = document.documentElement.clientWidth;
+            const vh = document.documentElement.clientHeight;
+            return { top: Math.max(top, 0), left: Math.max(left, 0), right: Math.min(right, vw), bottom: Math.min(bottom, vh) };
+        }
+
+        function place() {
+            raf = 0;
+            if (!current) return;
+            if (!current.isConnected) return hide();
+            const v = visibleRect(current);
+            if (v.right - v.left < 20 || v.bottom - v.top < 10) return hide();   // 整张表被滚出去了
+            const w = bar.offsetWidth;
+            const h = bar.offsetHeight;
+            const x = Math.max(v.left, v.right - w);
+            const y = v.top - h - 2 >= 0 ? v.top - h - 2 : v.top + 2;
+            bar.style.left = `${x}px`;
+            bar.style.top = `${y}px`;
+        }
+
+        const schedulePlace = () => {
+            if (current && !raf) raf = requestAnimationFrame(place);
+        };
+
+        function show(table) {
+            ensure();
+            cancelHide();
+            current = table;
+            bar.classList.add('show');
+            place();
+        }
+
+        function hide() {
+            current = null;
+            if (bar) bar.classList.remove('show');
+        }
+
+        function cancelHide() {
+            clearTimeout(hideTimer);
+        }
+
+        /** 留一点延时：鼠标从表格移到工具条要穿过两者之间的缝。 */
+        function scheduleHide() {
+            clearTimeout(hideTimer);
+            hideTimer = setTimeout(hide, 300);
+        }
+
+        /** 从鼠标下的元素往外找第一张数据表（内层是布局碎片时继续往外找）。 */
+        function tableAt(target) {
+            for (let t = target && target.closest && target.closest('table'); t; t = t.parentElement && t.parentElement.closest('table')) {
+                if (isDataTable(t)) return t;
+            }
+            return null;
+        }
+
+        function onOver(e) {
+            const target = e.composedPath()[0];
+            if (host && host.contains(target)) return cancelHide();
+            const table = target instanceof Element ? tableAt(target) : null;
+            if (table === current) return table ? cancelHide() : undefined;
+            if (table) show(table);
+            else scheduleHide();
+        }
+
+        function init() {
+            // 捕获阶段：页面自己的 mouseover 处理里 stopPropagation 也拦不住我们
+            window.addEventListener('mouseover', onOver, true);
+            document.documentElement.addEventListener('mouseleave', scheduleHide);
+            window.addEventListener('scroll', schedulePlace, { capture: true, passive: true });
+            window.addEventListener('resize', schedulePlace, { passive: true });
+        }
+
+        return { init };
+    })();
 
     // =========================================================================
     // 菜单
@@ -267,4 +471,5 @@
 
     GM_registerMenuCommand('导出页面上所有表格（CSV）', exportAll);
     registerFillMenu();
+    Toolbar.init();
 })();

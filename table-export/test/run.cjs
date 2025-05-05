@@ -160,6 +160,77 @@ const text = buf => buf.subarray(3).toString('utf8')
         await page.close()
     })
 
+    console.log('工具条')
+
+    const BAR = 'table-export-toolbar .bar'
+    const btn = action => `table-export-toolbar button[data-action="${action}"]`
+    const barVisible = page => page.locator(BAR).isVisible()
+
+    await t.test('悬停数据表浮出工具条，复制 TSV 调用 GM_setClipboard', async () => {
+        const { page } = await open('toolbar.html')
+        t.eq(await barVisible(page), false, '初始不显示')
+        await page.hover('#data td >> nth=0')
+        await page.locator(BAR).waitFor({ state: 'visible', timeout: 2000 })
+        const bar = await page.locator(BAR).boundingBox()
+        const table = await page.locator('#data').boundingBox()
+        t.assert(bar.y + bar.height <= table.y + 1, `工具条在表格上沿外侧：bar=${JSON.stringify(bar)} table=${JSON.stringify(table)}`)
+        t.assert(Math.abs(bar.x + bar.width - (table.x + table.width)) < 2, '右对齐')
+        await page.click(btn('copy-tsv'))
+        const gm = await h.gm(page)
+        t.eq(gm.clipboard, { text: '名称\t数量\t操作\n苹果\t3\t点我\n香蕉\t5\t-', type: 'text' })
+        t.eq(await page.locator(btn('copy-tsv')).textContent(), '✓', '点击后有反馈')
+        t.eq(h.errors(page).map(String), [])
+        await page.close()
+    })
+
+    await t.test('工具条点下载 CSV 触发下载', async () => {
+        const { page, downloads } = await open('toolbar.html')
+        await page.hover('#data td >> nth=0')
+        await page.click(btn('download-csv'))
+        const [d] = await downloads.waitFor(1)
+        t.eq(d.name, '工具条-表格1.csv')
+        t.eq(parseDelimited(text(d.buf), ','), [['名称', '数量', '操作'], ['苹果', '3', '点我'], ['香蕉', '5', '-']])
+        await page.close()
+    })
+
+    await t.test('工具条不挡表格：右上角单元格照样能点', async () => {
+        const { page } = await open('toolbar.html')
+        await page.hover('#data td >> nth=0')
+        await page.locator(BAR).waitFor({ state: 'visible', timeout: 2000 })
+        await page.click('#act', { timeout: 2000 })
+        t.eq(await page.getAttribute('#act', 'data-n'), '1')
+        t.eq(await barVisible(page), true, '点表格时工具条还在')
+        await page.close()
+    })
+
+    await t.test('overflow:hidden 容器里的宽表：工具条贴着可见区域右边，不被裁掉、页面样式进不来', async () => {
+        const { page } = await open('toolbar.html')
+        await page.hover('#wide td >> nth=0')
+        await page.locator(BAR).waitFor({ state: 'visible', timeout: 2000 })
+        const bar = await page.locator(BAR).boundingBox()
+        const clip = await page.locator('#clip').boundingBox()
+        t.assert(bar.x + bar.width <= clip.x + clip.width + 1, `工具条应落在容器可见范围内：bar=${JSON.stringify(bar)} clip=${JSON.stringify(clip)}`)
+        t.assert(bar.x >= clip.x, '左边也不越界')
+        const hit = await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.tagName, { x: bar.x + bar.width - 5, y: bar.y + bar.height / 2 })
+        t.eq(hit, 'TABLE-EXPORT-TOOLBAR', '按钮所在的点真的命中工具条（没被盖住）')
+        t.eq(await page.evaluate(() => document.querySelector('table-export-toolbar').parentElement.tagName), 'HTML')
+        const style = await page.locator(btn('copy-tsv')).evaluate(b => ({ bg: getComputedStyle(b).backgroundColor, size: getComputedStyle(b).fontSize }))
+        t.assert(style.bg !== 'rgb(255, 0, 0)' && style.size !== '30px', '页面的 button 样式不该漏进来：' + JSON.stringify(style))
+        await page.close()
+    })
+
+    await t.test('布局表格上不出工具条；移出表格后工具条收起', async () => {
+        const { page } = await open('toolbar.html')
+        await page.hover('#single-col td >> nth=0')
+        await page.waitForTimeout(400)
+        t.eq(await barVisible(page), false, '单列表格不出工具条')
+        await page.hover('#data td >> nth=0')
+        await page.locator(BAR).waitFor({ state: 'visible', timeout: 2000 })
+        await page.hover('#away')
+        await page.locator(BAR).waitFor({ state: 'hidden', timeout: 2000 })
+        await page.close()
+    })
+
     await close()
     t.done()
 })().catch(e => {
