@@ -104,6 +104,62 @@ const text = buf => buf.subarray(3).toString('utf8')
         await page.close()
     })
 
+    console.log('合并单元格')
+
+    const csvGrid = async (fixture, opts) => {
+        const { page, downloads } = await open(fixture, opts)
+        await h.menu(page, '导出页面上所有表格')
+        const [d] = await downloads.waitFor(1)
+        return { page, name: d.name, grid: parseDelimited(text(d.buf), ',') }
+    }
+
+    await t.test('rowspan/colspan 混合：逐格展开，thead → tbody → tfoot，rowspan 不越过 tbody', async () => {
+        const { page, name, grid } = await csvGrid('complex.html')
+        t.eq(name, '课程表.csv', 'caption 作为文件名')
+        const expected = [
+            ['时间', '周一', '周一', '周二'],
+            ['时间', '上', '下', '周二'],
+            ['第1节', '语文', '语文', '数学'],
+            ['第2节', '语文', '语文', '英语'],
+            ['第3节', '物理', '化学', '英语'],
+            ['合计：4 节', '合计：4 节', '合计：4 节', '合计：4 节'],
+        ]
+        t.eq(grid.length, expected.length, '行数')
+        for (let r = 0; r < expected.length; r++) {
+            for (let c = 0; c < expected[r].length; c++) {
+                t.eq(grid[r][c], expected[r][c], `第 ${r} 行第 ${c} 列`)
+            }
+            t.eq(grid[r].length, 4, `第 ${r} 行列数`)
+        }
+        await page.close()
+    })
+
+    await t.test('mergeFill=first：合并区只有左上角有值', async () => {
+        const { page, grid } = await csvGrid('complex.html', { values: { mergeFill: 'first' } })
+        t.eq(grid, [
+            ['时间', '周一', '', '周二'],
+            ['', '上', '下', ''],
+            ['第1节', '语文', '', '数学'],
+            ['第2节', '', '', '英语'],
+            ['第3节', '物理', '化学', ''],
+            ['合计：4 节', '', '', ''],
+        ])
+        await page.close()
+    })
+
+    await t.test('菜单切换填充方式：菜单名跟着变，之后的导出按新方式填', async () => {
+        const { page, downloads } = await open('complex.html')
+        t.assert((await h.gm(page)).menu.some(m => m.includes('每一格都填')), '默认是每一格都填')
+        await h.menu(page, '合并单元格')
+        const gm = await h.gm(page)
+        t.assert(gm.menu.some(m => m.includes('只填第一格')), '切换后菜单名更新：' + gm.menu)
+        t.eq(gm.menu.filter(m => m.includes('合并单元格')).length, 1, '旧菜单项要注销')
+        await h.menu(page, '导出页面上所有表格')
+        const [d] = await downloads.waitFor(1)
+        t.eq(parseDelimited(text(d.buf), ',')[0], ['时间', '周一', '', '周二'])
+        await page.close()
+    })
+
     await close()
     t.done()
 })().catch(e => {

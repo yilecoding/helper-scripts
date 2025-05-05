@@ -3,13 +3,16 @@
 // @name:zh-CN   网页表格导出 | 一键复制/下载 CSV、Excel、Markdown、JSON
 // @name:en      Table Export | Copy or download any web table as CSV / TSV / Markdown / JSON
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.05.02.1
-// @description  任意网页上的表格一键导出：识别原生 <table>（自动排除排版用的布局表格），从菜单把页面上所有表格下载为 CSV（带 BOM，Excel 直接打开不乱码）。
-// @description:zh-CN  任意网页上的表格一键导出：识别原生 <table>（自动排除排版用的布局表格），从菜单把页面上所有表格下载为 CSV（带 BOM，Excel 直接打开不乱码）。
-// @description:en  Export any table on any web page. Detects native <table> elements (skipping layout-only tables) and downloads every table on the page as CSV (with UTF-8 BOM so Excel opens Chinese text correctly).
+// @version      2025.05.05.2
+// @description  任意网页上的表格一键导出：识别原生 <table>（自动排除排版用的布局表格），正确展开 rowspan/colspan 合并单元格，从菜单把页面上所有表格下载为 CSV（带 BOM，Excel 直接打开不乱码）。
+// @description:zh-CN  任意网页上的表格一键导出：识别原生 <table>（自动排除排版用的布局表格），正确展开 rowspan/colspan 合并单元格，从菜单把页面上所有表格下载为 CSV（带 BOM，Excel 直接打开不乱码）。
+// @description:en  Export any table on any web page. Detects native <table> elements (skipping layout-only tables), expands rowspan/colspan merged cells, and downloads every table on the page as CSV (with UTF-8 BOM so Excel opens Chinese text correctly).
 // @author       壹樂（V：ita1125）
 // @match        *://*/*
 // @grant        GM_registerMenuCommand
+// @grant        GM_unregisterMenuCommand
+// @grant        GM_getValue
+// @grant        GM_setValue
 // @license      CC BY-NC-SA
 // @run-at       document-idle
 // @homepageURL  https://github.com/yilecoding/helper-scripts
@@ -45,6 +48,13 @@
         minRows: 2,          // 少于 2 行：多半是一行按钮/导航
         minCols: 2,          // 单列：多半是竖排的版块容器
         maxNestDepth: 2,     // 被套在 2 层以上的 <table> 里：老式整页排版的最内层碎片
+
+        /*
+         * 合并单元格怎么填：'all' = 被覆盖的每一格都填同样的值（方便筛选/透视），
+         * 'first' = 只填左上角那一格、其余留空（和 Excel「合并后居中」的存储方式一致）。
+         * 这里是默认值，菜单里可以切换，切换结果存在 GM 存储里。
+         */
+        mergeFill: 'all',
 
         downloadGap: 400,    // 连续下载多个文件的间隔（毫秒）。连发太快 Chrome 会吞掉后面的
         maxNameLength: 80,   // 文件名最长字符数（不含扩展名）
@@ -116,17 +126,59 @@
     function cellText(cell) {
         return (cell.innerText || '')
             .replace(/\r\n?/g, '\n')
-            .replace(/ /g, ' ')
+            .replace(/\u00a0/g, ' ')   // &nbsp; 统一成普通空格，否则 Excel 里看着一样、筛选却对不上
             .trim();
     }
 
-    /** 读成二维字符串数组。 */
-    function readGrid(table) {
-        const grid = [];
-        for (const row of table.rows) {
-            grid.push(Array.from(row.cells, cellText));
+    /**
+     * 原生表格 → 原始行：[{ group, cells: [{ text, rowSpan, colSpan }] }]。
+     * table.rows 的顺序是规范定死的：thead 的行 → tbody / 直属 tr → tfoot 的行，
+     * 和源码里 <tfoot> 写在 <tbody> 前面无关（HTML4 时代的写法，老页面里还很常见）。
+     */
+    function nativeRows(table) {
+        return Array.from(table.rows, (row) => ({
+            group: row.parentElement,
+            cells: Array.from(row.cells, (cell) => ({
+                text: cellText(cell),
+                rowSpan: cell.rowSpan,
+                colSpan: Math.max(1, cell.colSpan || 1),
+            })),
+        }));
+    }
+
+    /**
+     * 按 HTML 表格模型把合并单元格摊平成矩形网格。
+     * 两个按规范来的细节：
+     *   - rowspan 不跨行组：tbody 最后一行写 rowspan="5"，也不会延伸进 tfoot
+     *   - rowspan="0" 表示「延伸到本行组末尾」，不是 0 行（cell.rowSpan 也确实返回 0）
+     */
+    function expand(rows, fill = mergeFill()) {
+        const grid = rows.map(() => []);
+        // 每行所在行组的最后一行下标，用来截断 rowspan
+        const groupEnd = [];
+        for (let r = rows.length - 1; r >= 0; r--) {
+            groupEnd[r] = r + 1 < rows.length && rows[r + 1].group === rows[r].group ? groupEnd[r + 1] : r;
         }
-        return grid;
+        rows.forEach((row, r) => {
+            let c = 0;
+            for (const cell of row.cells) {
+                while (grid[r][c] !== undefined) c++;   // 跳过被上方 rowspan 占住的格
+                const lastRow = cell.rowSpan === 0 ? groupEnd[r] : Math.min(groupEnd[r], r + cell.rowSpan - 1);
+                for (let rr = r; rr <= lastRow; rr++) {
+                    for (let cc = c; cc < c + cell.colSpan; cc++) {
+                        grid[rr][cc] = fill === 'first' && (rr !== r || cc !== c) ? '' : cell.text;
+                    }
+                }
+                c += cell.colSpan;
+            }
+        });
+        // 补齐成矩形：短行、被 rowspan 跳出来的空洞都填空串
+        const cols = Math.max(0, ...grid.map((r) => r.length));
+        return grid.map((r) => Array.from({ length: cols }, (_, i) => (r[i] === undefined ? '' : r[i])));
+    }
+
+    function readGrid(table) {
+        return expand(nativeRows(table));
     }
 
     // =========================================================================
@@ -191,5 +243,28 @@
         }
     }
 
+    // =========================================================================
+    // 设置（存在 GM 存储里，菜单切换）
+    // =========================================================================
+
+    function mergeFill() {
+        const v = GM_getValue('mergeFill', CONFIG.mergeFill);
+        return v === 'first' ? 'first' : 'all';
+    }
+
+    const FILL_LABEL = { all: '每一格都填', first: '只填第一格' };
+    let fillMenuId = null;
+
+    /** Tampermonkey 的菜单项不能改名，只能注销后重新注册，所以每次切换都重来一遍。 */
+    function registerFillMenu() {
+        if (fillMenuId !== null) GM_unregisterMenuCommand(fillMenuId);
+        fillMenuId = GM_registerMenuCommand(`合并单元格：${FILL_LABEL[mergeFill()]}（点击切换）`, () => {
+            GM_setValue('mergeFill', mergeFill() === 'all' ? 'first' : 'all');
+            log('合并单元格填充方式：', FILL_LABEL[mergeFill()]);
+            registerFillMenu();
+        });
+    }
+
     GM_registerMenuCommand('导出页面上所有表格（CSV）', exportAll);
+    registerFillMenu();
 })();
