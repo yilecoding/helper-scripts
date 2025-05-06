@@ -231,6 +231,53 @@ const text = buf => buf.subarray(3).toString('utf8')
         await page.close()
     })
 
+    console.log('Markdown / JSON')
+
+    async function hoverAndClick(page, cellSel, action) {
+        await page.hover(cellSel)
+        await page.click(btn(action))
+    }
+
+    await t.test('Markdown：多行表头合成一行，| 转义为 \\|，换行变 <br>', async () => {
+        const { page } = await open('formats.html')
+        await hoverAndClick(page, '#fmt td >> nth=0', 'copy-md')
+        t.eq((await h.gm(page)).clipboard.text, [
+            '| 名称 | 名称 |  | 说明 |',
+            '| --- | --- | --- | --- |',
+            '| 管道 | a\\|b | x | ls \\| grep foo |',
+            '| 多行 | 001 |  | 第一行<br>第二行 |',
+        ].join('\n'))
+        await page.close()
+
+        const p2 = (await open('complex.html')).page
+        await hoverAndClick(p2, '#complex td >> nth=0', 'copy-md')
+        const md = (await h.gm(p2)).clipboard.text.split('\n')
+        t.eq(md[0], '| 时间 | 周一/上 | 周一/下 | 周二 |', '两行 thead 合成一行表头')
+        t.eq(md.length, 2 + 4, '表头之后是 tbody 3 行 + tfoot 1 行')
+        await p2.close()
+    })
+
+    await t.test('JSON：表头当键（重复键加后缀、空键补列名），值保留字符串，不带 BOM', async () => {
+        const { page, downloads } = await open('formats.html')
+        await hoverAndClick(page, '#fmt td >> nth=0', 'download-json')
+        const [d] = await downloads.waitFor(1)
+        t.eq(d.name, '命令速查.json')
+        t.assert(d.buf[0] === 0x5b, 'JSON 开头不能有 BOM，应直接是 [')
+        t.eq(JSON.parse(d.buf.toString('utf8')), [
+            { 名称: '管道', 名称_2: 'a|b', 列3: 'x', 说明: 'ls | grep foo' },
+            { 名称: '多行', 名称_2: '001', 列3: '', 说明: '第一行\n第二行' },
+        ])
+        await page.close()
+
+        const r = await open('complex.html', { values: { mergeFill: 'first' } })
+        await hoverAndClick(r.page, '#complex td >> nth=0', 'download-json')
+        const [d2] = await r.downloads.waitFor(1)
+        const rows = JSON.parse(d2.buf.toString('utf8'))
+        t.eq(Object.keys(rows[0]), ['时间', '周一/上', '周一/下', '周二'], '只填第一格模式下表头键也不能丢')
+        t.eq(rows[0], { 时间: '第1节', '周一/上': '语文', '周一/下': '', 周二: '数学' })
+        await r.page.close()
+    })
+
     await close()
     t.done()
 })().catch(e => {

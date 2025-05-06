@@ -3,10 +3,10 @@
 // @name:zh-CN   网页表格导出 | 一键复制/下载 CSV、Excel、Markdown、JSON
 // @name:en      Table Export | Copy or download any web table as CSV / TSV / Markdown / JSON
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.05.05.3
-// @description  任意网页上的表格一键导出：识别原生 <table>（自动排除排版用的布局表格），正确展开 rowspan/colspan 合并单元格。鼠标移到表格上，右上角浮出工具条：复制为 TSV（直接粘贴进 Excel）、下载 CSV（带 BOM，Excel 直接打开不乱码）；菜单里可一键导出页面上所有表格。
-// @description:zh-CN  任意网页上的表格一键导出：识别原生 <table>（自动排除排版用的布局表格），正确展开 rowspan/colspan 合并单元格。鼠标移到表格上，右上角浮出工具条：复制为 TSV（直接粘贴进 Excel）、下载 CSV（带 BOM，Excel 直接打开不乱码）；菜单里可一键导出页面上所有表格。
-// @description:en  Export any table on any web page. Detects native <table> elements (skipping layout-only tables), expands rowspan/colspan merged cells. Hover a table to get a small toolbar: copy as TSV (paste straight into Excel) or download CSV (with UTF-8 BOM so Excel opens Chinese text correctly). A menu command exports every table on the page at once.
+// @version      2025.05.06.4
+// @description  任意网页上的表格一键导出：识别原生 <table>（自动排除排版用的布局表格），正确展开 rowspan/colspan 合并单元格。鼠标移到表格上，右上角浮出工具条：复制为 TSV（直接粘贴进 Excel）、复制为 Markdown 表格、下载 CSV（带 BOM，Excel 直接打开不乱码）、下载 JSON（表头当键）；菜单里可一键导出页面上所有表格。
+// @description:zh-CN  任意网页上的表格一键导出：识别原生 <table>（自动排除排版用的布局表格），正确展开 rowspan/colspan 合并单元格。鼠标移到表格上，右上角浮出工具条：复制为 TSV（直接粘贴进 Excel）、复制为 Markdown 表格、下载 CSV（带 BOM，Excel 直接打开不乱码）、下载 JSON（表头当键）；菜单里可一键导出页面上所有表格。
+// @description:en  Export any table on any web page. Detects native <table> elements (skipping layout-only tables), expands rowspan/colspan merged cells. Hover a table to get a small toolbar: copy as TSV (paste straight into Excel) or Markdown, download CSV (with UTF-8 BOM so Excel opens Chinese text correctly) or JSON (header row as keys). A menu command exports every table on the page at once.
 // @author       壹樂（V：ita1125）
 // @match        *://*/*
 // @grant        GM_setClipboard
@@ -200,8 +200,34 @@
         return grid.map((r) => Array.from({ length: cols }, (_, i) => (r[i] === undefined ? '' : r[i])));
     }
 
+    /**
+     * 表头键：每列把各表头行的值去重后用「/」连起来（两行表头「周一」+「上」→「周一/上」）。
+     * 固定按「每一格都填」展开来算 —— 只填第一格模式下合并表头右边那几列是空的，键会丢。
+     */
+    function headerKeys(rows, headerRows) {
+        const full = expand(rows.slice(0, headerRows), 'all');
+        const cols = full.length ? full[0].length : 0;
+        return Array.from({ length: cols }, (_, c) => {
+            const parts = [];
+            for (const row of full) {
+                if (row[c] && row[c] !== parts[parts.length - 1]) parts.push(row[c]);
+            }
+            return parts.join('/');
+        });
+    }
+
+    /**
+     * 返回二维数组，另带两个属性：
+     *   headerRows  表头占几行（<thead> 的行数；没有 thead 就当第一行是表头）
+     *   header      每列的键（见 headerKeys）
+     */
     function readGrid(table) {
-        return expand(nativeRows(table));
+        const rows = nativeRows(table);
+        const grid = expand(rows);
+        const theadRows = rows.filter((r) => r.group && r.group.tagName === 'THEAD').length;
+        grid.headerRows = Math.min(theadRows || 1, grid.length);
+        grid.header = headerKeys(rows, grid.headerRows);
+        return grid;
     }
 
     // =========================================================================
@@ -223,6 +249,29 @@
         return grid.map((r) => r.map(esc).join('\t')).join('\n');
     }
 
+    /**
+     * GFM 表格。表格必须恰好一行表头，多行表头按 headerKeys 合成一行。
+     * 单元格里的 | 不转义会被当成列分隔符，整行错位；换行在表格里不合法，换成 <br>。
+     */
+    function toMarkdown(grid) {
+        const esc = (s) => s.replace(/\|/g, '\\|').replace(/\n/g, '<br>');
+        const line = (cells) => `| ${cells.map(esc).join(' | ')} |`;
+        const body = grid.slice(grid.headerRows);
+        return [line(grid.header), line(grid.header.map(() => '---')), ...body.map(line)].join('\n');
+    }
+
+    /** 表头当键的对象数组。值一律保留字符串：转数字会吃掉「001」的前导零、长编号丢精度。 */
+    function toJSON(grid) {
+        const seen = new Map();
+        const keys = grid.header.map((k, i) => {
+            const base = k || `列${i + 1}`;
+            const n = (seen.get(base) || 0) + 1;
+            seen.set(base, n);
+            return n === 1 ? base : `${base}_${n}`;
+        });
+        return grid.slice(grid.headerRows).map((r) => Object.fromEntries(keys.map((k, i) => [k, r[i]])));
+    }
+
     // =========================================================================
     // 文件名 / 下载
     // =========================================================================
@@ -242,9 +291,8 @@
         return name || `table-${index + 1}`;
     }
 
-    function download(name, text, mime) {
-        // BOM 必须有：Excel 双击打开 CSV 时没有 BOM 就按本地编码（GBK）解析，中文全乱码
-        const blob = new Blob(['\uFEFF' + text], { type: `${mime};charset=utf-8` });
+    function download(name, text, mime, { bom = false } = {}) {
+        const blob = new Blob([(bom ? '\uFEFF' : '') + text], { type: `${mime};charset=utf-8` });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
@@ -264,7 +312,11 @@
 
     const ACTIONS = {
         'copy-tsv': { label: '复制 TSV', title: '复制为制表符分隔文本，可直接粘贴进 Excel', run: (grid) => GM_setClipboard(toTSV(grid), 'text') },
-        'download-csv': { label: 'CSV', title: '下载 CSV 文件', run: (grid, name) => download(name + '.csv', toCSV(grid), 'text/csv') },
+        'copy-md': { label: '复制 MD', title: '复制为 Markdown 表格', run: (grid) => GM_setClipboard(toMarkdown(grid), 'text') },
+        // CSV 必须带 BOM：Excel 双击打开时没有 BOM 就按本地编码（GBK）解析，中文全乱码。
+        // JSON 反过来不能带：RFC 8259 不允许，不少解析器（含 Python 的 json.load 默认）遇到 BOM 直接报错。
+        'download-csv': { label: '下载 CSV', title: '下载 CSV 文件（Excel 可直接打开）', run: (grid, name) => download(name + '.csv', toCSV(grid), 'text/csv', { bom: true }) },
+        'download-json': { label: '下载 JSON', title: '下载 JSON（表头当键）', run: (grid, name) => download(name + '.json', JSON.stringify(toJSON(grid), null, 2), 'application/json') },
     };
 
     // =========================================================================
@@ -368,7 +420,8 @@
             if (v.right - v.left < 20 || v.bottom - v.top < 10) return hide();   // 整张表被滚出去了
             const w = bar.offsetWidth;
             const h = bar.offsetHeight;
-            const x = Math.max(v.left, v.right - w);
+            // 右对齐；表格比工具条还窄时向左伸出去，只保证不出视口
+            const x = Math.max(0, v.right - w);
             const y = v.top - h - 2 >= 0 ? v.top - h - 2 : v.top + 2;
             bar.style.left = `${x}px`;
             bar.style.top = `${y}px`;
@@ -443,7 +496,7 @@
         for (let i = 0; i < tables.length; i++) {
             if (i) await new Promise((r) => setTimeout(r, CONFIG.downloadGap));
             const t = tables[i];
-            download(baseName(t.el, i) + '.csv', toCSV(t.grid), 'text/csv');
+            download(baseName(t.el, i) + '.csv', toCSV(t.grid), 'text/csv', { bom: true });
         }
     }
 
