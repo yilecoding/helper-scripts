@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>ARIA 表格</title>
+<style>
+  body { padding: 60px 40px; font: 14px sans-serif; }
+  [role="row"] { display: flex; }
+  [role="row"] > * { width: 120px; border: 1px solid #ccc; padding: 2px 4px; }
+  [aria-colspan="2"] { width: 240px; }
+</style>
+</head>
+<body>
+<!-- React 表格组件的典型结构：没有一个 <table>，全是 div + role -->
+<div role="grid" aria-label="员工名单" id="grid">
+  <div role="rowgroup">
+    <div role="row"><div role="columnheader">工号</div><div role="columnheader">姓名</div><div role="columnheader">部门</div></div>
+  </div>
+  <div role="rowgroup">
+    <div role="row"><div role="gridcell">001</div><div role="gridcell"><span>张三</span></div><div role="gridcell">研发</div></div>
+    <div role="row"><div role="gridcell">002</div><div role="gridcell" aria-colspan="2">李四（外派）</div></div>
+    <div role="row">
+      <div role="rowheader">003</div>
+      <div role="gridcell">王五
+        <!-- 单元格里嵌了一张子表：它的行不能算进外层 -->
+        <div role="table" id="inner">
+          <div role="row"><div role="cell">子1</div><div role="cell">子2</div></div>
+          <div role="row"><div role="cell">子3</div><div role="cell">子4</div></div>
+        </div>
+      </div>
+      <div role="gridcell">财务</div>
+    </div>
+  </div>
+</div>
+
+<h3 id="budget-title">部门预算</h3>
+<div role="table" aria-labelledby="budget-title" id="budget" style="margin-top: 40px">
+  <div role="row"><div role="cell">部门</div><div role="cell">预算</div></div>
+  <div role="row"><div role="cell">研发</div><div role="cell">100</div></div>
+</div>
+
+<!-- 纯 div 没有 role：不是表格 -->
+<div id="plain-divs"><div><div>a</div><div>b</div></div><div><div>c</div><div>d</div></div></div>
+</body>
+</html>

@@ -3,10 +3,10 @@
 // @name:zh-CN   网页表格导出 | 一键复制/下载 CSV、Excel、Markdown、JSON
 // @name:en      Table Export | Copy or download any web table as CSV / TSV / Markdown / JSON
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.05.06.4
-// @description  任意网页上的表格一键导出：识别原生 <table>（自动排除排版用的布局表格），正确展开 rowspan/colspan 合并单元格。鼠标移到表格上，右上角浮出工具条：复制为 TSV（直接粘贴进 Excel）、复制为 Markdown 表格、下载 CSV（带 BOM，Excel 直接打开不乱码）、下载 JSON（表头当键）；菜单里可一键导出页面上所有表格。
-// @description:zh-CN  任意网页上的表格一键导出：识别原生 <table>（自动排除排版用的布局表格），正确展开 rowspan/colspan 合并单元格。鼠标移到表格上，右上角浮出工具条：复制为 TSV（直接粘贴进 Excel）、复制为 Markdown 表格、下载 CSV（带 BOM，Excel 直接打开不乱码）、下载 JSON（表头当键）；菜单里可一键导出页面上所有表格。
-// @description:en  Export any table on any web page. Detects native <table> elements (skipping layout-only tables), expands rowspan/colspan merged cells. Hover a table to get a small toolbar: copy as TSV (paste straight into Excel) or Markdown, download CSV (with UTF-8 BOM so Excel opens Chinese text correctly) or JSON (header row as keys). A menu command exports every table on the page at once.
+// @version      2025.05.06.5
+// @description  任意网页上的表格一键导出：识别原生 <table>（自动排除排版用的布局表格）和 div 拼出来的 ARIA 表格（role=table/grid，React 表格组件常见），正确展开 rowspan/colspan 合并单元格。鼠标移到表格上，右上角浮出工具条：复制为 TSV（直接粘贴进 Excel）、复制为 Markdown 表格、下载 CSV（带 BOM，Excel 直接打开不乱码）、下载 JSON（表头当键）；菜单里可一键导出页面上所有表格。
+// @description:zh-CN  任意网页上的表格一键导出：识别原生 <table>（自动排除排版用的布局表格）和 div 拼出来的 ARIA 表格（role=table/grid，React 表格组件常见），正确展开 rowspan/colspan 合并单元格。鼠标移到表格上，右上角浮出工具条：复制为 TSV（直接粘贴进 Excel）、复制为 Markdown 表格、下载 CSV（带 BOM，Excel 直接打开不乱码）、下载 JSON（表头当键）；菜单里可一键导出页面上所有表格。
+// @description:en  Export any table on any web page. Detects native <table> elements (skipping layout-only tables) and div-based ARIA grids (role=table/grid, common in React table components), expands rowspan/colspan merged cells. Hover a table to get a small toolbar: copy as TSV (paste straight into Excel) or Markdown, download CSV (with UTF-8 BOM so Excel opens Chinese text correctly) or JSON (header row as keys). A menu command exports every table on the page at once.
 // @author       壹樂（V：ita1125）
 // @match        *://*/*
 // @grant        GM_setClipboard
@@ -67,6 +67,21 @@
     // 表格识别
     // =========================================================================
 
+    /*
+     * 两类表格：原生 <table>，和 div 拼的 ARIA 表格（role=table/grid/treegrid +
+     * role=row + role=cell/gridcell/columnheader/rowheader）。很多 React 表格组件
+     * （MUI DataGrid、各种虚拟滚动表格）是后一种，querySelectorAll('table') 一个都找不到。
+     * <table role="grid"> 仍按原生表格读（isNative 看标签名，不看 role）。
+     */
+    const ARIA_TABLE = '[role="table"],[role="grid"],[role="treegrid"]';
+    const ANY_TABLE = `table,${ARIA_TABLE}`;
+    const ARIA_CELL = '[role="cell"],[role="gridcell"],[role="columnheader"],[role="rowheader"]';
+
+    const isNative = (el) => el.tagName === 'TABLE';
+
+    /** el 所属的那张表（不含 el 自己）。用来排除嵌套子表的行和格。 */
+    const ownerTable = (el) => el.parentElement && el.parentElement.closest(ANY_TABLE);
+
     function nestDepth(table) {
         let depth = 0;
         for (let p = table.parentElement; p; p = p.parentElement) {
@@ -86,6 +101,7 @@
 
     /** 不用读单元格就能判的几条，先判，省得对整页排版大表跑 innerText。 */
     function structureReason(table) {
+        if (!isNative(table)) return '';   // 写了 role=grid 就是作者明确声明的数据表
         const role = (table.getAttribute('role') || '').toLowerCase();
         if (role === 'presentation' || role === 'none') return `role=${role}`;
         // 外层包着别的表格、自己又没有表头的，是排版容器；里面那张单独判断
@@ -110,14 +126,10 @@
     function quickReason(table) {
         const structure = structureReason(table);
         if (structure) return structure;
-        const rows = table.rows;
+        const rows = rawRows(table, false);
         if (rows.length < CONFIG.minRows) return `只有 ${rows.length} 行`;
         let cols = 0;
-        for (const row of rows) {
-            let n = 0;
-            for (const cell of row.cells) n += Math.max(1, cell.colSpan || 1);
-            cols = Math.max(cols, n);
-        }
+        for (const row of rows) cols = Math.max(cols, row.cells.reduce((n, c) => n + c.colSpan, 0));
         if (cols < CONFIG.minCols) return '单列';
         if (!table.textContent.trim()) return '没有文字';
         return '';
@@ -128,7 +140,7 @@
     /** 页面上所有数据表（文档顺序）。快速判断过了的，再用真实网格复核一次。 */
     function findTables(root = document) {
         const out = [];
-        for (const table of root.querySelectorAll('table')) {
+        for (const table of root.querySelectorAll(ANY_TABLE)) {
             if (!isDataTable(table)) continue;
             const grid = readGrid(table);
             const reason = contentReason(grid);
@@ -153,21 +165,52 @@
             .trim();
     }
 
+    /*
+     * 原始行：[{ group, header, cells: [{ text, rowSpan, colSpan }] }]，两类表格读成同一个形状，
+     * 后面的展开、序列化不区分来源。withText=false 时不读文字（悬停快速判断用）。
+     */
+
     /**
-     * 原生表格 → 原始行：[{ group, cells: [{ text, rowSpan, colSpan }] }]。
      * table.rows 的顺序是规范定死的：thead 的行 → tbody / 直属 tr → tfoot 的行，
      * 和源码里 <tfoot> 写在 <tbody> 前面无关（HTML4 时代的写法，老页面里还很常见）。
      */
-    function nativeRows(table) {
+    function nativeRows(table, withText) {
         return Array.from(table.rows, (row) => ({
             group: row.parentElement,
+            header: row.parentElement.tagName === 'THEAD',
             cells: Array.from(row.cells, (cell) => ({
-                text: cellText(cell),
+                text: withText ? cellText(cell) : '',
                 rowSpan: cell.rowSpan,
                 colSpan: Math.max(1, cell.colSpan || 1),
             })),
         }));
     }
+
+    /** ARIA 表格没有 thead：一整行都是 columnheader 的算表头行。合并单元格看 aria-rowspan/aria-colspan。 */
+    function ariaRows(table, withText) {
+        const span = (el, attr) => {
+            const n = parseInt(el.getAttribute(attr), 10);
+            return Number.isFinite(n) && n >= 0 ? n : 1;
+        };
+        const out = [];
+        for (const row of table.querySelectorAll('[role="row"]')) {
+            if (ownerTable(row) !== table) continue;
+            const cells = Array.from(row.querySelectorAll(ARIA_CELL)).filter((c) => c.parentElement.closest('[role="row"]') === row);
+            const g = row.closest('[role="rowgroup"]');
+            out.push({
+                group: g && g !== table && table.contains(g) ? g : table,
+                header: cells.length > 0 && cells.every((c) => c.getAttribute('role') === 'columnheader'),
+                cells: cells.map((cell) => ({
+                    text: withText ? cellText(cell) : '',
+                    rowSpan: span(cell, 'aria-rowspan'),
+                    colSpan: Math.max(1, span(cell, 'aria-colspan')),
+                })),
+            });
+        }
+        return out;
+    }
+
+    const rawRows = (table, withText = true) => (isNative(table) ? nativeRows : ariaRows)(table, withText);
 
     /**
      * 按 HTML 表格模型把合并单元格摊平成矩形网格。
@@ -218,14 +261,15 @@
 
     /**
      * 返回二维数组，另带两个属性：
-     *   headerRows  表头占几行（<thead> 的行数；没有 thead 就当第一行是表头）
+     *   headerRows  表头占几行（开头连续的表头行数；一行都没有就当第一行是表头）
      *   header      每列的键（见 headerKeys）
      */
     function readGrid(table) {
-        const rows = nativeRows(table);
+        const rows = rawRows(table);
         const grid = expand(rows);
-        const theadRows = rows.filter((r) => r.group && r.group.tagName === 'THEAD').length;
-        grid.headerRows = Math.min(theadRows || 1, grid.length);
+        let leading = 0;
+        while (leading < rows.length && rows[leading].header) leading++;
+        grid.headerRows = Math.min(leading || 1, grid.length);
         grid.header = headerKeys(rows, grid.headerRows);
         return grid;
     }
@@ -284,9 +328,18 @@
             .slice(0, CONFIG.maxNameLength);
     }
 
-    /** 默认文件名：<caption> 优先，没有就用「页面标题-表格N」。 */
+    /** 表格自己的名字：<caption> → aria-label → aria-labelledby 指向的元素。 */
+    function tableLabel(table) {
+        if (isNative(table) && table.caption) return cellText(table.caption);
+        const label = table.getAttribute('aria-label');
+        if (label) return label;
+        const ids = (table.getAttribute('aria-labelledby') || '').split(/\s+/).filter(Boolean);
+        return ids.map((id) => document.getElementById(id)).filter(Boolean).map(cellText).join(' ');
+    }
+
+    /** 默认文件名：表格自己的名字优先，没有就用「页面标题-表格N」。 */
     function baseName(table, index) {
-        const caption = table.caption ? cellText(table.caption) : '';
+        const caption = tableLabel(table);
         const name = sanitizeName(caption) || sanitizeName(`${document.title || location.hostname}-表格${index + 1}`);
         return name || `table-${index + 1}`;
     }
@@ -307,7 +360,7 @@
 
     /** 单张表在页面数据表里的序号，用于没有 caption 时的文件名。 */
     function tableIndex(table) {
-        return Array.from(document.querySelectorAll('table')).filter(isDataTable).indexOf(table);
+        return Array.from(document.querySelectorAll(ANY_TABLE)).filter(isDataTable).indexOf(table);
     }
 
     const ACTIONS = {
@@ -456,7 +509,7 @@
 
         /** 从鼠标下的元素往外找第一张数据表（内层是布局碎片时继续往外找）。 */
         function tableAt(target) {
-            for (let t = target && target.closest && target.closest('table'); t; t = t.parentElement && t.parentElement.closest('table')) {
+            for (let t = target.closest(ANY_TABLE); t; t = ownerTable(t)) {
                 if (isDataTable(t)) return t;
             }
             return null;

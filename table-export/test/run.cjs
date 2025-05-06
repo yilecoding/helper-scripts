@@ -278,6 +278,41 @@ const text = buf => buf.subarray(3).toString('utf8')
         await r.page.close()
     })
 
+    console.log('ARIA 表格')
+
+    await t.test('div + role=grid：识别、aria-colspan 展开、columnheader 行当表头、嵌套子表的行不混进来', async () => {
+        const { page } = await open('aria.html')
+        await page.hover('#grid [role="gridcell"] >> nth=0')
+        await page.click(btn('copy-tsv'))
+        const grid = parseDelimited((await h.gm(page)).clipboard.text, '\t')
+        t.eq(grid.length, 4, '外层 4 行（子表的 2 行不算）')
+        t.eq(grid.slice(0, 3), [['工号', '姓名', '部门'], ['001', '张三', '研发'], ['002', '李四（外派）', '李四（外派）']])
+        t.eq(grid[3][0], '003', 'rowheader 也是单元格')
+        t.assert(grid[3][1].startsWith('王五'), '嵌套子表所在的格：' + grid[3][1])
+        t.eq(grid[3][2], '财务', '子表的格不能挤占外层的列')
+
+        await page.close()
+    })
+
+    await t.test('ARIA 表格：导出全部按文档顺序，aria-label / aria-labelledby 当文件名，纯 div 不算', async () => {
+        const { page, downloads } = await open('aria.html')
+        await h.menu(page, '导出页面上所有表格')
+        await downloads.waitFor(3)
+        await page.waitForTimeout(800)
+        t.eq(downloads.map(d => d.name), ['员工名单.csv', 'ARIA 表格-表格2.csv', '部门预算.csv'])
+        t.eq(parseDelimited(text(downloads[1].buf), ','), [['子1', '子2'], ['子3', '子4']])
+        t.eq(parseDelimited(text(downloads[2].buf), ','), [['部门', '预算'], ['研发', '100']])
+        await page.close()
+    })
+
+    await t.test('ARIA 表格 JSON：没有 columnheader 时第一行当键', async () => {
+        const { page, downloads } = await open('aria.html')
+        await hoverAndClick(page, '#budget [role="cell"] >> nth=0', 'download-json')
+        const [d] = await downloads.waitFor(1)
+        t.eq(JSON.parse(d.buf.toString('utf8')), [{ 部门: '研发', 预算: '100' }])
+        await page.close()
+    })
+
     await close()
     t.done()
 })().catch(e => {
