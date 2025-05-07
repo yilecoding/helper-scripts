@@ -3,7 +3,7 @@
 // @name:zh-CN   网页表格导出 | 一键复制/下载 CSV、Excel、Markdown、JSON
 // @name:en      Table Export | Copy or download any web table as CSV / TSV / Markdown / JSON
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.05.06.5
+// @version      2025.05.07.6
 // @description  任意网页上的表格一键导出：识别原生 <table>（自动排除排版用的布局表格）和 div 拼出来的 ARIA 表格（role=table/grid，React 表格组件常见），正确展开 rowspan/colspan 合并单元格。鼠标移到表格上，右上角浮出工具条：复制为 TSV（直接粘贴进 Excel）、复制为 Markdown 表格、下载 CSV（带 BOM，Excel 直接打开不乱码）、下载 JSON（表头当键）；菜单里可一键导出页面上所有表格。
 // @description:zh-CN  任意网页上的表格一键导出：识别原生 <table>（自动排除排版用的布局表格）和 div 拼出来的 ARIA 表格（role=table/grid，React 表格组件常见），正确展开 rowspan/colspan 合并单元格。鼠标移到表格上，右上角浮出工具条：复制为 TSV（直接粘贴进 Excel）、复制为 Markdown 表格、下载 CSV（带 BOM，Excel 直接打开不乱码）、下载 JSON（表头当键）；菜单里可一键导出页面上所有表格。
 // @description:en  Export any table on any web page. Detects native <table> elements (skipping layout-only tables) and div-based ARIA grids (role=table/grid, common in React table components), expands rowspan/colspan merged cells. Hover a table to get a small toolbar: copy as TSV (paste straight into Excel) or Markdown, download CSV (with UTF-8 BOM so Excel opens Chinese text correctly) or JSON (header row as keys). A menu command exports every table on the page at once.
@@ -168,17 +168,24 @@
     /*
      * 原始行：[{ group, header, cells: [{ text, rowSpan, colSpan }] }]，两类表格读成同一个形状，
      * 后面的展开、序列化不区分来源。withText=false 时不读文字（悬停快速判断用）。
+     *
+     * 隐藏的行、格（display:none，包括 hidden 属性、被隐藏的行组）在展开「之前」就丢掉，
+     * 不是展开完再删 —— 这样才和浏览器画出来的一致（Chromium 实测）：
+     *   - rowspan="2" 的格下面紧跟一个隐藏行，它会跨到再下面那个可见行
+     *   - 一行里隐藏一个格，右边的格整体左移一列
+     * 先展开再删的话，这两种情况都会错位。
      */
+    const rendered = (el) => el.getClientRects().length > 0;
 
     /**
      * table.rows 的顺序是规范定死的：thead 的行 → tbody / 直属 tr → tfoot 的行，
      * 和源码里 <tfoot> 写在 <tbody> 前面无关（HTML4 时代的写法，老页面里还很常见）。
      */
     function nativeRows(table, withText) {
-        return Array.from(table.rows, (row) => ({
+        return Array.from(table.rows).filter(rendered).map((row) => ({
             group: row.parentElement,
             header: row.parentElement.tagName === 'THEAD',
-            cells: Array.from(row.cells, (cell) => ({
+            cells: Array.from(row.cells).filter(rendered).map((cell) => ({
                 text: withText ? cellText(cell) : '',
                 rowSpan: cell.rowSpan,
                 colSpan: Math.max(1, cell.colSpan || 1),
@@ -194,8 +201,8 @@
         };
         const out = [];
         for (const row of table.querySelectorAll('[role="row"]')) {
-            if (ownerTable(row) !== table) continue;
-            const cells = Array.from(row.querySelectorAll(ARIA_CELL)).filter((c) => c.parentElement.closest('[role="row"]') === row);
+            if (ownerTable(row) !== table || !rendered(row)) continue;
+            const cells = Array.from(row.querySelectorAll(ARIA_CELL)).filter((c) => c.parentElement.closest('[role="row"]') === row && rendered(c));
             const g = row.closest('[role="rowgroup"]');
             out.push({
                 group: g && g !== table && table.contains(g) ? g : table,

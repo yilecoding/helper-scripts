@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>隐藏行列</title>
+<style>
+  body { padding: 60px 40px; }
+  /* 页面用 CSS 把「内部编号」一整列藏起来 */
+  #hidden .internal { display: none; }
+  .sr { display: none; }
+  [role="row"] { display: flex; }
+  [role="row"] > * { width: 100px; }
+</style>
+</head>
+<body>
+<table id="hidden" border="1">
+  <thead><tr><th>名称</th><th class="internal">内部编号</th><th>状态</th><th>备注</th></tr></thead>
+  <tbody>
+    <tr><td rowspan="2">甲</td><td class="internal">X-1</td><td>正常</td><td>一</td></tr>
+    <tr style="display: none"><td class="internal">X-2</td><td>已删除</td><td>不该出现</td></tr>
+    <tr><td class="internal">X-3</td><td>正常</td><td>三<span class="sr">（隐藏的提示）</span></td></tr>
+    <tr hidden><td>乙</td><td class="internal">X-4</td><td>草稿</td><td>不该出现</td></tr>
+    <tr><td>丙</td><td class="internal">X-5</td><td>正常</td><td>五</td></tr>
+  </tbody>
+  <tbody style="display: none"><tr><td>整个 tbody 被藏</td><td></td><td></td><td></td></tr></tbody>
+</table>
+
+<div role="grid" id="aria-hidden" style="margin-top: 40px">
+  <div role="row"><div role="columnheader">键</div><div role="columnheader">值</div></div>
+  <div role="row"><div role="gridcell">a</div><div role="gridcell">1</div></div>
+  <div role="row" style="display: none"><div role="gridcell">b</div><div role="gridcell">2</div></div>
+  <div role="row"><div role="gridcell">c</div><div role="gridcell">3</div></div>
+</div>
+</body>
+</html>

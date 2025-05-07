@@ -313,6 +313,35 @@ const text = buf => buf.subarray(3).toString('utf8')
         await page.close()
     })
 
+    console.log('隐藏行列')
+
+    await t.test('跳过 display:none 的行、列、行组，rowspan 跨过隐藏行落到下一可见行（与浏览器渲染一致）', async () => {
+        const { page } = await open('hidden.html')
+        await hoverAndClick(page, '#hidden td >> nth=0', 'copy-tsv')
+        const grid = parseDelimited((await h.gm(page)).clipboard.text, '\t')
+        t.eq(grid, [
+            ['名称', '状态', '备注'],
+            ['甲', '正常', '一'],
+            ['甲', '正常', '三'],
+            ['丙', '正常', '五'],
+        ])
+        // 和浏览器实际画出来的位置对一下：「三」所在的格和「备注」表头在同一列
+        const x = await page.evaluate(() => {
+            const cell = [...document.querySelectorAll('#hidden td')].find(td => td.innerText === '三')
+            const head = [...document.querySelectorAll('#hidden th')].find(th => th.innerText === '备注')
+            return [cell.getBoundingClientRect().left, head.getBoundingClientRect().left]
+        })
+        t.eq(x[0], x[1], '渲染结果里「三」确实在备注列')
+        await page.close()
+    })
+
+    await t.test('ARIA 表格的隐藏行同样跳过', async () => {
+        const { page } = await open('hidden.html')
+        await hoverAndClick(page, '#aria-hidden [role="gridcell"] >> nth=0', 'copy-tsv')
+        t.eq((await h.gm(page)).clipboard.text, '键\t值\na\t1\nc\t3')
+        await page.close()
+    })
+
     await close()
     t.done()
 })().catch(e => {
