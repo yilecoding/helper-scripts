@@ -342,6 +342,51 @@ const text = buf => buf.subarray(3).toString('utf8')
         await page.close()
     })
 
+    console.log('导出全部')
+
+    async function openFrames() {
+        const r = await open('frames.html')
+        await r.page.frameLocator('#child').locator('#orders').waitFor()
+        await r.page.waitForFunction(() => document.querySelector('#child').contentWindow.__gm)
+        return r
+    }
+
+    await t.test('合并为一个 JSON：含同源 iframe 里的表，只下载一个文件', async () => {
+        const { page, downloads } = await openFrames()
+        await h.menu(page, '合并为一个 JSON')
+        const [d] = await downloads.waitFor(1)
+        await page.waitForTimeout(800)
+        t.eq(downloads.length, 1)
+        t.eq(d.name, '后台首页-全部表格.json')
+        const data = JSON.parse(d.buf.toString('utf8'))
+        t.eq(data.title, '后台首页')
+        t.eq(data.tables.map(x => x.name), ['今日概览', '待处理订单'])
+        t.eq(data.tables[1].header, ['单号', '金额'])
+        t.eq(data.tables[1].rows, [{ 单号: 'D-1', 金额: '9.9' }, { 单号: 'D-2', 金额: '19.9' }])
+        await page.close()
+    })
+
+    await t.test('逐个 CSV：每张表一个文件；菜单只在顶层注册一次', async () => {
+        const { page, downloads } = await openFrames()
+        const childMenu = await page.frame({ url: /frame-child/ }).evaluate(() => window.__gm.menu.filter(Boolean).length)
+        t.eq(childMenu, 0, 'iframe 里不注册菜单')
+        t.eq((await h.gm(page)).menu.filter(m => m.includes('导出页面上所有表格')).length, 2)
+        await h.menu(page, '逐个 CSV')
+        await downloads.waitFor(2)
+        t.eq(downloads.map(d => d.name), ['今日概览.csv', '待处理订单.csv'])
+        await page.close()
+    })
+
+    await t.test('iframe 里的表格也有工具条', async () => {
+        const { page } = await openFrames()
+        const child = page.frame({ url: /frame-child/ })
+        await child.hover('#orders td >> nth=0')
+        await child.click('table-export-toolbar button[data-action="copy-md"]')
+        const clip = await child.evaluate(() => window.__gm.clipboard)
+        t.eq(clip.text.split('\n')[0], '| 单号 | 金额 |')
+        await page.close()
+    })
+
     await close()
     t.done()
 })().catch(e => {

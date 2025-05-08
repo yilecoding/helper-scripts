@@ -3,10 +3,10 @@
 // @name:zh-CN   网页表格导出 | 一键复制/下载 CSV、Excel、Markdown、JSON
 // @name:en      Table Export | Copy or download any web table as CSV / TSV / Markdown / JSON
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.05.07.6
-// @description  任意网页上的表格一键导出：识别原生 <table>（自动排除排版用的布局表格）和 div 拼出来的 ARIA 表格（role=table/grid，React 表格组件常见），正确展开 rowspan/colspan 合并单元格。鼠标移到表格上，右上角浮出工具条：复制为 TSV（直接粘贴进 Excel）、复制为 Markdown 表格、下载 CSV（带 BOM，Excel 直接打开不乱码）、下载 JSON（表头当键）；菜单里可一键导出页面上所有表格。
-// @description:zh-CN  任意网页上的表格一键导出：识别原生 <table>（自动排除排版用的布局表格）和 div 拼出来的 ARIA 表格（role=table/grid，React 表格组件常见），正确展开 rowspan/colspan 合并单元格。鼠标移到表格上，右上角浮出工具条：复制为 TSV（直接粘贴进 Excel）、复制为 Markdown 表格、下载 CSV（带 BOM，Excel 直接打开不乱码）、下载 JSON（表头当键）；菜单里可一键导出页面上所有表格。
-// @description:en  Export any table on any web page. Detects native <table> elements (skipping layout-only tables) and div-based ARIA grids (role=table/grid, common in React table components), expands rowspan/colspan merged cells. Hover a table to get a small toolbar: copy as TSV (paste straight into Excel) or Markdown, download CSV (with UTF-8 BOM so Excel opens Chinese text correctly) or JSON (header row as keys). A menu command exports every table on the page at once.
+// @version      2025.05.08.7
+// @description  任意网页上的表格一键导出：识别原生 <table>（自动排除排版用的布局表格）和 div 拼出来的 ARIA 表格（role=table/grid，React 表格组件常见），正确展开 rowspan/colspan 合并单元格。鼠标移到表格上，右上角浮出工具条：复制为 TSV（直接粘贴进 Excel）、复制为 Markdown 表格、下载 CSV（带 BOM，Excel 直接打开不乱码）、下载 JSON（表头当键）；菜单里可一键导出页面上所有表格（含同源 iframe），逐个下载 CSV 或合并成一个 JSON。
+// @description:zh-CN  任意网页上的表格一键导出：识别原生 <table>（自动排除排版用的布局表格）和 div 拼出来的 ARIA 表格（role=table/grid，React 表格组件常见），正确展开 rowspan/colspan 合并单元格。鼠标移到表格上，右上角浮出工具条：复制为 TSV（直接粘贴进 Excel）、复制为 Markdown 表格、下载 CSV（带 BOM，Excel 直接打开不乱码）、下载 JSON（表头当键）；菜单里可一键导出页面上所有表格（含同源 iframe），逐个下载 CSV 或合并成一个 JSON。
+// @description:en  Export any table on any web page. Detects native <table> elements (skipping layout-only tables) and div-based ARIA grids (role=table/grid, common in React table components), expands rowspan/colspan merged cells. Hover a table to get a small toolbar: copy as TSV (paste straight into Excel) or Markdown, download CSV (with UTF-8 BOM so Excel opens Chinese text correctly) or JSON (header row as keys). Menu commands export every table on the page (same-origin iframes included) as separate CSV files or one combined JSON.
 // @author       壹樂（V：ita1125）
 // @match        *://*/*
 // @grant        GM_setClipboard
@@ -546,18 +546,50 @@
     // 菜单
     // =========================================================================
 
-    async function exportAll() {
-        const tables = findTables();
-        if (!tables.length) {
-            alert(`${TAG} 页面上没有找到数据表格`);
-            return;
+    /**
+     * 本页 + 所有同源 iframe 的 document（递归）。后台管理系统爱用 iframe 套页面，
+     * 只扫顶层的话「导出全部」常常一张表都找不到。跨域的 iframe 读不到，跳过。
+     */
+    function allDocuments(doc = document, out = []) {
+        out.push(doc);
+        for (const frame of doc.querySelectorAll('iframe, frame')) {
+            try {
+                if (frame.contentDocument && frame.contentDocument.documentElement) allDocuments(frame.contentDocument, out);
+            } catch (e) {
+                /* 跨域 */
+            }
         }
-        log(`导出 ${tables.length} 张表`);
+        return out;
+    }
+
+    function collectAll() {
+        const tables = allDocuments().flatMap((doc) => findTables(doc));
+        if (!tables.length) alert(`${TAG} 页面上没有找到数据表格`);
+        else log(`导出 ${tables.length} 张表`);
+        return tables;
+    }
+
+    async function exportAllCSV() {
+        const tables = collectAll();
         for (let i = 0; i < tables.length; i++) {
             if (i) await new Promise((r) => setTimeout(r, CONFIG.downloadGap));
             const t = tables[i];
             download(baseName(t.el, i) + '.csv', toCSV(t.grid), 'text/csv', { bom: true });
         }
+    }
+
+    /** 合并成一个 JSON：多张表只弹一次下载，也绕开 Chrome「此网站想下载多个文件」的拦截。 */
+    function exportAllJSON() {
+        const tables = collectAll();
+        if (!tables.length) return;
+        const data = {
+            title: document.title,
+            url: location.href,
+            exportedAt: new Date().toISOString(),
+            tables: tables.map((t, i) => ({ name: baseName(t.el, i), header: t.grid.header, rows: toJSON(t.grid) })),
+        };
+        const name = sanitizeName(`${document.title || location.hostname}-全部表格`) || 'tables';
+        download(name + '.json', JSON.stringify(data, null, 2), 'application/json');
     }
 
     // =========================================================================
@@ -582,7 +614,12 @@
         });
     }
 
-    GM_registerMenuCommand('导出页面上所有表格（CSV）', exportAll);
-    registerFillMenu();
+    // 菜单只在顶层注册：脚本在每个 iframe 里也会跑一份，各注册一遍的话
+    // Tampermonkey 菜单里同名命令会重复 N 次。顶层那份会顺带扫同源 iframe。
+    if (window.top === window.self) {
+        GM_registerMenuCommand('导出页面上所有表格（逐个 CSV）', exportAllCSV);
+        GM_registerMenuCommand('导出页面上所有表格（合并为一个 JSON）', exportAllJSON);
+        registerFillMenu();
+    }
     Toolbar.init();
 })();
