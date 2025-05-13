@@ -387,6 +387,49 @@ const text = buf => buf.subarray(3).toString('utf8')
         await page.close()
     })
 
+    console.log('边界情况')
+
+    async function openDynamic() {
+        const r = await open('dynamic.html')
+        await r.page.locator('#tall').waitFor()
+        return r
+    }
+
+    await t.test('SPA 晚渲染的表格：悬停照样出工具条', async () => {
+        const { page } = await openDynamic()
+        await page.hover('#tall td >> nth=0')
+        await page.locator(BAR).waitFor({ state: 'visible', timeout: 2000 })
+        await page.close()
+    })
+
+    await t.test('滚动越过表格上沿：工具条贴在视口顶部、仍在表格范围内', async () => {
+        const { page } = await openDynamic()
+        await page.hover('#tall td >> nth=0')
+        await page.locator(BAR).waitFor({ state: 'visible', timeout: 2000 })
+        await page.mouse.wheel(0, 1500)
+        await page.waitForTimeout(300)
+        const bar = await page.locator(BAR).boundingBox()
+        const table = await page.locator('#tall').boundingBox()
+        t.assert(table.y < 0, '前提：表格上沿已经滚出视口')
+        t.assert(bar && bar.y >= 0 && bar.y < 10, '工具条贴在视口顶部：' + JSON.stringify(bar))
+        await page.close()
+    })
+
+    await t.test('大表（5000 行）上移动鼠标不卡：mouseover 处理平均 < 2ms', async () => {
+        const { page } = await openDynamic()
+        await page.evaluate(() => render('huge', 5000, 10))
+        await page.hover('#huge td >> nth=0')
+        await page.locator(BAR).waitFor({ state: 'visible', timeout: 3000 })
+        const avg = await page.evaluate(() => {
+            const cells = document.querySelectorAll('#huge td')
+            const t0 = performance.now()
+            for (let i = 0; i < 50; i++) cells[i * 7].dispatchEvent(new MouseEvent('mouseover', { bubbles: true }))
+            return (performance.now() - t0) / 50
+        })
+        t.assert(avg < 2, `平均 ${avg.toFixed(2)}ms`)
+        await page.close()
+    })
+
     await close()
     t.done()
 })().catch(e => {

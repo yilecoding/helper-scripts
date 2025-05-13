@@ -3,7 +3,7 @@
 // @name:zh-CN   网页表格导出 | 一键复制/下载 CSV、Excel、Markdown、JSON
 // @name:en      Table Export | Copy or download any web table as CSV / TSV / Markdown / JSON
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.05.08.7
+// @version      2025.05.13.8
 // @description  任意网页上的表格一键导出：识别原生 <table>（自动排除排版用的布局表格）和 div 拼出来的 ARIA 表格（role=table/grid，React 表格组件常见），正确展开 rowspan/colspan 合并单元格。鼠标移到表格上，右上角浮出工具条：复制为 TSV（直接粘贴进 Excel）、复制为 Markdown 表格、下载 CSV（带 BOM，Excel 直接打开不乱码）、下载 JSON（表头当键）；菜单里可一键导出页面上所有表格（含同源 iframe），逐个下载 CSV 或合并成一个 JSON。
 // @description:zh-CN  任意网页上的表格一键导出：识别原生 <table>（自动排除排版用的布局表格）和 div 拼出来的 ARIA 表格（role=table/grid，React 表格组件常见），正确展开 rowspan/colspan 合并单元格。鼠标移到表格上，右上角浮出工具条：复制为 TSV（直接粘贴进 Excel）、复制为 Markdown 表格、下载 CSV（带 BOM，Excel 直接打开不乱码）、下载 JSON（表头当键）；菜单里可一键导出页面上所有表格（含同源 iframe），逐个下载 CSV 或合并成一个 JSON。
 // @description:en  Export any table on any web page. Detects native <table> elements (skipping layout-only tables) and div-based ARIA grids (role=table/grid, common in React table components), expands rowspan/colspan merged cells. Hover a table to get a small toolbar: copy as TSV (paste straight into Excel) or Markdown, download CSV (with UTF-8 BOM so Excel opens Chinese text correctly) or JSON (header row as keys). Menu commands export every table on the page (same-origin iframes included) as separate CSV files or one combined JSON.
@@ -120,19 +120,31 @@
     }
 
     /**
-     * 悬停时用的快速判断：只数行列、看 textContent，不跑 innerText。
-     * innerText 会强制排版，几千行的表每次鼠标划过都读一遍会明显卡顿。
+     * 悬停时用的快速判断：不跑 innerText（会强制排版），只看结构，而且证据够了就停 ——
+     * 满 2 行、2 列、有文字就是数据表，不用把几千行扫完。
+     * 早先版本每次 mouseover 都把整张表的行列数一遍，5000 行的表实测每次 ~56ms，鼠标一动就卡。
      */
     function quickReason(table) {
         const structure = structureReason(table);
         if (structure) return structure;
-        const rows = rawRows(table, false);
-        if (rows.length < CONFIG.minRows) return `只有 ${rows.length} 行`;
+        let rows = 0;
         let cols = 0;
-        for (const row of rows) cols = Math.max(cols, row.cells.reduce((n, c) => n + c.colSpan, 0));
+        let text = false;
+        for (const row of rowEls(table)) {
+            if (!rendered(row)) continue;
+            rows++;
+            let n = 0;
+            for (const cell of cellEls(row)) {
+                if (!rendered(cell)) continue;
+                n += colSpanOf(cell);
+                if (!text && cell.textContent.trim()) text = true;
+            }
+            cols = Math.max(cols, n);
+            if (rows >= CONFIG.minRows && cols >= CONFIG.minCols && text) return '';
+        }
+        if (rows < CONFIG.minRows) return `只有 ${rows} 行`;
         if (cols < CONFIG.minCols) return '单列';
-        if (!table.textContent.trim()) return '没有文字';
-        return '';
+        return '没有文字';
     }
 
     const isDataTable = (table) => table.getClientRects().length > 0 && !quickReason(table);
@@ -167,7 +179,7 @@
 
     /*
      * 原始行：[{ group, header, cells: [{ text, rowSpan, colSpan }] }]，两类表格读成同一个形状，
-     * 后面的展开、序列化不区分来源。withText=false 时不读文字（悬停快速判断用）。
+     * 后面的展开、序列化不区分来源。
      *
      * 隐藏的行、格（display:none，包括 hidden 属性、被隐藏的行组）在展开「之前」就丢掉，
      * 不是展开完再删 —— 这样才和浏览器画出来的一致（Chromium 实测）：
@@ -178,46 +190,63 @@
     const rendered = (el) => el.getClientRects().length > 0;
 
     /**
-     * table.rows 的顺序是规范定死的：thead 的行 → tbody / 直属 tr → tfoot 的行，
+     * 表格自己的行（不含嵌套子表的），文档顺序。
+     * 原生表格用 table.rows：顺序是规范定死的 thead 的行 → tbody / 直属 tr → tfoot 的行，
      * 和源码里 <tfoot> 写在 <tbody> 前面无关（HTML4 时代的写法，老页面里还很常见）。
      */
-    function nativeRows(table, withText) {
-        return Array.from(table.rows).filter(rendered).map((row) => ({
-            group: row.parentElement,
-            header: row.parentElement.tagName === 'THEAD',
-            cells: Array.from(row.cells).filter(rendered).map((cell) => ({
-                text: withText ? cellText(cell) : '',
-                rowSpan: cell.rowSpan,
-                colSpan: Math.max(1, cell.colSpan || 1),
-            })),
-        }));
+    function* rowEls(table) {
+        if (isNative(table)) {
+            yield* table.rows;
+            return;
+        }
+        for (const row of table.querySelectorAll('[role="row"]')) {
+            if (ownerTable(row) === table) yield row;
+        }
     }
 
-    /** ARIA 表格没有 thead：一整行都是 columnheader 的算表头行。合并单元格看 aria-rowspan/aria-colspan。 */
-    function ariaRows(table, withText) {
-        const span = (el, attr) => {
-            const n = parseInt(el.getAttribute(attr), 10);
-            return Number.isFinite(n) && n >= 0 ? n : 1;
-        };
+    function cellEls(row) {
+        if (row.tagName === 'TR') return Array.from(row.cells);
+        return Array.from(row.querySelectorAll(ARIA_CELL)).filter((c) => c.parentElement.closest('[role="row"]') === row);
+    }
+
+    const ariaSpan = (el, attr) => {
+        const n = parseInt(el.getAttribute(attr), 10);
+        return Number.isFinite(n) && n >= 0 ? n : 1;
+    };
+    const colSpanOf = (cell) => Math.max(1, (cell.tagName === 'TD' || cell.tagName === 'TH' ? cell.colSpan : ariaSpan(cell, 'aria-colspan')) || 1);
+    const rowSpanOf = (cell) => (cell.tagName === 'TD' || cell.tagName === 'TH' ? cell.rowSpan : ariaSpan(cell, 'aria-rowspan'));
+
+    /**
+     * 行组用来截断 rowspan：原生是 thead/tbody/tfoot，ARIA 是表格内的 role=rowgroup。
+     * 表头行：原生看是否在 thead 里；ARIA 没有 thead，一整行都是 columnheader 的算表头行。
+     */
+    function rawRows(table) {
         const out = [];
-        for (const row of table.querySelectorAll('[role="row"]')) {
-            if (ownerTable(row) !== table || !rendered(row)) continue;
-            const cells = Array.from(row.querySelectorAll(ARIA_CELL)).filter((c) => c.parentElement.closest('[role="row"]') === row && rendered(c));
-            const g = row.closest('[role="rowgroup"]');
+        for (const row of rowEls(table)) {
+            if (!rendered(row)) continue;
+            const cells = cellEls(row).filter(rendered);
+            let group;
+            let header;
+            if (row.tagName === 'TR') {
+                group = row.parentElement;
+                header = group.tagName === 'THEAD';
+            } else {
+                const g = row.closest('[role="rowgroup"]');
+                group = g && g !== table && table.contains(g) ? g : table;
+                header = cells.length > 0 && cells.every((c) => c.getAttribute('role') === 'columnheader');
+            }
             out.push({
-                group: g && g !== table && table.contains(g) ? g : table,
-                header: cells.length > 0 && cells.every((c) => c.getAttribute('role') === 'columnheader'),
+                group,
+                header,
                 cells: cells.map((cell) => ({
-                    text: withText ? cellText(cell) : '',
-                    rowSpan: span(cell, 'aria-rowspan'),
-                    colSpan: Math.max(1, span(cell, 'aria-colspan')),
+                    text: cellText(cell),
+                    rowSpan: rowSpanOf(cell),
+                    colSpan: colSpanOf(cell),
                 })),
             });
         }
         return out;
     }
-
-    const rawRows = (table, withText = true) => (isNative(table) ? nativeRows : ariaRows)(table, withText);
 
     /**
      * 按 HTML 表格模型把合并单元格摊平成矩形网格。
@@ -517,6 +546,7 @@
         /** 从鼠标下的元素往外找第一张数据表（内层是布局碎片时继续往外找）。 */
         function tableAt(target) {
             for (let t = target.closest(ANY_TABLE); t; t = ownerTable(t)) {
+                if (t === current) return t;   // 还在同一张表里移动：已经判过了，别再判一遍
                 if (isDataTable(t)) return t;
             }
             return null;
