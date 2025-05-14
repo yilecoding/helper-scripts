@@ -415,6 +415,22 @@ const text = buf => buf.subarray(3).toString('utf8')
         await page.close()
     })
 
+    await t.test('表格被移除 / 尺寸变化：工具条跟着收起 / 重新对齐', async () => {
+        const { page } = await openDynamic()
+        await page.hover('#tall td >> nth=0')
+        await page.locator(BAR).waitFor({ state: 'visible', timeout: 2000 })
+        // 列变宽（比如异步加载了长文本），右边缘外移
+        await page.evaluate(() => { document.querySelector('#tall th').style.width = '600px' })
+        await page.waitForTimeout(200)
+        const bar = await page.locator(BAR).boundingBox()
+        const table = await page.locator('#tall').boundingBox()
+        t.assert(Math.abs(bar.x + bar.width - (table.x + table.width)) < 2, `表格变宽后重新右对齐：bar=${JSON.stringify(bar)} table=${JSON.stringify(table)}`)
+        // SPA 切路由把表格整个卸掉
+        await page.evaluate(() => document.querySelector('#tall').remove())
+        await page.locator(BAR).waitFor({ state: 'hidden', timeout: 2000 })
+        await page.close()
+    })
+
     await t.test('大表（5000 行）上移动鼠标不卡：mouseover 处理平均 < 2ms', async () => {
         const { page } = await openDynamic()
         await page.evaluate(() => render('huge', 5000, 10))
