@@ -313,6 +313,20 @@ const text = buf => buf.subarray(3).toString('utf8')
         await page.close()
     })
 
+    await t.test('虚拟滚动表格：按 aria-rowindex 合并冻结列拆开的行并排序，按 aria-colindex 落位', async () => {
+        const { page } = await open('virtual.html')
+        await hoverAndClick(page, '#vgrid [role="gridcell"] >> nth=0', 'copy-tsv')
+        t.eq(parseDelimited((await h.gm(page)).clipboard.text, '\t'), [
+            ['名称', '数量', '单价'],
+            ['螺丝', '100', '0.10'],
+            ['螺母', '200', '0.20'],
+            ['垫片', '300', '0.05'],
+        ])
+        await hoverAndClick(page, '#hgrid [role="gridcell"] >> nth=0', 'copy-tsv')
+        t.eq(parseDelimited((await h.gm(page)).clipboard.text, '\t'), [['E', 'F', '', 'H'], ['e1', 'f1', '', 'h1']], '从最小列号起算，没渲染的第 7 列留空')
+        await page.close()
+    })
+
     console.log('隐藏行列')
 
     await t.test('跳过 display:none 的行、列、行组，rowspan 跨过隐藏行落到下一可见行（与浏览器渲染一致）', async () => {
