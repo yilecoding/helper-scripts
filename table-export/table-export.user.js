@@ -3,7 +3,7 @@
 // @name:zh-CN   网页表格导出 | 一键复制/下载 CSV、Excel、Markdown、JSON
 // @name:en      Table Export | Copy or download any web table as CSV / TSV / Markdown / JSON
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.05.14.10
+// @version      2025.05.16.11
 // @description  任意网页上的表格一键导出：识别原生 <table>（自动排除排版用的布局表格）和 div 拼出来的 ARIA 表格（role=table/grid，React 表格组件常见），正确展开 rowspan/colspan 合并单元格。鼠标移到表格上，右上角浮出工具条：复制为 TSV（直接粘贴进 Excel）、复制为 Markdown 表格、下载 CSV（带 BOM，Excel 直接打开不乱码）、下载 JSON（表头当键）；菜单里可一键导出页面上所有表格（含同源 iframe），逐个下载 CSV 或合并成一个 JSON。
 // @description:zh-CN  任意网页上的表格一键导出：识别原生 <table>（自动排除排版用的布局表格）和 div 拼出来的 ARIA 表格（role=table/grid，React 表格组件常见），正确展开 rowspan/colspan 合并单元格。鼠标移到表格上，右上角浮出工具条：复制为 TSV（直接粘贴进 Excel）、复制为 Markdown 表格、下载 CSV（带 BOM，Excel 直接打开不乱码）、下载 JSON（表头当键）；菜单里可一键导出页面上所有表格（含同源 iframe），逐个下载 CSV 或合并成一个 JSON。
 // @description:en  Export any table on any web page. Detects native <table> elements (skipping layout-only tables) and div-based ARIA grids (role=table/grid, common in React table components), expands rowspan/colspan merged cells. Hover a table to get a small toolbar: copy as TSV (paste straight into Excel) or Markdown, download CSV (with UTF-8 BOM so Excel opens Chinese text correctly) or JSON (header row as keys). Menu commands export every table on the page (same-origin iframes included) as separate CSV files or one combined JSON.
@@ -27,8 +27,11 @@
 
 /*
  * 下载走页面里的 <a download> + Blob，不用 GM_download。
- * Tampermonkey 的 GM_download 有「文件扩展名白名单」，默认不含 .csv / .json，
- * 下载会直接报 not_whitelisted 失败 —— 用户得自己去设置里加白名单，没人会知道要这么做。
+ * Tampermonkey 的 GM_download 只放行设置里「文件扩展名白名单」中的扩展名，
+ * 不在名单里就报 not_whitelisted —— 要用户自己去设置里加 .csv / .json，没人会知道要这么做。
+ * <a download> 不需要任何授权，也不受这个名单限制。
+ *
+ * 其余的坑写在用到的地方，汇总见同目录 notes.md。
  */
 
 (function () {
@@ -57,7 +60,7 @@
          */
         mergeFill: 'all',
 
-        downloadGap: 400,    // 连续下载多个文件的间隔（毫秒）。连发太快 Chrome 会吞掉后面的
+        downloadGap: 400,    // 「逐个 CSV」连续下载的间隔（毫秒），给浏览器的多文件下载确认留出余地
         maxNameLength: 80,   // 文件名最长字符数（不含扩展名）
     };
 
@@ -418,7 +421,7 @@
         (document.body || document.documentElement).appendChild(a);
         a.click();
         a.remove();
-        // 不能立刻 revoke：Firefox 会在下载真正开始前就失去这个 URL
+        // 不立刻 revoke：下载是异步开始的，同步 revoke 在部分浏览器上会导致下载失败
         setTimeout(() => URL.revokeObjectURL(url), 30000);
     }
 
