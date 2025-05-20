@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>动态页面</title>
+<style>body { margin: 0; padding: 120px 40px; } td, th { border: 1px solid #ccc; padding: 2px 6px; }</style>
+</head>
+<body>
+<div id="mount"></div>
+<script>
+  // 模拟 SPA：脚本跑完之后才渲染出表格
+  function render(id, rows, cols) {
+    const t = document.createElement('table')
+    t.id = id
+    const head = '<tr>' + Array.from({ length: cols }, (_, c) => '<th>列' + c + '</th>').join('') + '</tr>'
+    const body = Array.from({ length: rows }, (_, r) => '<tr>' + Array.from({ length: cols }, (_, c) => '<td>' + r + '-' + c + '</td>').join('') + '</tr>').join('')
+    t.innerHTML = head + body
+    document.getElementById('mount').appendChild(t)
+    return t
+  }
+  window.addEventListener('load', () => setTimeout(() => render('tall', 200, 4), 300))
+</script>
+</body>
+</html>

@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>工具条</title>
+<style>
+  body { margin: 0; padding: 80px 40px; font: 14px sans-serif; }
+  /* 页面的全局按钮样式，不应该影响工具条 */
+  button { background: red !important; font-size: 30px !important; }
+  td, th { border: 1px solid #999; padding: 4px 8px; }
+  #clip { width: 300px; overflow: hidden; margin-top: 60px; border: 2px solid blue; }
+  #wide { width: 900px; }
+  #data { width: 400px; }
+</style>
+</head>
+<body>
+<table id="data">
+  <tr><th>名称</th><th>数量</th><th>操作</th></tr>
+  <tr><td>苹果</td><td>3</td><td id="act" onclick="this.dataset.n = (+this.dataset.n || 0) + 1">点我</td></tr>
+  <tr><td>香蕉</td><td>5</td><td>-</td></tr>
+</table>
+
+<!-- 宽表被 overflow:hidden 的窄容器裁掉右半边 -->
+<div id="clip">
+  <table id="wide">
+    <tr><th>甲</th><th>乙</th><th>丙</th><th>丁</th></tr>
+    <tr><td>1</td><td>2</td><td>3</td><td>4</td></tr>
+  </table>
+</div>
+
+<table id="single-col" style="margin-top: 60px"><tr><td>公告一</td></tr><tr><td>公告二</td></tr></table>
+<p id="away" style="margin-top: 60px">表格外面的段落</p>
+</body>
+</html>

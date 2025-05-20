@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>虚拟滚动表格</title>
+<style>
+  body { padding: 60px 40px; font: 14px sans-serif; }
+  .wrap { display: flex; }
+  [role="row"] { display: flex; height: 24px; }
+  [role="row"] > * { width: 90px; border: 1px solid #ddd; }
+  .center { display: flex; flex-direction: column; }
+</style>
+</head>
+<body>
+<!--
+  仿 AG Grid：「名称」列冻结在左侧容器，其余列在中间容器；
+  同一行拆成两个 role=row，靠 aria-rowindex 对上。中间容器的行被复用过，DOM 顺序是乱的。
+-->
+<div role="treegrid" aria-label="库存" id="vgrid" aria-rowcount="4" aria-colcount="3">
+  <div class="wrap" role="rowgroup">
+    <div role="row" aria-rowindex="1"><div role="columnheader" aria-colindex="1">名称</div></div>
+    <div role="row" aria-rowindex="1"><div role="columnheader" aria-colindex="2">数量</div><div role="columnheader" aria-colindex="3">单价</div></div>
+  </div>
+  <div class="wrap" role="rowgroup">
+    <div class="left">
+      <div role="row" aria-rowindex="2"><div role="gridcell" aria-colindex="1">螺丝</div></div>
+      <div role="row" aria-rowindex="3"><div role="gridcell" aria-colindex="1">螺母</div></div>
+      <div role="row" aria-rowindex="4"><div role="gridcell" aria-colindex="1">垫片</div></div>
+    </div>
+    <div class="center">
+      <div role="row" aria-rowindex="4"><div role="gridcell" aria-colindex="3">0.05</div><div role="gridcell" aria-colindex="2">300</div></div>
+      <div role="row" aria-rowindex="2"><div role="gridcell" aria-colindex="2">100</div><div role="gridcell" aria-colindex="3">0.10</div></div>
+      <div role="row" aria-rowindex="3"><div role="gridcell" aria-colindex="2">200</div><div role="gridcell" aria-colindex="3">0.20</div></div>
+    </div>
+  </div>
+</div>
+
+<!-- 横向也虚拟化：只渲染了第 5、6、8 列（第 7 列没渲染） -->
+<div role="grid" aria-label="横向虚拟" id="hgrid" style="margin-top: 40px">
+  <div role="row" aria-rowindex="1"><div role="columnheader" aria-colindex="5">E</div><div role="columnheader" aria-colindex="6">F</div><div role="columnheader" aria-colindex="8">H</div></div>
+  <div role="row" aria-rowindex="2"><div role="gridcell" aria-colindex="5">e1</div><div role="gridcell" aria-colindex="6">f1</div><div role="gridcell" aria-colindex="8">h1</div></div>
+</div>
+</body>
+</html>

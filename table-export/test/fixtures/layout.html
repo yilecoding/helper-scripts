@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>布局表格混排页</title></head>
+<body>
+<!-- 老式整页排版：外层布局表格套着导航和正文，正文里才是真正的数据表 -->
+<table id="page-layout" width="100%" cellpadding="0" cellspacing="0">
+  <tr>
+    <td>
+      <!-- 一行导航按钮 -->
+      <table id="nav"><tr><td><a href="#">首页</a></td><td><a href="#">新闻</a></td><td><a href="#">下载</a></td></tr></table>
+    </td>
+  </tr>
+  <tr>
+    <td>
+      <table id="data-in-layout">
+        <caption>2026 年第三季度销量</caption>
+        <tr><th>地区</th><th>销量</th></tr>
+        <tr><td>华东</td><td>120</td></tr>
+        <tr><td>华南</td><td>98</td></tr>
+      </table>
+    </td>
+  </tr>
+</table>
+
+<!-- 单列：竖排版块 -->
+<table id="single-col"><tr><td>公告一</td></tr><tr><td>公告二</td></tr><tr><td>公告三</td></tr></table>
+
+<!-- 没有文字：图片网格 -->
+<table id="images"><tr><td><img alt="" width="10" height="10"></td><td><img alt="" width="10" height="10"></td></tr><tr><td></td><td>&nbsp;</td></tr></table>
+
+<!-- 显式声明为排版 -->
+<table id="presentation" role="presentation"><tr><td>左</td><td>右</td></tr><tr><td>左2</td><td>右2</td></tr></table>
+
+<!-- 三层嵌套的最内层碎片 -->
+<table id="deep-1"><tr><td><table id="deep-2"><tr><td><table id="deep-3"><tr><td><table id="deep-4"><tr><td>甲</td><td>乙</td></tr><tr><td>丙</td><td>丁</td></tr></table></td></tr></table></td></tr></table></td></tr></table>
+
+<!-- 普通数据表，没有 caption -->
+<table id="plain">
+  <tr><td>姓名</td><td>分数</td></tr>
+  <tr><td>张三</td><td>90</td></tr>
+</table>
+</body>
+</html>

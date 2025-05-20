@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>合并单元格</title></head>
+<body>
+<!-- tfoot 故意写在最前面（HTML4 写法），导出时仍应排在最后 -->
+<table id="complex" border="1">
+  <caption>课程表</caption>
+  <tfoot><tr><td colspan="4">合计：4 节</td></tr></tfoot>
+  <thead>
+    <tr><th rowspan="2">时间</th><th colspan="2">周一</th><th rowspan="2">周二</th></tr>
+    <tr><th>上</th><th>下</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>第1节</td><td rowspan="2" colspan="2">语文</td><td>数学</td></tr>
+    <tr><td>第2节</td><td rowspan="0">英语</td></tr>
+    <!-- rowspan 超出 tbody，不能漏进 tfoot -->
+    <tr><td>第3节</td><td rowspan="5">物理</td><td>化学</td></tr>
+  </tbody>
+</table>
+</body>
+</html>
