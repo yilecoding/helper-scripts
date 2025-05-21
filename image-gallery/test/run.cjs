@@ -24,15 +24,20 @@ let browser
 
 async function routes(page) {
     await page.route('https://shop.example/**', (route) => {
-        const file = path.join(FIXTURES, new URL(route.request().url()).pathname)
+        const pathname = new URL(route.request().url()).pathname
+        // 相对地址的图片（<img src="300x200/a.png">）也落在 shop.example 上
+        if (/^\/\d+x\d+\//.test(pathname)) return servePng(route, pathname)
+        const file = path.join(FIXTURES, pathname)
         if (!file.startsWith(FIXTURES) || !fs.existsSync(file)) return route.fulfill({ status: 404, body: 'not found' })
         return route.fulfill({ path: file })
     })
-    await page.route('https://img.example/**', (route) => {
-        const m = new URL(route.request().url()).pathname.match(/^\/(\d+)x(\d+)\//)
-        if (!m) return route.fulfill({ status: 404, body: 'not found' })
-        return route.fulfill({ status: 200, contentType: 'image/png', body: png(+m[1], +m[2]) })
-    })
+    await page.route('https://img.example/**', route => servePng(route, new URL(route.request().url()).pathname))
+}
+
+function servePng(route, pathname) {
+    const m = pathname.match(/^\/(\d+)x(\d+)\//)
+    if (!m) return route.fulfill({ status: 404, body: 'not found' })
+    return route.fulfill({ status: 200, contentType: 'image/png', body: png(+m[1], +m[2]) })
 }
 
 /** 新开一页、注入脚本、打开 fixture。 */
@@ -89,6 +94,23 @@ async function main() {
             'https://img.example/400x300/a.png',
             'https://img.example/640x480/b.png',
             'https://img.example/800x600/c.png',
+        ])
+        await page.close()
+    })
+
+    console.log('收集 <img>')
+    await t.test('srcset / <picture> 取最大、懒加载属性、相对地址规范化去重', async () => {
+        const page = await openPage('img.html')
+        await h.menu(page, '打开图片画廊')
+        t.eq(await listedUrls(page), [
+            'https://img.example/800x600/s-large.png',
+            'https://shop.example/600x400/x2.png',
+            'https://img.example/1200x900/p-large.png',
+            'https://img.example/500x400/lazy-src.png',
+            'https://img.example/510x400/lazy-original.png',
+            'https://img.example/520x400/lazy-lazysrc.png',
+            'https://img.example/520x400/ls-2.png',
+            'https://shop.example/320x240/rel.png',
         ])
         await page.close()
     })

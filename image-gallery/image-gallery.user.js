@@ -3,7 +3,7 @@
 // @name:zh-CN   网页图片查看与批量下载
 // @name:en      Image Gallery — View & Batch Download Page Images
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.05.20.1
+// @version      2025.05.21.2
 // @description  收集当前网页里的所有图片，在全屏网格里浏览、放大查看，勾选后批量下载。快捷键 Alt+Shift+I 或脚本菜单打开。
 // @description:zh-CN  收集当前网页里的所有图片，在全屏网格里浏览、放大查看，勾选后批量下载。快捷键 Alt+Shift+I 或脚本菜单打开。
 // @description:en  Collect every image on the current page into a full-screen gallery: browse, zoom in, and batch download the ones you pick. Open with Alt+Shift+I or the userscript menu.
@@ -39,6 +39,16 @@
          */
         hotkey: { alt: true, shift: true, ctrl: false, meta: false, code: 'KeyI' },
         zIndex: 2147483646,
+
+        /*
+         * 懒加载库把真图地址藏在这些属性里，src 只是占位图（常见是 1×1 的 data: gif）。
+         * 按顺序取第一个有值的。
+         */
+        lazyAttrs: [
+            'data-src', 'data-original', 'data-lazy-src', 'data-lazy', 'data-actualsrc',
+            'data-original-src', 'data-echo', 'lazy-src',
+        ],
+        lazySrcsetAttrs: ['data-srcset', 'data-lazy-srcset'],
     };
 
     const HOST_ID = '__image-gallery-host';
@@ -47,15 +57,96 @@
     // 收集
     // =========================================================================
 
+    /**
+     * 转成绝对地址、去掉 #hash，作为去重的键。不是图片能用的协议一律丢掉。
+     * query 保留：很多图床靠 query 区分尺寸/版本（?w=800、?x-oss-process=…），去掉会合并成同一张。
+     */
+    function normalizeUrl(raw) {
+        if (!raw) return null;
+        raw = raw.trim();
+        if (!raw) return null;
+        try {
+            const u = new URL(raw, document.baseURI);
+            if (!/^(https?|data|blob):$/.test(u.protocol)) return null;
+            u.hash = '';
+            return u.href;
+        } catch (e) {
+            return null;
+        }
+    }
+
+    /**
+     * 解析 srcset，返回 [{ url, w, x }]。没有描述符的候选按 1x 算。
+     * 按「逗号 + 空白」切分，Cloudinary 那种 URL 里带逗号的（w_200,h_100）不会被切断。
+     */
+    function parseSrcset(srcset) {
+        const out = [];
+        for (const part of srcset.split(/,\s+/)) {
+            const [url, desc = '1x'] = part.trim().split(/\s+/);
+            if (!url) continue;
+            const m = desc.match(/^([\d.]+)([wx])$/i);
+            out.push({
+                url,
+                w: m && m[2].toLowerCase() === 'w' ? parseFloat(m[1]) : 0,
+                x: m && m[2].toLowerCase() === 'x' ? parseFloat(m[1]) : 1,
+            });
+        }
+        return out;
+    }
+
+    /** 多个 srcset 合在一起挑分辨率最高的。w 描述符一律压过 x（有宽度的才是真实尺寸）。 */
+    function bestFromSrcsets(srcsets) {
+        let best = null;
+        let bestScore = -1;
+        for (const s of srcsets) {
+            if (!s) continue;
+            for (const c of parseSrcset(s)) {
+                const score = c.w ? 1e6 + c.w : c.x;
+                if (score > bestScore) {
+                    best = c.url;
+                    bestScore = score;
+                }
+            }
+        }
+        return best;
+    }
+
+    /**
+     * 一个 <img> 只取一张：<picture><source> + srcset 里最大的 > 懒加载属性 > currentSrc > src。
+     * 懒加载属性里的 data: 是占位图，跳过。
+     */
+    function pickImgUrl(img) {
+        const srcsets = [];
+        const pic = img.parentElement;
+        if (pic && pic.tagName === 'PICTURE') {
+            for (const s of pic.children) {
+                if (s.tagName !== 'SOURCE') continue;
+                srcsets.push(s.getAttribute('srcset'));
+                for (const a of CONFIG.lazySrcsetAttrs) srcsets.push(s.getAttribute(a));
+            }
+        }
+        srcsets.push(img.getAttribute('srcset'));
+        for (const a of CONFIG.lazySrcsetAttrs) srcsets.push(img.getAttribute(a));
+        const best = bestFromSrcsets(srcsets);
+        if (best) return best;
+
+        for (const a of CONFIG.lazyAttrs) {
+            const v = img.getAttribute(a);
+            if (v && !v.trim().startsWith('data:')) return v;
+        }
+        return img.currentSrc || img.getAttribute('src');
+    }
+
     function collect() {
         const seen = new Set();
         const items = [];
-        for (const img of document.images) {
-            const url = img.currentSrc || img.src;
-            if (!url || seen.has(url)) continue;
+        const add = (raw, source, el) => {
+            const url = normalizeUrl(raw);
+            if (!url || seen.has(url)) return;
             seen.add(url);
-            items.push({ url });
-        }
+            items.push({ url, source, el });
+        };
+        for (const img of document.querySelectorAll('img')) add(pickImgUrl(img), 'img', img);
         return items;
     }
 
