@@ -3,7 +3,7 @@
 // @name:zh-CN   网页图片查看与批量下载
 // @name:en      Image Gallery — View & Batch Download Page Images
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.05.22.3
+// @version      2025.05.22.4
 // @description  收集当前网页里的所有图片，在全屏网格里浏览、放大查看，勾选后批量下载。快捷键 Alt+Shift+I 或脚本菜单打开。
 // @description:zh-CN  收集当前网页里的所有图片，在全屏网格里浏览、放大查看，勾选后批量下载。快捷键 Alt+Shift+I 或脚本菜单打开。
 // @description:en  Collect every image on the current page into a full-screen gallery: browse, zoom in, and batch download the ones you pick. Open with Alt+Shift+I or the userscript menu.
@@ -55,6 +55,12 @@
          * 会卡住一下。超过这个数就不再查背景图，<img> 和链接照常收集。
          */
         bgScanLimit: 8000,
+
+        /** 宽或高小于这个值的算图标/占位图，不进画廊。 */
+        minWidth: 100,
+        minHeight: 100,
+        probeConcurrency: 8,   // 同时预加载探测尺寸的图片数
+        probeTimeout: 10000,   // 单张探测超时（毫秒），超时按加载失败处理
     };
 
     /** 链接直接指向图片文件的判据（按 pathname 的扩展名，不看 query）。 */
@@ -220,6 +226,78 @@
     }
 
     // =========================================================================
+    // 尺寸探测
+    // =========================================================================
+
+    /**
+     * 页面上已经加载好的 <img> 直接读 naturalWidth，不再发请求。
+     * 注意要核对 currentSrc：我们挑的可能是 srcset 里最大的那张，而浏览器实际加载的是小的，
+     * 那时 naturalWidth 是小图的尺寸，不能拿来用。
+     */
+    function knownSize(item) {
+        const el = item.el;
+        if (!el || el.tagName !== 'IMG' || !el.complete || !el.naturalWidth) return null;
+        if (normalizeUrl(el.currentSrc || el.src) !== item.url) return null;
+        return { w: el.naturalWidth, h: el.naturalHeight };
+    }
+
+    /** 用一个游离的 Image 预加载，拿真实像素尺寸。失败/超时返回 null。 */
+    function probeSize(url) {
+        return new Promise((resolve) => {
+            const img = new Image();
+            let done = false;
+            const finish = (v) => {
+                if (done) return;
+                done = true;
+                clearTimeout(timer);
+                img.onload = img.onerror = null;
+                resolve(v);
+            };
+            const timer = setTimeout(() => {
+                img.src = '';
+                finish(null);
+            }, CONFIG.probeTimeout);
+            img.onload = () => finish({ w: img.naturalWidth, h: img.naturalHeight });
+            img.onerror = () => finish(null);
+            img.decoding = 'async';
+            img.src = url;
+        });
+    }
+
+    /** 固定并发跑完 tasks（返回 Promise 的函数数组）。 */
+    async function pool(tasks, concurrency) {
+        let next = 0;
+        const worker = async () => {
+            while (next < tasks.length) await tasks[next++]();
+        };
+        await Promise.all(Array.from({ length: Math.min(concurrency, tasks.length) }, worker));
+    }
+
+    /**
+     * 给每一项补上 w/h，并去掉加载失败的和小图。onProgress(done, total) 用来刷进度。
+     * 加载成功但尺寸是 0（没写 width/height 的 SVG）的保留，标成尺寸未知，不参与小图过滤。
+     */
+    async function measure(items, onProgress) {
+        let done = 0;
+        const total = items.length;
+        await pool(items.map(item => async () => {
+            const size = knownSize(item) || (await probeSize(item.url));
+            item.failed = !size;
+            if (size) Object.assign(item, size);
+            onProgress && onProgress(++done, total);
+        }), CONFIG.probeConcurrency);
+        return items.filter((it) => {
+            if (it.failed) return false;
+            if (!it.w || !it.h) return true;
+            return it.w >= CONFIG.minWidth && it.h >= CONFIG.minHeight;
+        });
+    }
+
+    function sizeLabel(it) {
+        return it.w && it.h ? `${it.w}×${it.h}` : '尺寸未知';
+    }
+
+    // =========================================================================
     // 浮层
     // =========================================================================
 
@@ -245,11 +323,15 @@
         .body { flex: 1; overflow: auto; padding: 16px; }
         .list { margin: 0; padding: 0; list-style: none; }
         .list li { padding: 2px 0; word-break: break-all; }
+        .list .size { display: inline-block; min-width: 90px; color: #9ab; }
+        .status { color: #aaa; }
     `;
 
     const Gallery = (() => {
         let host = null;
         let root = null;
+        /** 每次打开 +1。探测是异步的，关掉又重开时旧的那轮结果要丢掉。 */
+        let generation = 0;
 
         function isOpen() {
             return !!host && host.isConnected;
@@ -262,9 +344,19 @@
             for (const it of items) {
                 const li = document.createElement('li');
                 li.dataset.url = it.url;
-                li.textContent = it.url;
+                li.dataset.w = it.w || 0;
+                li.dataset.h = it.h || 0;
+                const size = document.createElement('span');
+                size.className = 'size';
+                size.textContent = sizeLabel(it);
+                li.append(size, it.url);
                 list.appendChild(li);
             }
+        }
+
+        function setStatus(text, state) {
+            root.querySelector('.status').textContent = text;
+            if (state) root.querySelector('.overlay').dataset.state = state;
         }
 
         function open() {
@@ -277,6 +369,7 @@
                 <div class="overlay" role="dialog" aria-label="图片画廊">
                     <div class="bar">
                         <span class="title">图片画廊</span>
+                        <span class="status"></span>
                         <span class="count"></span>
                         <button type="button" class="close" title="关闭（Esc）">关闭</button>
                     </div>
@@ -284,12 +377,25 @@
                 </div>`;
             root.querySelector('.close').addEventListener('click', close);
             document.documentElement.appendChild(host);
-            const items = collect();
-            console.log(TAG, `收集到 ${items.length} 张图片`);
+            scan();
+        }
+
+        async function scan() {
+            const gen = ++generation;
+            const found = collect();
+            console.log(TAG, `收集到 ${found.length} 个候选地址`);
+            setStatus(`探测尺寸 0/${found.length}…`, 'scanning');
+            const items = await measure(found, (done, total) => {
+                if (gen === generation && root) setStatus(`探测尺寸 ${done}/${total}…`);
+            });
+            if (gen !== generation || !root) return;
+            console.log(TAG, `过滤后剩 ${items.length} 张（去掉小图 / 加载失败 ${found.length - items.length} 个）`);
+            setStatus('', 'ready');
             render(items);
         }
 
         function close() {
+            generation++;
             if (host) host.remove();
             host = null;
             root = null;

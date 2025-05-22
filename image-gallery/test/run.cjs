@@ -58,8 +58,20 @@ function inGallery(page, fn, arg) {
     }, [fn.toString(), HOST, arg])
 }
 
+/** 用菜单打开画廊，等尺寸探测跑完。 */
+async function openGallery(page) {
+    await h.menu(page, '打开图片画廊')
+    await page.waitForFunction(sel => {
+        const host = document.querySelector(sel)
+        const ov = host && host.shadowRoot.querySelector('.overlay')
+        return ov && ov.dataset.state === 'ready'
+    }, HOST, { timeout: 15000 })
+}
+
 const isOpen = page => page.evaluate(sel => !!document.querySelector(sel), HOST)
 const listedUrls = page => inGallery(page, root => [...root.querySelectorAll('[data-url]')].map(el => el.dataset.url))
+const listedSizes = page => inGallery(page, root => Object.fromEntries(
+    [...root.querySelectorAll('[data-url]')].map(el => [el.dataset.url.replace('https://img.example/', ''), `${el.dataset.w}x${el.dataset.h}`])))
 
 async function main() {
     const env = await h.setup(FIXTURES)
@@ -70,7 +82,7 @@ async function main() {
         const page = await openPage('basic.html')
         const gm = await h.gm(page)
         t.eq(gm.menu, ['打开图片画廊（Alt+Shift+I）'])
-        await h.menu(page, '打开图片画廊')
+        await openGallery(page)
         t.assert(await isOpen(page), '菜单点了之后画廊应当打开')
         t.eq(h.errors(page).map(String), [])
         await page.close()
@@ -89,7 +101,7 @@ async function main() {
 
     await t.test('列出页面里的 <img>，重复的只算一次', async () => {
         const page = await openPage('basic.html')
-        await h.menu(page, '打开图片画廊')
+        await openGallery(page)
         t.eq(await listedUrls(page), [
             'https://img.example/400x300/a.png',
             'https://img.example/640x480/b.png',
@@ -101,7 +113,7 @@ async function main() {
     console.log('收集 <img>')
     await t.test('srcset / <picture> 取最大、懒加载属性、相对地址规范化去重', async () => {
         const page = await openPage('img.html')
-        await h.menu(page, '打开图片画廊')
+        await openGallery(page)
         t.eq(await listedUrls(page), [
             'https://img.example/800x600/s-large.png',
             'https://shop.example/600x400/x2.png',
@@ -118,7 +130,7 @@ async function main() {
     console.log('收集背景图 / 链接 / shadow DOM')
     await t.test('只收可见元素的背景图，链接按扩展名判断，钻进 open shadow DOM', async () => {
         const page = await openPage('more.html')
-        await h.menu(page, '打开图片画廊')
+        await openGallery(page)
         const urls = await listedUrls(page)
         t.eq([...urls].sort(), [
             'https://img.example/1024x768/link.jpg',
@@ -129,6 +141,21 @@ async function main() {
             'https://img.example/750x500/nested-bg.png',
             'https://img.example/900x700/link-query.png?token=1',
         ])
+        await page.close()
+    })
+
+    console.log('尺寸与小图过滤')
+    await t.test('宽或高 < 100 的、1×1 data: 像素、坏图都被过滤；尺寸是真图的尺寸', async () => {
+        const page = await openPage('sizes.html')
+        await openGallery(page)
+        t.eq(await listedSizes(page), {
+            '400x300/big.png': '400x300',
+            '100x100/edge.png': '100x100',
+            '640x480/lazy.png': '640x480',
+            '1500x1000/ss-big.png': '1500x1000',
+            '1600x1200/full.png': '1600x1200',
+        })
+        t.eq(h.errors(page).map(String), [])
         await page.close()
     })
 
