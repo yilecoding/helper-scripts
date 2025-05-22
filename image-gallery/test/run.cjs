@@ -115,6 +115,23 @@ async function main() {
         await page.close()
     })
 
+    console.log('收集背景图 / 链接 / shadow DOM')
+    await t.test('只收可见元素的背景图，链接按扩展名判断，钻进 open shadow DOM', async () => {
+        const page = await openPage('more.html')
+        await h.menu(page, '打开图片画廊')
+        const urls = await listedUrls(page)
+        t.eq([...urls].sort(), [
+            'https://img.example/1024x768/link.jpg',
+            'https://img.example/700x500/bg-visible.png',
+            'https://img.example/710x500/bg-multi.png',
+            'https://img.example/730x500/shadow-bg.png',
+            'https://img.example/740x500/shadow-img.png',
+            'https://img.example/750x500/nested-bg.png',
+            'https://img.example/900x700/link-query.png?token=1',
+        ])
+        await page.close()
+    })
+
     await env.close()
     t.done()
 }

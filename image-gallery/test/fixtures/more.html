@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>more</title>
+<style>
+    .box { width: 200px; height: 150px; display: inline-block; background-size: cover; }
+    #bg-visible { background-image: url("https://img.example/700x500/bg-visible.png"); }
+    #bg-none { display: none; background-image: url("https://img.example/700x500/bg-display-none.png"); }
+    #bg-hidden { visibility: hidden; background-image: url("https://img.example/700x500/bg-visibility-hidden.png"); }
+    #bg-parent-none { display: none; }
+    #bg-parent-none div { background-image: url("https://img.example/700x500/bg-parent-none.png"); }
+    #bg-multi { background-image: linear-gradient(red, blue), url(https://img.example/710x500/bg-multi.png); }
+    #bg-zero { width: 0; height: 0; background-image: url("https://img.example/700x500/bg-zero.png"); }
+</style>
+</head>
+<body>
+<div class="box" id="bg-visible"></div>
+<div class="box" id="bg-none"></div>
+<div class="box" id="bg-hidden"></div>
+<div id="bg-parent-none"><div class="box"></div></div>
+<div class="box" id="bg-multi"></div>
+<div id="bg-zero"></div>
+
+<p>
+    <a href="https://img.example/1024x768/link.jpg">看大图</a>
+    <a href="https://img.example/900x700/link-query.png?token=1">带 query</a>
+    <a href="/about.html">普通链接</a>
+    <a href="https://img.example/1024x768/link.jpg">同一张图的第二个链接</a>
+</p>
+
+<x-card id="card"></x-card>
+<script>
+    // open shadow DOM，里面再套一层 shadow，图片、背景图都藏在里面
+    customElements.define('x-card', class extends HTMLElement {
+        connectedCallback() {
+            const root = this.attachShadow({ mode: 'open' });
+            root.innerHTML = `
+                <style>.inner { width: 120px; height: 90px; background-image: url("https://img.example/730x500/shadow-bg.png"); }</style>
+                <img src="https://img.example/740x500/shadow-img.png" width="120">
+                <div class="inner"></div>
+                <x-inner></x-inner>`;
+        }
+    });
+    customElements.define('x-inner', class extends HTMLElement {
+        connectedCallback() {
+            const root = this.attachShadow({ mode: 'open' });
+            root.innerHTML = `<style>div { width: 120px; height: 90px; background: url(https://img.example/750x500/nested-bg.png); }</style><div></div>`;
+        }
+    });
+</script>
+</body>
+</html>

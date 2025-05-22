@@ -3,7 +3,7 @@
 // @name:zh-CN   网页图片查看与批量下载
 // @name:en      Image Gallery — View & Batch Download Page Images
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.05.21.2
+// @version      2025.05.22.3
 // @description  收集当前网页里的所有图片，在全屏网格里浏览、放大查看，勾选后批量下载。快捷键 Alt+Shift+I 或脚本菜单打开。
 // @description:zh-CN  收集当前网页里的所有图片，在全屏网格里浏览、放大查看，勾选后批量下载。快捷键 Alt+Shift+I 或脚本菜单打开。
 // @description:en  Collect every image on the current page into a full-screen gallery: browse, zoom in, and batch download the ones you pick. Open with Alt+Shift+I or the userscript menu.
@@ -49,7 +49,16 @@
             'data-original-src', 'data-echo', 'lazy-src',
         ],
         lazySrcsetAttrs: ['data-srcset', 'data-lazy-srcset'],
+
+        /*
+         * 背景图要对每个元素读 getComputedStyle，元素数上万的页面（长评论区、无限滚动）
+         * 会卡住一下。超过这个数就不再查背景图，<img> 和链接照常收集。
+         */
+        bgScanLimit: 8000,
     };
+
+    /** 链接直接指向图片文件的判据（按 pathname 的扩展名，不看 query）。 */
+    const IMG_EXT_RE = /\.(jpe?g|jfif|pjpeg|png|apng|gif|webp|avif|bmp|svg|ico|tiff?|heic|heif)$/i;
 
     const HOST_ID = '__image-gallery-host';
 
@@ -137,6 +146,43 @@
         return img.currentSrc || img.getAttribute('src');
     }
 
+    function isImageLink(href) {
+        const url = normalizeUrl(href);
+        if (!url) return false;
+        if (url.startsWith('data:')) return /^data:image\//i.test(url);
+        try {
+            return IMG_EXT_RE.test(new URL(url).pathname);
+        } catch (e) {
+            return false;
+        }
+    }
+
+    /** 从 background-image 的计算值里抠出所有 url(...)，渐变之类的直接忽略。 */
+    function backgroundUrls(value) {
+        const out = [];
+        if (!value || value === 'none') return out;
+        const re = /url\(\s*(['"]?)(.*?)\1\s*\)/g;
+        let m;
+        while ((m = re.exec(value))) out.push(m[2]);
+        return out;
+    }
+
+    /**
+     * 「可见」= 有布局盒子、不是 visibility:hidden、不在 display:none 的祖先下。
+     * 只对已经确认有背景图的元素调用 —— 读布局比读样式贵，先用 backgroundImage 筛掉绝大多数元素。
+     */
+    function isVisible(el, cs) {
+        if (cs.visibility === 'hidden' || cs.display === 'none') return false;
+        if (el.checkVisibility && !el.checkVisibility()) return false;
+        const r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0;
+    }
+
+    /**
+     * 一次遍历收齐三类来源：<img>、指向图片的 <a href>、可见元素的 CSS 背景图。
+     * 遇到 open shadow root 就排进队列接着扫（closed 的从外面拿不到，没办法）。
+     * 自己的浮层整棵跳过，不然画廊里的缩略图会被当成页面图片再收一遍。
+     */
     function collect() {
         const seen = new Set();
         const items = [];
@@ -146,7 +192,30 @@
             seen.add(url);
             items.push({ url, source, el });
         };
-        for (const img of document.querySelectorAll('img')) add(pickImgUrl(img), 'img', img);
+
+        let bgBudget = CONFIG.bgScanLimit;
+        const roots = [document];
+        while (roots.length) {
+            const walker = document.createTreeWalker(roots.shift(), NodeFilter.SHOW_ELEMENT, {
+                acceptNode: el => (el.id === HOST_ID ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT),
+            });
+            for (let el = walker.nextNode(); el; el = walker.nextNode()) {
+                if (el.shadowRoot) roots.push(el.shadowRoot);
+                const tag = el.tagName;
+                if (tag === 'IMG') {
+                    add(pickImgUrl(el), 'img', el);
+                } else if (tag === 'A') {
+                    const href = el.getAttribute('href');
+                    if (href && isImageLink(href)) add(href, 'link', el);
+                }
+                if (bgBudget-- > 0) {
+                    const cs = getComputedStyle(el);
+                    const urls = backgroundUrls(cs.backgroundImage);
+                    if (urls.length && isVisible(el, cs)) for (const u of urls) add(u, 'background', el);
+                }
+            }
+        }
+        if (bgBudget < 0) console.warn(TAG, `元素超过 ${CONFIG.bgScanLimit} 个，其余元素没有检查背景图`);
         return items;
     }
 
