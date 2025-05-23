@@ -3,7 +3,7 @@
 // @name:zh-CN   网页图片查看与批量下载
 // @name:en      Image Gallery — View & Batch Download Page Images
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.05.23.5
+// @version      2025.05.23.6
 // @description  收集当前网页里的所有图片，在全屏网格里浏览、放大查看，勾选后批量下载。快捷键 Alt+Shift+I 或脚本菜单打开。
 // @description:zh-CN  收集当前网页里的所有图片，在全屏网格里浏览、放大查看，勾选后批量下载。快捷键 Alt+Shift+I 或脚本菜单打开。
 // @description:en  Collect every image on the current page into a full-screen gallery: browse, zoom in, and batch download the ones you pick. Open with Alt+Shift+I or the userscript menu.
@@ -61,6 +61,11 @@
         minHeight: 100,
         probeConcurrency: 8,   // 同时预加载探测尺寸的图片数
         probeTimeout: 10000,   // 单张探测超时（毫秒），超时按加载失败处理
+
+        /** 查看器缩放范围与每格滚轮的缩放倍率（触控板的细碎 delta 按比例折算）。 */
+        minScale: 0.05,
+        maxScale: 20,
+        wheelZoomPerNotch: 1.2,
     };
 
     /** 链接直接指向图片文件的判据（按 pathname 的扩展名，不看 query）。 */
@@ -348,6 +353,27 @@
             background: rgba(0, 0, 0, .65); font-size: 12px; pointer-events: none;
         }
         .empty { color: #888; text-align: center; padding: 60px 0; }
+
+        .viewer { position: absolute; inset: 0; background: #0b0b0c; overflow: hidden; }
+        .viewer[hidden] { display: none; }
+        .stage { position: absolute; inset: 0; cursor: grab; touch-action: none; }
+        .stage.dragging { cursor: grabbing; }
+        /* 图片中心钉在舞台中心（负 margin 在 JS 里按原始尺寸设），transform-origin 也是中心，缩放旋转都绕它 */
+        .view-img {
+            position: absolute; left: 50%; top: 50%; max-width: none; max-height: none;
+            user-select: none; -webkit-user-drag: none; pointer-events: none;
+        }
+        .view-bar {
+            position: absolute; left: 0; right: 0; top: 0; display: flex; align-items: center; gap: 10px;
+            padding: 10px 16px; background: linear-gradient(rgba(0,0,0,.7), transparent);
+        }
+        .view-bar .info { flex: 1; color: #ccc; word-break: break-all; }
+        .nav {
+            position: absolute; top: 50%; transform: translateY(-50%); font-size: 28px; padding: 8px 14px;
+            background: rgba(0,0,0,.4); border: none;
+        }
+        .nav.prev { left: 12px; }
+        .nav.next { right: 12px; }
     `;
 
     const SORTS = {
@@ -370,6 +396,12 @@
         };
 
         const $ = sel => root.querySelector(sel);
+
+        /*
+         * 查看器状态。图片画在舞台中心，屏幕坐标 = 舞台中心 + (tx, ty) + 旋转(缩放(图内坐标))。
+         * mode: 'fit' 适应窗口 / 'original' 原始尺寸 / 'free' 用户缩放过。
+         */
+        const view = { open: false, list: [], index: 0, scale: 1, rot: 0, tx: 0, ty: 0, mode: 'fit' };
 
         function isOpen() {
             return !!host && host.isConnected;
@@ -450,6 +482,152 @@
             $('.min-side-value').textContent = `${floor}px`;
         }
 
+        // ---------------------------------------------------------------------
+        // 查看器
+        // ---------------------------------------------------------------------
+
+        function stageRect() {
+            return $('.stage').getBoundingClientRect();
+        }
+
+        /** 适应窗口的缩放比：旋转 90° 时宽高互换；小图不放大。 */
+        function fitScale(it) {
+            const r = stageRect();
+            const turned = view.rot % 180 !== 0;
+            const w = (turned ? it.h : it.w) || r.width;
+            const h = (turned ? it.w : it.h) || r.height;
+            return Math.min(1, (r.width * 0.95) / w, (r.height * 0.95) / h);
+        }
+
+        function applyView() {
+            const it = view.list[view.index];
+            const img = $('.view-img');
+            img.style.transform = `translate(${view.tx}px, ${view.ty}px) rotate(${view.rot}deg) scale(${view.scale})`;
+            const v = $('.viewer');
+            Object.assign(v.dataset, {
+                index: view.index, url: it.url, mode: view.mode, rot: view.rot,
+                scale: +view.scale.toFixed(4), tx: +view.tx.toFixed(2), ty: +view.ty.toFixed(2),
+            });
+            $('.view-bar .info').textContent =
+                `${view.index + 1} / ${view.list.length} · ${sizeLabel(it)} · ${Math.round(view.scale * 100)}% · ${it.url}`;
+        }
+
+        function fit() {
+            view.mode = 'fit';
+            view.scale = fitScale(view.list[view.index]);
+            view.tx = view.ty = 0;
+            applyView();
+        }
+
+        function showAt(index) {
+            const n = view.list.length;
+            view.index = ((index % n) + n) % n;
+            view.rot = 0;
+            const it = view.list[view.index];
+            const img = $('.view-img');
+            img.src = it.url;
+            // 尺寸未知（没写宽高的 SVG）就让浏览器按默认尺寸画，居中靠 JS 读到的 natural 尺寸补
+            const w = it.w || img.naturalWidth || 300;
+            const h = it.h || img.naturalHeight || 150;
+            Object.assign(img.style, { width: `${w}px`, height: `${h}px`, marginLeft: `${-w / 2}px`, marginTop: `${-h / 2}px` });
+            fit();
+        }
+
+        function openViewer(index) {
+            view.list = visibleItems();
+            if (!view.list.length) return;
+            view.open = true;
+            $('.viewer').hidden = false;
+            showAt(index);
+        }
+
+        function closeViewer() {
+            view.open = false;
+            $('.viewer').hidden = true;
+            $('.view-img').removeAttribute('src');
+        }
+
+        /** 以舞台坐标 (mx, my) 为中心缩放到 next：鼠标下的那个图内点缩放前后不动。 */
+        function zoomAt(next, mx, my) {
+            next = Math.min(CONFIG.maxScale, Math.max(CONFIG.minScale, next));
+            const r = stageRect();
+            const px = mx - r.width / 2;
+            const py = my - r.height / 2;
+            const k = next / view.scale;
+            view.tx = px - (px - view.tx) * k;
+            view.ty = py - (py - view.ty) * k;
+            view.scale = next;
+            view.mode = 'free';
+            applyView();
+        }
+
+        function rotate(deg) {
+            view.rot = (view.rot + deg + 360) % 360;
+            if (view.mode === 'fit') fit();
+            else applyView();
+        }
+
+        function bindViewer() {
+            const stage = $('.stage');
+            stage.addEventListener('wheel', (e) => {
+                e.preventDefault();
+                const r = stageRect();
+                // deltaMode 1 是按行（Firefox 鼠标滚轮），折成像素再算
+                const dy = e.deltaMode === 1 ? e.deltaY * 33 : e.deltaY;
+                const factor = Math.pow(CONFIG.wheelZoomPerNotch, -dy / 100);
+                zoomAt(view.scale * factor, e.clientX - r.left, e.clientY - r.top);
+            }, { passive: false });
+
+            let drag = null;
+            stage.addEventListener('pointerdown', (e) => {
+                if (e.button !== 0) return;
+                drag = { x: e.clientX, y: e.clientY, tx: view.tx, ty: view.ty };
+                stage.setPointerCapture(e.pointerId);
+                stage.classList.add('dragging');
+            });
+            stage.addEventListener('pointermove', (e) => {
+                if (!drag) return;
+                view.tx = drag.tx + e.clientX - drag.x;
+                view.ty = drag.ty + e.clientY - drag.y;
+                if (view.mode === 'fit') view.mode = 'free';
+                applyView();
+            });
+            const endDrag = () => {
+                drag = null;
+                stage.classList.remove('dragging');
+            };
+            stage.addEventListener('pointerup', endDrag);
+            stage.addEventListener('pointercancel', endDrag);
+
+            stage.addEventListener('dblclick', (e) => {
+                if (view.mode === 'original') return fit();
+                const r = stageRect();
+                zoomAt(1, e.clientX - r.left, e.clientY - r.top);
+                view.mode = 'original';
+                applyView();
+            });
+
+            $('.viewer .prev').addEventListener('click', () => showAt(view.index - 1));
+            $('.viewer .next').addEventListener('click', () => showAt(view.index + 1));
+            $('.viewer .rotate').addEventListener('click', () => rotate(90));
+            $('.viewer .back').addEventListener('click', closeViewer);
+        }
+
+        function onViewerKey(e) {
+            switch (e.key) {
+                case 'Escape': closeViewer(); return true;
+                case 'ArrowLeft': showAt(view.index - 1); return true;
+                case 'ArrowRight': showAt(view.index + 1); return true;
+                case 'r': case 'R': rotate(e.shiftKey ? -90 : 90); return true;
+                case '0': fit(); return true;
+                default: return false;
+            }
+        }
+
+        function onResize() {
+            if (view.open && view.mode === 'fit') fit();
+        }
+
         function setStatus(text, st) {
             $('.status').textContent = text;
             if (st) $('.overlay').dataset.state = st;
@@ -478,6 +656,13 @@
                 state.sort = e.target.value;
                 renderGrid();
             });
+            $('.grid').addEventListener('click', (e) => {
+                if (e.target.classList.contains('check')) return;
+                const card = e.target.closest('.card');
+                if (!card) return;
+                openViewer(visibleItems().findIndex(it => it.url === card.dataset.url));
+            });
+            bindViewer();
             // 勾选框只改这一张卡片，不整格重绘（重绘会丢滚动位置，也会让懒加载的缩略图重新请求）
             $('.grid').addEventListener('change', (e) => {
                 if (!e.target.classList.contains('check')) return;
@@ -509,9 +694,20 @@
                         <button type="button" class="close" title="关闭（Esc）">关闭</button>
                     </div>
                     <div class="body"><div class="grid"></div></div>
+                    <div class="viewer" hidden>
+                        <div class="stage"><img class="view-img" alt="" draggable="false"></div>
+                        <div class="view-bar">
+                            <span class="info"></span>
+                            <button type="button" class="rotate" title="旋转（R）">旋转</button>
+                            <button type="button" class="back" title="返回网格（Esc）">返回</button>
+                        </div>
+                        <button type="button" class="nav prev" title="上一张（←）">‹</button>
+                        <button type="button" class="nav next" title="下一张（→）">›</button>
+                    </div>
                 </div>`;
             bind();
             document.documentElement.appendChild(host);
+            window.addEventListener('resize', onResize);
             scan();
         }
 
@@ -535,6 +731,8 @@
 
         function close() {
             generation++;
+            view.open = false;
+            window.removeEventListener('resize', onResize);
             if (host) host.remove();
             host = null;
             root = null;
@@ -546,6 +744,7 @@
 
         /** 浮层打开时由它处理按键；返回 true 表示已处理。 */
         function onKey(e) {
+            if (view.open) return onViewerKey(e);
             if (e.key === 'Escape') {
                 close();
                 return true;

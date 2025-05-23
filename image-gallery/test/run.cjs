@@ -82,6 +82,14 @@ const setControl = (page, sel, value, type = 'input') => inGallery(page, (root, 
     el.dispatchEvent(new Event(ty, { bubbles: true }))
 }, [sel, value, type])
 
+const viewer = page => inGallery(page, (root) => {
+    const v = root.querySelector('.viewer')
+    if (v.hidden) return null
+    const d = v.dataset
+    return { index: +d.index, url: d.url.split('/').pop(), mode: d.mode, rot: +d.rot, scale: +d.scale, tx: +d.tx, ty: +d.ty }
+})
+const near = (a, b, eps = 0.01) => Math.abs(a - b) <= eps
+
 const isOpen = page => page.evaluate(sel => !!document.querySelector(sel), HOST)
 const listedUrls = page => inGallery(page, root => [...root.querySelectorAll('[data-url]')].map(el => el.dataset.url))
 const listedSizes = page => inGallery(page, root => Object.fromEntries(
@@ -223,6 +231,90 @@ async function main() {
         t.eq(names(await listedUrls(page)), ['g1.png', 'g6.png', 'g5.png', 'g4.png', 'g3.png', 'g2.png'])
         await setControl(page, '.sort', 'dom', 'change')
         t.eq(names(await listedUrls(page)), ['g1.png', 'g2.png', 'g3.png', 'g4.png', 'g5.png', 'g6.png'])
+        await page.close()
+    })
+
+    console.log('查看器')
+    await t.test('点缩略图进入大图，适应窗口；←/→ 切换并循环', async () => {
+        const page = await openPage('gallery.html')
+        await openGallery(page)
+        await click(page, '.card[data-url$="g2.png"] img')
+        let v = await viewer(page)
+        // 舞台 1280×800，留 5% 边：min(1216/1600, 760/1200)
+        t.eq([v.index, v.url, v.mode, v.rot, v.tx, v.ty], [1, 'g2.png', 'fit', 0, 0, 0])
+        t.assert(near(v.scale, 760 / 1200, 1e-3), `适应窗口的比例不对：${v.scale}`)
+        await page.keyboard.press('ArrowRight')
+        t.eq((await viewer(page)).url, 'g3.png')
+        await page.keyboard.press('ArrowLeft')
+        await page.keyboard.press('ArrowLeft')
+        t.eq((await viewer(page)).url, 'g1.png')
+        await page.keyboard.press('ArrowLeft')
+        t.eq((await viewer(page)).url, 'g6.png', '第一张再往前应当回到最后一张')
+        await page.keyboard.press('ArrowRight')
+        t.eq((await viewer(page)).index, 0)
+        // 小图适应窗口时不放大
+        t.eq((await viewer(page)).scale, 1)
+        await page.close()
+    })
+
+    await t.test('滚轮以鼠标位置为中心缩放：鼠标下的图内点不动', async () => {
+        const page = await openPage('gallery.html')
+        await openGallery(page)
+        await click(page, '.card[data-url$="g2.png"] img')
+        const before = await viewer(page)
+        const m = { x: 900, y: 250 } // 舞台中心是 (640, 400)
+        const local = v => [(m.x - 640 - v.tx) / v.scale, (m.y - 400 - v.ty) / v.scale]
+        await page.mouse.move(m.x, m.y)
+        await page.mouse.wheel(0, -100)
+        await page.waitForTimeout(50)
+        const after = await viewer(page)
+        t.assert(near(after.scale, before.scale * 1.2, 1e-3), `一格滚轮应当放大 1.2 倍：${before.scale} → ${after.scale}`)
+        t.eq(after.mode, 'free')
+        const [a, b] = [local(before), local(after)]
+        t.assert(near(a[0], b[0], 0.05) && near(a[1], b[1], 0.05), `鼠标下的图内坐标变了：${a} → ${b}`)
+        await page.mouse.wheel(0, 200)
+        await page.waitForTimeout(50)
+        t.assert(near((await viewer(page)).scale, before.scale / 1.2, 1e-3), '往回滚两格应当缩小')
+        await page.close()
+    })
+
+    await t.test('拖拽平移、R 旋转、双击在适应 / 原始尺寸间切换、Esc 先退查看器再关画廊', async () => {
+        const page = await openPage('gallery.html')
+        await openGallery(page)
+        await click(page, '.card[data-url$="g2.png"] img')
+        await page.mouse.move(600, 400)
+        await page.mouse.down()
+        await page.mouse.move(650, 380, { steps: 3 })
+        await page.mouse.up()
+        let v = await viewer(page)
+        t.eq([v.tx, v.ty], [50, -20])
+
+        await page.keyboard.press('r')
+        v = await viewer(page)
+        t.eq(v.rot, 90)
+        await page.keyboard.press('Shift+R')
+        t.eq((await viewer(page)).rot, 0)
+
+        await page.keyboard.press('0') // 回到适应窗口
+        await page.keyboard.press('r')
+        v = await viewer(page)
+        // 适应模式下旋转 90° 宽高互换重新适应：min(1216/1200, 760/1600)
+        t.eq([v.mode, v.rot], ['fit', 90])
+        t.assert(near(v.scale, 760 / 1600, 1e-3), `旋转后适应比例不对：${v.scale}`)
+
+        await page.mouse.dblclick(640, 400)
+        v = await viewer(page)
+        t.eq([v.mode, v.scale], ['original', 1])
+        await page.mouse.dblclick(640, 400)
+        v = await viewer(page)
+        t.eq([v.mode, v.tx, v.ty], ['fit', 0, 0])
+
+        await page.keyboard.press('Escape')
+        t.eq(await viewer(page), null)
+        t.assert(await isOpen(page), '第一次 Esc 只退出查看器')
+        await page.keyboard.press('Escape')
+        t.assert(!(await isOpen(page)), '第二次 Esc 关闭画廊')
+        t.eq(h.errors(page).map(String), [])
         await page.close()
     })
 
