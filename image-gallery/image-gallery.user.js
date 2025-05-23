@@ -3,7 +3,7 @@
 // @name:zh-CN   网页图片查看与批量下载
 // @name:en      Image Gallery — View & Batch Download Page Images
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.05.22.4
+// @version      2025.05.23.5
 // @description  收集当前网页里的所有图片，在全屏网格里浏览、放大查看，勾选后批量下载。快捷键 Alt+Shift+I 或脚本菜单打开。
 // @description:zh-CN  收集当前网页里的所有图片，在全屏网格里浏览、放大查看，勾选后批量下载。快捷键 Alt+Shift+I 或脚本菜单打开。
 // @description:en  Collect every image on the current page into a full-screen gallery: browse, zoom in, and batch download the ones you pick. Open with Alt+Shift+I or the userscript menu.
@@ -307,25 +307,54 @@
      */
     const STYLE = `
         :host { all: initial; }
+        * { box-sizing: border-box; }
         .overlay {
             position: fixed; inset: 0; z-index: ${CONFIG.zIndex};
             display: flex; flex-direction: column;
             background: rgba(18, 18, 20, .96); color: #eee;
             font: 13px/1.5 system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
         }
-        .bar { display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-bottom: 1px solid #333; }
-        .bar .title { font-weight: 600; margin-right: auto; }
-        button {
+        .bar {
+            display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px;
+            padding: 10px 16px; border-bottom: 1px solid #333;
+        }
+        .bar .title { font-weight: 600; }
+        .bar .spacer { flex: 1; }
+        .bar label { display: inline-flex; align-items: center; gap: 6px; color: #bbb; }
+        .bar input[type=range] { width: 140px; }
+        button, select {
             font: inherit; color: #eee; background: #2c2c30; border: 1px solid #444;
             border-radius: 6px; padding: 4px 12px; cursor: pointer;
         }
         button:hover { background: #3a3a40; }
+        button:disabled { opacity: .45; cursor: default; }
+        .status, .count { color: #aaa; }
         .body { flex: 1; overflow: auto; padding: 16px; }
-        .list { margin: 0; padding: 0; list-style: none; }
-        .list li { padding: 2px 0; word-break: break-all; }
-        .list .size { display: inline-block; min-width: 90px; color: #9ab; }
-        .status { color: #aaa; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; }
+        .card {
+            position: relative; aspect-ratio: 1; border-radius: 8px; overflow: hidden; cursor: zoom-in;
+            border: 2px solid transparent;
+            /* 棋盘格底，透明 PNG 看得出边界 */
+            background: #2a2a2e repeating-conic-gradient(#333 0 25%, #2a2a2e 0 50%) 0 0 / 16px 16px;
+        }
+        .card.selected { border-color: #4a90d9; }
+        .card img { width: 100%; height: 100%; object-fit: contain; display: block; }
+        .card .check {
+            position: absolute; top: 6px; left: 6px; width: 22px; height: 22px; margin: 0; cursor: pointer;
+            accent-color: #4a90d9;
+        }
+        .card .size {
+            position: absolute; right: 6px; bottom: 6px; padding: 0 6px; border-radius: 4px;
+            background: rgba(0, 0, 0, .65); font-size: 12px; pointer-events: none;
+        }
+        .empty { color: #888; text-align: center; padding: 60px 0; }
     `;
+
+    const SORTS = {
+        dom: { label: '页面顺序', cmp: (a, b) => a.order - b.order },
+        'area-desc': { label: '面积从大到小', cmp: (a, b) => b.w * b.h - a.w * a.h || a.order - b.order },
+        'area-asc': { label: '面积从小到大', cmp: (a, b) => a.w * a.h - b.w * b.h || a.order - b.order },
+    };
 
     const Gallery = (() => {
         let host = null;
@@ -333,30 +362,130 @@
         /** 每次打开 +1。探测是异步的，关掉又重开时旧的那轮结果要丢掉。 */
         let generation = 0;
 
+        const state = {
+            items: [],            // 探测、过滤后的全部图片
+            selected: new Set(),  // 勾选的 url
+            minSide: 0,           // 尺寸滑块：宽和高都 ≥ 它才显示
+            sort: 'dom',
+        };
+
+        const $ = sel => root.querySelector(sel);
+
         function isOpen() {
             return !!host && host.isConnected;
         }
 
-        function render(items) {
-            root.querySelector('.count').textContent = `${items.length} 张`;
-            const list = root.querySelector('.list');
-            list.textContent = '';
-            for (const it of items) {
-                const li = document.createElement('li');
-                li.dataset.url = it.url;
-                li.dataset.w = it.w || 0;
-                li.dataset.h = it.h || 0;
+        /** 当前显示的（过了尺寸滑块、排好序的）。全选 / 反选 / 下载都只作用于它们。 */
+        function visibleItems() {
+            return state.items
+                .filter(it => !it.w || !it.h || Math.min(it.w, it.h) >= state.minSide)
+                .sort(SORTS[state.sort].cmp);
+        }
+
+        function selectedVisible() {
+            return visibleItems().filter(it => state.selected.has(it.url));
+        }
+
+        function renderCounts() {
+            const shown = visibleItems();
+            const picked = shown.filter(it => state.selected.has(it.url)).length;
+            const ov = $('.overlay');
+            ov.dataset.total = state.items.length;
+            ov.dataset.shown = shown.length;
+            ov.dataset.selected = picked;
+            $('.count').textContent = shown.length === state.items.length
+                ? `共 ${shown.length} 张，已选 ${picked} 张`
+                : `显示 ${shown.length} / ${state.items.length} 张，已选 ${picked} 张`;
+        }
+
+        function renderGrid() {
+            const grid = $('.grid');
+            grid.textContent = '';
+            const shown = visibleItems();
+            if (!shown.length) {
+                const p = document.createElement('div');
+                p.className = 'empty';
+                p.textContent = state.items.length ? '没有符合尺寸条件的图片' : '这个页面上没有找到图片';
+                grid.appendChild(p);
+            }
+            for (const it of shown) {
+                const card = document.createElement('div');
+                card.className = 'card';
+                card.dataset.url = it.url;
+                card.dataset.w = it.w || 0;
+                card.dataset.h = it.h || 0;
+                const on = state.selected.has(it.url);
+                card.classList.toggle('selected', on);
+
+                const check = document.createElement('input');
+                check.type = 'checkbox';
+                check.className = 'check';
+                check.checked = on;
+                check.title = '勾选';
+
+                const img = document.createElement('img');
+                img.loading = 'lazy';
+                img.decoding = 'async';
+                img.alt = '';
+                img.src = it.url;
+
                 const size = document.createElement('span');
                 size.className = 'size';
                 size.textContent = sizeLabel(it);
-                li.append(size, it.url);
-                list.appendChild(li);
+
+                card.append(img, check, size);
+                grid.appendChild(card);
             }
+            renderCounts();
         }
 
-        function setStatus(text, state) {
-            root.querySelector('.status').textContent = text;
-            if (state) root.querySelector('.overlay').dataset.state = state;
+        function setupSlider() {
+            const slider = $('.min-side');
+            const floor = Math.min(CONFIG.minWidth, CONFIG.minHeight);
+            const sides = state.items.filter(it => it.w && it.h).map(it => Math.min(it.w, it.h));
+            slider.min = floor;
+            slider.max = Math.max(floor, ...sides);
+            slider.step = 10;
+            slider.value = state.minSide = floor;
+            $('.min-side-value').textContent = `${floor}px`;
+        }
+
+        function setStatus(text, st) {
+            $('.status').textContent = text;
+            if (st) $('.overlay').dataset.state = st;
+        }
+
+        function setSelected(url, on) {
+            on ? state.selected.add(url) : state.selected.delete(url);
+        }
+
+        function bind() {
+            $('.close').addEventListener('click', close);
+            $('.select-all').addEventListener('click', () => {
+                for (const it of visibleItems()) state.selected.add(it.url);
+                renderGrid();
+            });
+            $('.invert').addEventListener('click', () => {
+                for (const it of visibleItems()) setSelected(it.url, !state.selected.has(it.url));
+                renderGrid();
+            });
+            $('.min-side').addEventListener('input', (e) => {
+                state.minSide = +e.target.value;
+                $('.min-side-value').textContent = `${state.minSide}px`;
+                renderGrid();
+            });
+            $('.sort').addEventListener('change', (e) => {
+                state.sort = e.target.value;
+                renderGrid();
+            });
+            // 勾选框只改这一张卡片，不整格重绘（重绘会丢滚动位置，也会让懒加载的缩略图重新请求）
+            $('.grid').addEventListener('change', (e) => {
+                if (!e.target.classList.contains('check')) return;
+                const card = e.target.closest('.card');
+                setSelected(card.dataset.url, e.target.checked);
+                card.classList.toggle('selected', e.target.checked);
+                renderCounts();
+            });
         }
 
         function open() {
@@ -364,25 +493,33 @@
             host = document.createElement('div');
             host.id = HOST_ID;
             root = host.attachShadow({ mode: 'open' });
+            const sortOptions = Object.entries(SORTS).map(([k, v]) => `<option value="${k}">${v.label}</option>`).join('');
             root.innerHTML = `
                 <style>${STYLE}</style>
                 <div class="overlay" role="dialog" aria-label="图片画廊">
                     <div class="bar">
                         <span class="title">图片画廊</span>
-                        <span class="status"></span>
                         <span class="count"></span>
+                        <span class="status"></span>
+                        <span class="spacer"></span>
+                        <label>最小边 <input type="range" class="min-side"> <span class="min-side-value"></span></label>
+                        <label>排序 <select class="sort">${sortOptions}</select></label>
+                        <button type="button" class="select-all">全选</button>
+                        <button type="button" class="invert">反选</button>
                         <button type="button" class="close" title="关闭（Esc）">关闭</button>
                     </div>
-                    <div class="body"><ul class="list"></ul></div>
+                    <div class="body"><div class="grid"></div></div>
                 </div>`;
-            root.querySelector('.close').addEventListener('click', close);
+            bind();
             document.documentElement.appendChild(host);
             scan();
         }
 
         async function scan() {
             const gen = ++generation;
+            Object.assign(state, { items: [], selected: new Set(), minSide: 0, sort: 'dom' });
             const found = collect();
+            found.forEach((it, i) => { it.order = i; });
             console.log(TAG, `收集到 ${found.length} 个候选地址`);
             setStatus(`探测尺寸 0/${found.length}…`, 'scanning');
             const items = await measure(found, (done, total) => {
@@ -390,8 +527,10 @@
             });
             if (gen !== generation || !root) return;
             console.log(TAG, `过滤后剩 ${items.length} 张（去掉小图 / 加载失败 ${found.length - items.length} 个）`);
+            state.items = items;
+            setupSlider();
             setStatus('', 'ready');
-            render(items);
+            renderGrid();
         }
 
         function close() {

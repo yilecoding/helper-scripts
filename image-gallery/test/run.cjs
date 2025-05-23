@@ -68,6 +68,20 @@ async function openGallery(page) {
     }, HOST, { timeout: 15000 })
 }
 
+const counts = page => inGallery(page, (root) => {
+    const d = root.querySelector('.overlay').dataset
+    return { total: +d.total, shown: +d.shown, selected: +d.selected }
+})
+const names = urls => urls.map(u => u.split('/').pop())
+const click = (page, sel) => inGallery(page, (root, s) => root.querySelector(s).click(), sel)
+
+/** 改 <input type=range> / <select> 的值并派发事件，和用户拖动一样。 */
+const setControl = (page, sel, value, type = 'input') => inGallery(page, (root, [s, v, ty]) => {
+    const el = root.querySelector(s)
+    el.value = v
+    el.dispatchEvent(new Event(ty, { bubbles: true }))
+}, [sel, value, type])
+
 const isOpen = page => page.evaluate(sel => !!document.querySelector(sel), HOST)
 const listedUrls = page => inGallery(page, root => [...root.querySelectorAll('[data-url]')].map(el => el.dataset.url))
 const listedSizes = page => inGallery(page, root => Object.fromEntries(
@@ -156,6 +170,59 @@ async function main() {
             '1600x1200/full.png': '1600x1200',
         })
         t.eq(h.errors(page).map(String), [])
+        await page.close()
+    })
+
+    console.log('画廊网格')
+    await t.test('网格展示正确数量，每张标尺寸；页面全局样式进不来', async () => {
+        const page = await openPage('gallery.html')
+        await openGallery(page)
+        t.eq(await counts(page), { total: 6, shown: 6, selected: 0 })
+        const card = await inGallery(page, (root) => {
+            const c = root.querySelector('.card[data-url$="g2.png"]')
+            return { size: c.querySelector('.size').textContent, imgBorder: getComputedStyle(c.querySelector('img')).borderTopWidth }
+        })
+        t.eq(card, { size: '1600×1200', imgBorder: '0px' })
+        await page.close()
+    })
+
+    await t.test('勾选 / 全选 / 反选', async () => {
+        const page = await openPage('gallery.html')
+        await openGallery(page)
+        await click(page, '.card[data-url$="g1.png"] .check')
+        await click(page, '.card[data-url$="g3.png"] .check')
+        t.eq((await counts(page)).selected, 2)
+        await click(page, '.invert')
+        t.eq((await counts(page)).selected, 4)
+        t.assert(!(await inGallery(page, root => root.querySelector('.card[data-url$="g1.png"] .check').checked)), '反选后 g1 应当取消')
+        await click(page, '.select-all')
+        t.eq((await counts(page)).selected, 6)
+        await page.close()
+    })
+
+    await t.test('尺寸滑块按最小边过滤，全选只作用于显示的', async () => {
+        const page = await openPage('gallery.html')
+        await openGallery(page)
+        const range = await inGallery(page, root => ({ min: root.querySelector('.min-side').min, max: root.querySelector('.min-side').max }))
+        t.eq(range, { min: '100', max: '1200' })
+        await setControl(page, '.min-side', '500')
+        t.eq(names(await listedUrls(page)), ['g2.png', 'g3.png', 'g5.png'])
+        await click(page, '.select-all')
+        t.eq(await counts(page), { total: 6, shown: 3, selected: 3 })
+        await setControl(page, '.min-side', '100')
+        t.eq(await counts(page), { total: 6, shown: 6, selected: 3 })
+        await page.close()
+    })
+
+    await t.test('按面积排序', async () => {
+        const page = await openPage('gallery.html')
+        await openGallery(page)
+        await setControl(page, '.sort', 'area-desc', 'change')
+        t.eq(names(await listedUrls(page)), ['g2.png', 'g3.png', 'g4.png', 'g5.png', 'g6.png', 'g1.png'])
+        await setControl(page, '.sort', 'area-asc', 'change')
+        t.eq(names(await listedUrls(page)), ['g1.png', 'g6.png', 'g5.png', 'g4.png', 'g3.png', 'g2.png'])
+        await setControl(page, '.sort', 'dom', 'change')
+        t.eq(names(await listedUrls(page)), ['g1.png', 'g2.png', 'g3.png', 'g4.png', 'g5.png', 'g6.png'])
         await page.close()
     })
 
