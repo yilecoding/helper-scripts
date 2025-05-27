@@ -3,7 +3,7 @@
 // @name:zh-CN   网页图片查看与批量下载
 // @name:en      Image Gallery — View & Batch Download Page Images
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.05.27.7
+// @version      2025.05.27.8
 // @description  收集当前网页里的所有图片，在全屏网格里浏览、放大查看，勾选后批量下载。快捷键 Alt+Shift+I 或脚本菜单打开。
 // @description:zh-CN  收集当前网页里的所有图片，在全屏网格里浏览、放大查看，勾选后批量下载。快捷键 Alt+Shift+I 或脚本菜单打开。
 // @description:en  Collect every image on the current page into a full-screen gallery: browse, zoom in, and batch download the ones you pick. Open with Alt+Shift+I or the userscript menu.
@@ -11,6 +11,8 @@
 // @match        *://*/*
 // @grant        GM_registerMenuCommand
 // @grant        GM_download
+// @grant        GM_xmlhttpRequest
+// @connect      *
 // @license      CC BY-NC-SA
 // @run-at       document-idle
 // @noframes
@@ -71,6 +73,7 @@
         downloadConcurrency: 3,   // 同时下载数。太多容易被图床限流，也会让浏览器的下载栏刷屏
         downloadTimeout: 60000,
         fallbackExt: 'jpg',       // 实在推不出扩展名时用它
+        headTimeout: 8000,        // URL 看不出扩展名时发 HEAD 问 content-type 的超时
     };
 
     /** 链接直接指向图片文件的判据（按 pathname 的扩展名，不看 query）。 */
@@ -366,9 +369,44 @@
         return sanitizeName(location.hostname.replace(/^www\./i, '')) || 'local';
     }
 
-    function fileName(site, index, total, ext) {
+    /** 不带扩展名的文件名主干：<站点>_<序号>，序号按总数补零，方便按名字排序。 */
+    function fileBase(site, index, total) {
         const width = Math.max(3, String(total).length);
-        return `${site}_${String(index).padStart(width, '0')}.${ext}`;
+        return `${site}_${String(index).padStart(width, '0')}`;
+    }
+
+    /**
+     * URL 里看不出格式（/image/123、render.php?id=7）时，发一个 HEAD 读 content-type。
+     * 走 GM_xmlhttpRequest 才能跨域读响应头（所以要 @connect *）；不支持 HEAD 的服务器、
+     * 没授权、超时都返回 null，由调用方兜底。
+     */
+    function extFromHead(url) {
+        if (!/^https?:/i.test(url)) return Promise.resolve(null);
+        return new Promise((resolve) => {
+            try {
+                GM_xmlhttpRequest({
+                    method: 'HEAD',
+                    url,
+                    timeout: CONFIG.headTimeout,
+                    onload: (r) => {
+                        const m = /^content-type:\s*([^\r\n;]+)/im.exec((r && r.responseHeaders) || '');
+                        resolve(r && r.status < 400 && m ? extFromMime(m[1]) : null);
+                    },
+                    onerror: () => resolve(null),
+                    ontimeout: () => resolve(null),
+                });
+            } catch (e) {
+                resolve(null);
+            }
+        });
+    }
+
+    /** 文件名定下来的 job 直接用；没定的先推扩展名（必要时问服务器）。 */
+    async function resolveName(job) {
+        if (job.name) return job.name;
+        const ext = extFromUrl(job.url) || (await extFromHead(job.url)) || CONFIG.fallbackExt;
+        job.name = `${job.base}.${ext}`;
+        return job.name;
     }
 
     /** 把 GM_download 的回调包成 Promise。同步抛错（没授权、参数不对）也算失败。 */
@@ -391,7 +429,8 @@
     }
 
     /**
-     * 跑一批下载任务。job = { url, name, status, error }，status: pending → active → done / failed。
+     * 跑一批下载任务。job = { url, base, name, status, error }，status: pending → active → done / failed。
+     * 重试时把失败的 job 原样再传进来，文件名保持不变。
      * onUpdate(stats) 每次状态变化都会调，stats.peak 是同时在下载的最大数。
      */
     async function runDownloads(jobs, onUpdate) {
@@ -404,8 +443,9 @@
             stats.peak = Math.max(stats.peak, stats.active);
             tick();
             try {
-                await gmDownload(job.url, job.name);
+                await gmDownload(job.url, await resolveName(job));
                 job.status = 'done';
+                job.error = '';
                 stats.done++;
             } catch (e) {
                 job.status = 'failed';
@@ -475,6 +515,11 @@
         .dl { padding: 6px 16px; border-bottom: 1px solid #333; color: #ccc; }
         .dl[hidden] { display: none; }
         .dl progress { width: 200px; vertical-align: middle; margin-right: 8px; }
+        .dl .retry { margin-left: 12px; }
+        .dl .retry[hidden] { display: none; }
+        .failed { margin: 6px 0 0; padding: 0 0 0 18px; max-height: 120px; overflow: auto; color: #e88; }
+        .failed li { word-break: break-all; }
+        .failed a { color: #9cf; }
 
         .viewer { position: absolute; inset: 0; background: #0b0b0c; overflow: hidden; }
         .viewer[hidden] { display: none; }
@@ -516,6 +561,7 @@
             minSide: 0,           // 尺寸滑块：宽和高都 ≥ 它才显示
             sort: 'dom',
             downloading: false,
+            jobs: [],             // 最近一轮的下载任务，失败的留着重试
         };
 
         const $ = sel => root.querySelector(sel);
@@ -770,17 +816,32 @@
                 : `下载完成：成功 ${st.done}${st.failed ? `，失败 ${st.failed}` : ''}`;
         }
 
-        async function downloadSelected() {
-            const picked = selectedVisible();
-            if (!picked.length || state.downloading) return;
-            const site = siteName();
-            const jobs = picked.map((it, i) => ({
-                url: it.url,
-                name: fileName(site, i + 1, picked.length, extFromUrl(it.url) || CONFIG.fallbackExt),
-                status: 'pending',
-            }));
+        function renderFailed() {
+            const failed = state.jobs.filter(j => j.status === 'failed');
+            const list = $('.failed');
+            list.textContent = '';
+            for (const j of failed) {
+                const li = document.createElement('li');
+                li.dataset.url = j.url;
+                const a = document.createElement('a');
+                a.href = j.url;
+                a.target = '_blank';
+                a.rel = 'noreferrer';
+                a.textContent = j.name || j.url;
+                li.append(a, `：${j.error}`);
+                list.appendChild(li);
+            }
+            const retry = $('.retry');
+            retry.hidden = !failed.length;
+            retry.disabled = state.downloading;
+            retry.textContent = `重试失败的（${failed.length}）`;
+        }
+
+        async function runJobs(jobs) {
             state.downloading = true;
             renderCounts();
+            renderFailed();
+            $('.dl').dataset.state = 'running';
             const gen = generation;
             const st = await runDownloads(jobs, (s) => {
                 if (gen === generation && root) renderDownload(s);
@@ -789,7 +850,22 @@
             state.downloading = false;
             $('.dl').dataset.state = 'finished';
             renderCounts();
+            renderFailed();
             console.log(TAG, `下载结束：成功 ${st.done}，失败 ${st.failed}`);
+        }
+
+        function downloadSelected() {
+            const picked = selectedVisible();
+            if (!picked.length || state.downloading) return;
+            const site = siteName();
+            state.jobs = picked.map((it, i) => ({ url: it.url, base: fileBase(site, i + 1, picked.length), status: 'pending' }));
+            return runJobs(state.jobs);
+        }
+
+        function retryFailed() {
+            const failed = state.jobs.filter(j => j.status === 'failed');
+            if (!failed.length || state.downloading) return;
+            return runJobs(failed);
         }
 
         function setStatus(text, st) {
@@ -821,6 +897,7 @@
                 renderGrid();
             });
             $('.download').addEventListener('click', downloadSelected);
+            $('.retry').addEventListener('click', retryFailed);
             $('.grid').addEventListener('click', (e) => {
                 if (e.target.classList.contains('check')) return;
                 const card = e.target.closest('.card');
@@ -859,7 +936,11 @@
                         <button type="button" class="download" disabled>下载选中（0）</button>
                         <button type="button" class="close" title="关闭（Esc）">关闭</button>
                     </div>
-                    <div class="dl" hidden><progress></progress><span class="dl-text"></span></div>
+                    <div class="dl" hidden>
+                        <progress></progress><span class="dl-text"></span>
+                        <button type="button" class="retry" hidden></button>
+                        <ul class="failed"></ul>
+                    </div>
                     <div class="body"><div class="grid"></div></div>
                     <div class="viewer" hidden>
                         <div class="stage"><img class="view-img" alt="" draggable="false"></div>
@@ -880,7 +961,7 @@
 
         async function scan() {
             const gen = ++generation;
-            Object.assign(state, { items: [], selected: new Set(), minSide: 0, sort: 'dom', downloading: false });
+            Object.assign(state, { items: [], selected: new Set(), minSide: 0, sort: 'dom', downloading: false, jobs: [] });
             const found = collect();
             found.forEach((it, i) => { it.order = i; });
             console.log(TAG, `收集到 ${found.length} 个候选地址`);

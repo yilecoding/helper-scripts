@@ -363,8 +363,66 @@ async function main() {
             'shop.example_003.png',
             'shop.example_004.jpg',
             'shop.example_005.gif',
-            'shop.example_006.jpg', // render.php：.php 不是图片扩展名，兜底 jpg
+            'shop.example_006.jpg', // render.php：.php 不是图片扩展名，HEAD 也问不到（没传 xhr），兜底 jpg
             'shop.example_007.png', // data:image/png
+        ])
+        await page.close()
+    })
+
+    await t.test('URL 看不出格式时 HEAD 问 content-type，只问看不出的那张', async () => {
+        const asked = []
+        const page = await openPage('download.html', {
+            xhr: (d) => {
+                asked.push(`${d.method} ${d.url.split('/').pop()}`)
+                return { status: 200, responseHeaders: 'content-length: 99\r\nContent-Type: image/webp; charset=binary\r\n' }
+            },
+        })
+        await openGallery(page)
+        await click(page, '.card[data-url$="render.php?id=7"] .check')
+        await click(page, '.card[data-url$="upyun.jpg!thumb"] .check')
+        await download(page)
+        t.eq(asked, ['HEAD render.php?id=7'])
+        t.eq((await h.gm(page)).downloads.map(d => d.name), ['shop.example_001.jpg', 'shop.example_002.webp'])
+        await page.close()
+    })
+
+    await t.test('失败的列出来，重试只重下失败的、文件名不变', async () => {
+        const page = await openPage('gallery.html')
+        await openGallery(page)
+        // harness 的 GM_download 永远成功，没有 onerror 可触发；把记录数组的 push 换成会抛错的，
+        // 让 GM_download 同步抛异常来模拟失败
+        await page.evaluate(() => {
+            const arr = []
+            arr.push = function (d) {
+                if (window.__failPattern && window.__failPattern.test(d.url)) throw new Error('模拟：403 Forbidden')
+                return Array.prototype.push.call(this, d)
+            }
+            window.__failPattern = /g[24]\.png$/
+            window.__gm.downloads = arr
+        })
+        await click(page, '.select-all')
+        t.eq(await download(page), { total: 6, done: 4, failed: 2, peak: 3 })
+        const failed = await inGallery(page, root => ({
+            items: [...root.querySelectorAll('.failed li')].map(li => li.textContent),
+            retry: root.querySelector('.retry').hidden ? null : root.querySelector('.retry').textContent,
+        }))
+        t.eq(failed, {
+            items: ['shop.example_002.png：模拟：403 Forbidden', 'shop.example_004.png：模拟：403 Forbidden'],
+            retry: '重试失败的（2）',
+        })
+
+        await page.evaluate(() => { window.__failPattern = null })
+        await click(page, '.retry')
+        await page.waitForFunction(sel => document.querySelector(sel).shadowRoot.querySelector('.dl').dataset.state === 'finished', HOST)
+        const after = await inGallery(page, root => ({
+            done: root.querySelector('.dl').dataset.done,
+            failedItems: root.querySelectorAll('.failed li').length,
+            retryHidden: root.querySelector('.retry').hidden,
+        }))
+        t.eq(after, { done: '2', failedItems: 0, retryHidden: true })
+        t.eq((await h.gm(page)).downloads.map(d => d.name), [
+            'shop.example_001.png', 'shop.example_003.png', 'shop.example_005.png', 'shop.example_006.png',
+            'shop.example_002.png', 'shop.example_004.png',
         ])
         await page.close()
     })
