@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>download</title>
+<style>img { width: 80px; }</style>
+</head>
+<body>
+<img src="https://img.example/400x300/Photo.JPEG">
+<img src="https://img.example/401x300/pic?format=webp&w=400">
+<img src="https://img.example/402x300/mmbiz_png/abc/640?wx_fmt=png&from=appmsg">
+<img src="https://img.example/403x300/upyun.jpg!thumb">
+<img src="https://img.example/404x300/%E5%9B%BE%E7%89%87.gif?v=3#x">
+<img src="https://img.example/405x300/render.php?id=7">
+<img id="canvas-img">
+<script>
+    // data: URL 的图：用 canvas 画一张 150×150 的
+    const c = document.createElement('canvas')
+    c.width = c.height = 150
+    c.getContext('2d').fillRect(0, 0, 150, 150)
+    document.getElementById('canvas-img').src = c.toDataURL('image/png')
+</script>
+</body>
+</html>

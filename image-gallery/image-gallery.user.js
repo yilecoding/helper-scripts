@@ -3,13 +3,14 @@
 // @name:zh-CN   网页图片查看与批量下载
 // @name:en      Image Gallery — View & Batch Download Page Images
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.05.23.6
+// @version      2025.05.27.7
 // @description  收集当前网页里的所有图片，在全屏网格里浏览、放大查看，勾选后批量下载。快捷键 Alt+Shift+I 或脚本菜单打开。
 // @description:zh-CN  收集当前网页里的所有图片，在全屏网格里浏览、放大查看，勾选后批量下载。快捷键 Alt+Shift+I 或脚本菜单打开。
 // @description:en  Collect every image on the current page into a full-screen gallery: browse, zoom in, and batch download the ones you pick. Open with Alt+Shift+I or the userscript menu.
 // @author       壹樂（V：ita1125）
 // @match        *://*/*
 // @grant        GM_registerMenuCommand
+// @grant        GM_download
 // @license      CC BY-NC-SA
 // @run-at       document-idle
 // @noframes
@@ -66,6 +67,10 @@
         minScale: 0.05,
         maxScale: 20,
         wheelZoomPerNotch: 1.2,
+
+        downloadConcurrency: 3,   // 同时下载数。太多容易被图床限流，也会让浏览器的下载栏刷屏
+        downloadTimeout: 60000,
+        fallbackExt: 'jpg',       // 实在推不出扩展名时用它
     };
 
     /** 链接直接指向图片文件的判据（按 pathname 的扩展名，不看 query）。 */
@@ -303,6 +308,118 @@
     }
 
     // =========================================================================
+    // 下载
+    // =========================================================================
+
+    const EXT_ALIAS = { jpeg: 'jpg', jpe: 'jpg', jfif: 'jpg', pjpeg: 'jpg', pjp: 'jpg', tif: 'tiff', apng: 'png', 'svg+xml': 'svg', 'x-icon': 'ico', 'vnd.microsoft.icon': 'ico' };
+    const KNOWN_EXT = new Set(['jpg', 'png', 'gif', 'webp', 'avif', 'bmp', 'svg', 'ico', 'tiff', 'heic', 'heif']);
+
+    /** 归一成常见扩展名；不认识的返回 null（不能把 .php、.aspx 这类当扩展名用）。 */
+    function normExt(ext) {
+        if (!ext) return null;
+        ext = String(ext).toLowerCase();
+        ext = EXT_ALIAS[ext] || ext;
+        return KNOWN_EXT.has(ext) ? ext : null;
+    }
+
+    function extFromMime(mime) {
+        const m = /^\s*image\/([\w.+-]+)/i.exec(mime || '');
+        return m ? normExt(m[1]) : null;
+    }
+
+    /** 图床常用来指定输出格式的 query 参数（微信公众号是 wx_fmt，imgix/Contentful 是 fm）。 */
+    const FORMAT_PARAMS = ['format', 'fm', 'wx_fmt', 'ext', 'type'];
+
+    /**
+     * 从 URL 推扩展名：data: 看 MIME → 路径最后一段的扩展名 → query 里的格式参数。
+     * 又拍云 / 阿里云 OSS 的处理参数挂在文件名后面（a.jpg!thumb、a.jpg@100w），先切掉。
+     */
+    function extFromUrl(url) {
+        if (url.startsWith('data:')) return extFromMime(url.slice(5));
+        let u;
+        try {
+            u = new URL(url);
+        } catch (e) {
+            return null;
+        }
+        let last = u.pathname.split('/').pop() || '';
+        try {
+            last = decodeURIComponent(last);
+        } catch (e) { /* 坏的 % 编码，按原样用 */ }
+        last = last.split(/[!@]/)[0];
+        const m = /\.([a-z0-9]{2,5})$/i.exec(last);
+        const fromPath = m && normExt(m[1]);
+        if (fromPath) return fromPath;
+        for (const p of FORMAT_PARAMS) {
+            const v = normExt(u.searchParams.get(p));
+            if (v) return v;
+        }
+        return null;
+    }
+
+    /** Windows / macOS / Linux 文件名都不允许或很麻烦的字符一律换成 _。 */
+    function sanitizeName(s) {
+        return String(s).replace(/[\\/:*?"<>|\x00-\x1f\x7f\s]+/g, '_').replace(/^[._]+|[._]+$/g, '').slice(0, 80);
+    }
+
+    function siteName() {
+        return sanitizeName(location.hostname.replace(/^www\./i, '')) || 'local';
+    }
+
+    function fileName(site, index, total, ext) {
+        const width = Math.max(3, String(total).length);
+        return `${site}_${String(index).padStart(width, '0')}.${ext}`;
+    }
+
+    /** 把 GM_download 的回调包成 Promise。同步抛错（没授权、参数不对）也算失败。 */
+    function gmDownload(url, name) {
+        return new Promise((resolve, reject) => {
+            try {
+                GM_download({
+                    url,
+                    name,
+                    saveAs: false,
+                    timeout: CONFIG.downloadTimeout,
+                    onload: () => resolve(),
+                    onerror: e => reject(new Error((e && (e.error || e.details)) || '下载失败')),
+                    ontimeout: () => reject(new Error('超时')),
+                });
+            } catch (e) {
+                reject(e);
+            }
+        });
+    }
+
+    /**
+     * 跑一批下载任务。job = { url, name, status, error }，status: pending → active → done / failed。
+     * onUpdate(stats) 每次状态变化都会调，stats.peak 是同时在下载的最大数。
+     */
+    async function runDownloads(jobs, onUpdate) {
+        const stats = { total: jobs.length, done: 0, failed: 0, active: 0, peak: 0 };
+        const tick = () => onUpdate && onUpdate({ ...stats });
+        tick();
+        await pool(jobs.map(job => async () => {
+            job.status = 'active';
+            stats.active++;
+            stats.peak = Math.max(stats.peak, stats.active);
+            tick();
+            try {
+                await gmDownload(job.url, job.name);
+                job.status = 'done';
+                stats.done++;
+            } catch (e) {
+                job.status = 'failed';
+                job.error = (e && e.message) || String(e);
+                stats.failed++;
+                console.warn(TAG, '下载失败', job.url, job.error);
+            }
+            stats.active--;
+            tick();
+        }), CONFIG.downloadConcurrency);
+        return stats;
+    }
+
+    // =========================================================================
     // 浮层
     // =========================================================================
 
@@ -353,6 +470,11 @@
             background: rgba(0, 0, 0, .65); font-size: 12px; pointer-events: none;
         }
         .empty { color: #888; text-align: center; padding: 60px 0; }
+        .download { background: #2f6db5; border-color: #3b7fd0; }
+        .download:hover { background: #3b7fd0; }
+        .dl { padding: 6px 16px; border-bottom: 1px solid #333; color: #ccc; }
+        .dl[hidden] { display: none; }
+        .dl progress { width: 200px; vertical-align: middle; margin-right: 8px; }
 
         .viewer { position: absolute; inset: 0; background: #0b0b0c; overflow: hidden; }
         .viewer[hidden] { display: none; }
@@ -393,6 +515,7 @@
             selected: new Set(),  // 勾选的 url
             minSide: 0,           // 尺寸滑块：宽和高都 ≥ 它才显示
             sort: 'dom',
+            downloading: false,
         };
 
         const $ = sel => root.querySelector(sel);
@@ -425,6 +548,9 @@
             ov.dataset.total = state.items.length;
             ov.dataset.shown = shown.length;
             ov.dataset.selected = picked;
+            const btn = $('.download');
+            btn.textContent = `下载选中（${picked}）`;
+            btn.disabled = !picked || state.downloading;
             $('.count').textContent = shown.length === state.items.length
                 ? `共 ${shown.length} 张，已选 ${picked} 张`
                 : `显示 ${shown.length} / ${state.items.length} 张，已选 ${picked} 张`;
@@ -628,6 +754,44 @@
             if (view.open && view.mode === 'fit') fit();
         }
 
+        // ---------------------------------------------------------------------
+        // 下载
+        // ---------------------------------------------------------------------
+
+        function renderDownload(st) {
+            const box = $('.dl');
+            box.hidden = false;
+            Object.assign(box.dataset, { total: st.total, done: st.done, failed: st.failed, peak: st.peak, active: st.active });
+            const finished = st.done + st.failed;
+            box.querySelector('progress').max = st.total || 1;
+            box.querySelector('progress').value = finished;
+            box.querySelector('.dl-text').textContent = finished < st.total
+                ? `下载中 ${finished}/${st.total}${st.failed ? `，失败 ${st.failed}` : ''}`
+                : `下载完成：成功 ${st.done}${st.failed ? `，失败 ${st.failed}` : ''}`;
+        }
+
+        async function downloadSelected() {
+            const picked = selectedVisible();
+            if (!picked.length || state.downloading) return;
+            const site = siteName();
+            const jobs = picked.map((it, i) => ({
+                url: it.url,
+                name: fileName(site, i + 1, picked.length, extFromUrl(it.url) || CONFIG.fallbackExt),
+                status: 'pending',
+            }));
+            state.downloading = true;
+            renderCounts();
+            const gen = generation;
+            const st = await runDownloads(jobs, (s) => {
+                if (gen === generation && root) renderDownload(s);
+            });
+            if (gen !== generation || !root) return;
+            state.downloading = false;
+            $('.dl').dataset.state = 'finished';
+            renderCounts();
+            console.log(TAG, `下载结束：成功 ${st.done}，失败 ${st.failed}`);
+        }
+
         function setStatus(text, st) {
             $('.status').textContent = text;
             if (st) $('.overlay').dataset.state = st;
@@ -656,6 +820,7 @@
                 state.sort = e.target.value;
                 renderGrid();
             });
+            $('.download').addEventListener('click', downloadSelected);
             $('.grid').addEventListener('click', (e) => {
                 if (e.target.classList.contains('check')) return;
                 const card = e.target.closest('.card');
@@ -691,8 +856,10 @@
                         <label>排序 <select class="sort">${sortOptions}</select></label>
                         <button type="button" class="select-all">全选</button>
                         <button type="button" class="invert">反选</button>
+                        <button type="button" class="download" disabled>下载选中（0）</button>
                         <button type="button" class="close" title="关闭（Esc）">关闭</button>
                     </div>
+                    <div class="dl" hidden><progress></progress><span class="dl-text"></span></div>
                     <div class="body"><div class="grid"></div></div>
                     <div class="viewer" hidden>
                         <div class="stage"><img class="view-img" alt="" draggable="false"></div>
@@ -713,7 +880,7 @@
 
         async function scan() {
             const gen = ++generation;
-            Object.assign(state, { items: [], selected: new Set(), minSide: 0, sort: 'dom' });
+            Object.assign(state, { items: [], selected: new Set(), minSide: 0, sort: 'dom', downloading: false });
             const found = collect();
             found.forEach((it, i) => { it.order = i; });
             console.log(TAG, `收集到 ${found.length} 个候选地址`);

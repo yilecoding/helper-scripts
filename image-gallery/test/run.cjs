@@ -90,6 +90,19 @@ const viewer = page => inGallery(page, (root) => {
 })
 const near = (a, b, eps = 0.01) => Math.abs(a - b) <= eps
 
+/** 点「下载选中」并等这一轮跑完，返回进度条上的统计。 */
+async function download(page) {
+    await click(page, '.download')
+    await page.waitForFunction((sel) => {
+        const dl = document.querySelector(sel).shadowRoot.querySelector('.dl')
+        return dl.dataset.state === 'finished'
+    }, HOST, { timeout: 15000 })
+    return inGallery(page, (root) => {
+        const d = root.querySelector('.dl').dataset
+        return { total: +d.total, done: +d.done, failed: +d.failed, peak: +d.peak }
+    })
+}
+
 const isOpen = page => page.evaluate(sel => !!document.querySelector(sel), HOST)
 const listedUrls = page => inGallery(page, root => [...root.querySelectorAll('[data-url]')].map(el => el.dataset.url))
 const listedSizes = page => inGallery(page, root => Object.fromEntries(
@@ -315,6 +328,44 @@ async function main() {
         await page.keyboard.press('Escape')
         t.assert(!(await isOpen(page)), '第二次 Esc 关闭画廊')
         t.eq(h.errors(page).map(String), [])
+        await page.close()
+    })
+
+    console.log('批量下载')
+    await t.test('只下载勾选且显示的；文件名 = 站点_序号.扩展名；并发不超过 3', async () => {
+        const page = await openPage('gallery.html')
+        await openGallery(page)
+        t.assert(await inGallery(page, root => root.querySelector('.download').disabled), '没勾选时下载按钮应当禁用')
+        await click(page, '.select-all')
+        await setControl(page, '.min-side', '150') // 隐藏 g6（120×400）
+        const st = await download(page)
+        t.eq(st, { total: 5, done: 5, failed: 0, peak: 3 })
+        const gm = await h.gm(page)
+        t.eq(gm.downloads.map(d => [d.url.split('/').pop(), d.name]), [
+            ['g1.png', 'shop.example_001.png'],
+            ['g2.png', 'shop.example_002.png'],
+            ['g3.png', 'shop.example_003.png'],
+            ['g4.png', 'shop.example_004.png'],
+            ['g5.png', 'shop.example_005.png'],
+        ])
+        await page.close()
+    })
+
+    await t.test('扩展名：大小写 / query 格式参数 / 图床后缀 / 编码文件名 / data: MIME / 推不出时兜底', async () => {
+        const page = await openPage('download.html')
+        await openGallery(page)
+        await click(page, '.select-all')
+        await download(page)
+        const gm = await h.gm(page)
+        t.eq(gm.downloads.map(d => d.name), [
+            'shop.example_001.jpg',
+            'shop.example_002.webp',
+            'shop.example_003.png',
+            'shop.example_004.jpg',
+            'shop.example_005.gif',
+            'shop.example_006.jpg', // render.php：.php 不是图片扩展名，兜底 jpg
+            'shop.example_007.png', // data:image/png
+        ])
         await page.close()
     })
 
