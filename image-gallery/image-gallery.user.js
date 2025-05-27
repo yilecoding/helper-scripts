@@ -3,7 +3,7 @@
 // @name:zh-CN   网页图片查看与批量下载
 // @name:en      Image Gallery — View & Batch Download Page Images
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.05.27.8
+// @version      2025.05.27.9
 // @description  收集当前网页里的所有图片，在全屏网格里浏览、放大查看，勾选后批量下载。快捷键 Alt+Shift+I 或脚本菜单打开。
 // @description:zh-CN  收集当前网页里的所有图片，在全屏网格里浏览、放大查看，勾选后批量下载。快捷键 Alt+Shift+I 或脚本菜单打开。
 // @description:en  Collect every image on the current page into a full-screen gallery: browse, zoom in, and batch download the ones you pick. Open with Alt+Shift+I or the userscript menu.
@@ -105,14 +105,37 @@
 
     /**
      * 解析 srcset，返回 [{ url, w, x }]。没有描述符的候选按 1x 算。
-     * 按「逗号 + 空白」切分，Cloudinary 那种 URL 里带逗号的（w_200,h_100）不会被切断。
+     *
+     * 不能简单按「逗号 + 空白」切：压缩过的 HTML 里逗号后面常常没有空格（a.jpg 1x,b.jpg 2x），
+     * 那样整串会被当成一个候选。按规范的做法来：URL 是一段不含空白的字符（可以带逗号，
+     * Cloudinary 的 c_fill,w_800 就是），URL 末尾的逗号才是分隔符；描述符读到下一个括号外的逗号为止。
      */
     function parseSrcset(srcset) {
         const out = [];
-        for (const part of srcset.split(/,\s+/)) {
-            const [url, desc = '1x'] = part.trim().split(/\s+/);
+        const s = srcset;
+        const n = s.length;
+        let i = 0;
+        while (i < n) {
+            while (i < n && /[\s,]/.test(s[i])) i++;
+            if (i >= n) break;
+            let start = i;
+            while (i < n && !/\s/.test(s[i])) i++;
+            let url = s.slice(start, i);
+            let desc = '';
+            if (/,$/.test(url)) {
+                url = url.replace(/,+$/, '');
+            } else {
+                start = i;
+                let depth = 0;
+                while (i < n && !(s[i] === ',' && depth <= 0)) {
+                    if (s[i] === '(') depth++;
+                    else if (s[i] === ')') depth--;
+                    i++;
+                }
+                desc = s.slice(start, i).trim();
+            }
             if (!url) continue;
-            const m = desc.match(/^([\d.]+)([wx])$/i);
+            const m = /(?:^|\s)([\d.]+)([wx])(?:\s|$)/i.exec(desc);
             out.push({
                 url,
                 w: m && m[2].toLowerCase() === 'w' ? parseFloat(m[1]) : 0,

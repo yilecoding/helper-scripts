@@ -427,6 +427,46 @@ async function main() {
         await page.close()
     })
 
+    console.log('边界情况')
+    await t.test('srcset：逗号后无空格、URL 自带逗号、缺省描述符', async () => {
+        const page = await openPage('edge.html')
+        await openGallery(page)
+        t.eq(await listedUrls(page), [
+            'https://img.example/900x600/min-b.png',
+            'https://img.example/880x600/c_fill,w_880/cl.png',
+            'https://img.example/300x200/mx-2.png',
+        ])
+        await page.close()
+    })
+
+    await t.test('关掉重开会重新扫描（页面后来加的图也能收到），不会把画廊自己的缩略图算进去', async () => {
+        const page = await openPage('gallery.html')
+        await openGallery(page)
+        t.eq((await counts(page)).total, 6)
+        await page.keyboard.press('Escape')
+        await page.evaluate(() => {
+            const img = document.createElement('img')
+            img.src = 'https://img.example/700x700/added-later.png'
+            document.body.appendChild(img)
+        })
+        await openGallery(page)
+        t.eq((await counts(page)).total, 7)
+        await page.close()
+    })
+
+    await t.test('文件名里的站点去掉 www. 和端口', async () => {
+        const page = await browser.newPage()
+        await h.install(page, SCRIPT)
+        await routes(page)
+        await page.route('https://www.shop.example:8443/**', route => route.fulfill({ path: path.join(FIXTURES, 'gallery.html') }))
+        await page.goto('https://www.shop.example:8443/gallery.html')
+        await openGallery(page)
+        await click(page, '.card[data-url$="g1.png"] .check')
+        await download(page)
+        t.eq((await h.gm(page)).downloads.map(d => d.name), ['shop.example_001.png'])
+        await page.close()
+    })
+
     await env.close()
     t.done()
 }
