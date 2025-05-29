@@ -404,10 +404,12 @@ async function main() {
         t.eq(await download(page), { total: 6, done: 4, failed: 2, peak: 3 })
         const failed = await inGallery(page, root => ({
             items: [...root.querySelectorAll('.failed li')].map(li => li.textContent),
+            rel: root.querySelector('.failed a').rel,
             retry: root.querySelector('.retry').hidden ? null : root.querySelector('.retry').textContent,
         }))
         t.eq(failed, {
             items: ['shop.example_002.png：模拟：403 Forbidden', 'shop.example_004.png：模拟：403 Forbidden'],
+            rel: 'noopener', // 不能是 noreferrer，手动打开防盗链的图要带 Referer
             retry: '重试失败的（2）',
         })
 

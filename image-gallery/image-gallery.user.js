@@ -3,7 +3,7 @@
 // @name:zh-CN   网页图片查看与批量下载
 // @name:en      Image Gallery — View & Batch Download Page Images
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.05.29.10
+// @version      2025.05.29.11
 // @description  收集当前网页里的所有图片，在全屏网格里浏览、放大查看，勾选后批量下载。快捷键 Alt+Shift+I 或脚本菜单打开。
 // @description:zh-CN  收集当前网页里的所有图片，在全屏网格里浏览、放大查看，勾选后批量下载。快捷键 Alt+Shift+I 或脚本菜单打开。
 // @description:en  Collect every image on the current page into a full-screen gallery: browse, zoom in, and batch download the ones you pick. Open with Alt+Shift+I or the userscript menu.
@@ -311,7 +311,9 @@
 
     /**
      * 给每一项补上 w/h，并去掉加载失败的和小图。onProgress(done, total) 用来刷进度。
-     * 加载成功但尺寸是 0（没写 width/height 的 SVG）的保留，标成尺寸未知，不参与小图过滤。
+     * 加载成功但尺寸是 0 的保留，标成尺寸未知，不参与小图过滤（兜底用）。
+     * 注意 Chromium 给没写 width/height 的 SVG 报的是 300×150 而不是 0（实测），
+     * 所以 SVG 小图标在 Chromium 上会按 300×150 通过过滤。
      */
     async function measure(items, onProgress) {
         let done = 0;
@@ -723,7 +725,7 @@
             const it = view.list[view.index];
             const img = $('.view-img');
             img.src = it.url;
-            // 尺寸未知（没写宽高的 SVG）就让浏览器按默认尺寸画，居中靠 JS 读到的 natural 尺寸补
+            // 尺寸未知就按浏览器给的 natural 尺寸画，再不行用 300×150（替换元素的默认尺寸）
             const w = it.w || img.naturalWidth || 300;
             const h = it.h || img.naturalHeight || 150;
             Object.assign(img.style, { width: `${w}px`, height: `${h}px`, marginLeft: `${-w / 2}px`, marginTop: `${-h / 2}px` });
@@ -851,7 +853,9 @@
                 const a = document.createElement('a');
                 a.href = j.url;
                 a.target = '_blank';
-                a.rel = 'noreferrer';
+                // 不能加 noreferrer：防盗链的图床正是因为没带 Referer 才下载失败的，
+                // 点这个链接手动打开时要让它带上本页的 Referer
+                a.rel = 'noopener';
                 a.textContent = j.name || j.url;
                 li.append(a, `：${j.error}`);
                 list.appendChild(li);
