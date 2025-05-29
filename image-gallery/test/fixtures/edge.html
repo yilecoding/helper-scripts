@@ -13,5 +13,13 @@
 <!-- 只有 x 描述符、最后一项不带描述符 -->
 <img id="mix" srcset="https://img.example/300x200/mx-2.png 2x,https://img.example/150x100/mx-1.png">
 
+<!-- 页面自己的快捷键：画廊打开期间不该收到按键 -->
+<p>page keys: <span id="keys">0</span></p>
+<input id="search" placeholder="页面里的输入框">
+<script>
+    document.addEventListener('keydown', () => {
+        document.getElementById('keys').textContent = +document.getElementById('keys').textContent + 1
+    })
+</script>
 </body>
 </html>

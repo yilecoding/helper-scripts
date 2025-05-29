@@ -439,6 +439,23 @@ async function main() {
         await page.close()
     })
 
+    await t.test('画廊打开期间页面收不到按键；焦点从页面输入框移走', async () => {
+        const page = await openPage('edge.html')
+        await page.focus('#search')
+        await page.keyboard.press('Alt+Shift+KeyI')
+        await page.waitForFunction(sel => document.querySelector(sel)?.shadowRoot.querySelector('.overlay')?.dataset.state === 'ready', HOST)
+        const before = await page.textContent('#keys')
+        await page.keyboard.press('ArrowRight')
+        await page.keyboard.press('j')
+        await page.keyboard.type('abc')
+        t.eq(await page.textContent('#keys'), before, '画廊打开时按键漏到了页面上')
+        t.eq(await page.inputValue('#search'), '', '打字进了背后页面的输入框')
+        await page.keyboard.press('Escape')
+        await page.keyboard.press('j')
+        t.eq(+(await page.textContent('#keys')), +before + 1, '关掉画廊后页面应当恢复收到按键')
+        await page.close()
+    })
+
     await t.test('关掉重开会重新扫描（页面后来加的图也能收到），不会把画廊自己的缩略图算进去', async () => {
         const page = await openPage('gallery.html')
         await openGallery(page)

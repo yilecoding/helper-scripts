@@ -3,7 +3,7 @@
 // @name:zh-CN   网页图片查看与批量下载
 // @name:en      Image Gallery — View & Batch Download Page Images
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.05.27.9
+// @version      2025.05.29.10
 // @description  收集当前网页里的所有图片，在全屏网格里浏览、放大查看，勾选后批量下载。快捷键 Alt+Shift+I 或脚本菜单打开。
 // @description:zh-CN  收集当前网页里的所有图片，在全屏网格里浏览、放大查看，勾选后批量下载。快捷键 Alt+Shift+I 或脚本菜单打开。
 // @description:en  Collect every image on the current page into a full-screen gallery: browse, zoom in, and batch download the ones you pick. Open with Alt+Shift+I or the userscript menu.
@@ -575,6 +575,8 @@
     const Gallery = (() => {
         let host = null;
         let root = null;
+        /** 打开前页面上的焦点，关掉时还回去。 */
+        let lastFocus = null;
         /** 每次打开 +1。探测是异步的，关掉又重开时旧的那轮结果要丢掉。 */
         let generation = 0;
 
@@ -946,7 +948,7 @@
             const sortOptions = Object.entries(SORTS).map(([k, v]) => `<option value="${k}">${v.label}</option>`).join('');
             root.innerHTML = `
                 <style>${STYLE}</style>
-                <div class="overlay" role="dialog" aria-label="图片画廊">
+                <div class="overlay" role="dialog" aria-modal="true" aria-label="图片画廊" tabindex="-1">
                     <div class="bar">
                         <span class="title">图片画廊</span>
                         <span class="count"></span>
@@ -977,7 +979,10 @@
                     </div>
                 </div>`;
             bind();
+            lastFocus = document.activeElement;
             document.documentElement.appendChild(host);
+            // 焦点要移进浮层：不然焦点还留在页面的输入框里，按键事件拦得住，打字却照样进了背后的输入框
+            $('.overlay').focus({ preventScroll: true });
             window.addEventListener('resize', onResize);
             scan();
         }
@@ -1007,6 +1012,8 @@
             if (host) host.remove();
             host = null;
             root = null;
+            if (lastFocus && lastFocus.isConnected && lastFocus.focus) lastFocus.focus({ preventScroll: true });
+            lastFocus = null;
         }
 
         function toggle() {
@@ -1037,21 +1044,26 @@
     }
 
     /*
-     * 捕获阶段监听 window：页面自己的快捷键（比如很多站点把 Esc、方向键绑给了轮播图）
-     * 在冒泡阶段才处理，我们先拿到并 stopPropagation，浮层打开期间页面收不到这些按键。
+     * 捕获阶段监听 window：页面自己的快捷键（比如很多站点把方向键绑给了轮播图、j/k 绑给了翻页）
+     * 在之后的阶段才处理。画廊打开期间所有按键都在这里截住，页面一个都收不到；
+     * 只对我们处理了的才 preventDefault，其余的默认行为（滑块、下拉框的方向键）照常。
      */
     window.addEventListener('keydown', (e) => {
         if (matchHotkey(e)) {
             e.preventDefault();
-            e.stopPropagation();
+            e.stopImmediatePropagation();
             Gallery.toggle();
             return;
         }
-        if (Gallery.isOpen() && Gallery.onKey(e)) {
-            e.preventDefault();
-            e.stopPropagation();
-        }
+        if (!Gallery.isOpen()) return;
+        e.stopImmediatePropagation();
+        if (Gallery.onKey(e)) e.preventDefault();
     }, true);
+    for (const type of ['keyup', 'keypress']) {
+        window.addEventListener(type, (e) => {
+            if (Gallery.isOpen()) e.stopImmediatePropagation();
+        }, true);
+    }
 
     GM_registerMenuCommand('打开图片画廊（Alt+Shift+I）', () => Gallery.open());
 })();
