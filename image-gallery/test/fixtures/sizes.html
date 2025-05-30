@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>sizes</title>
+<style>
+    .icon { width: 16px; height: 16px; display: inline-block; background: url("https://img.example/16x16/bg-icon.png"); }
+</style>
+</head>
+<body>
+<img src="https://img.example/400x300/big.png" width="200">
+<img src="https://img.example/32x32/icon.png">
+<img src="https://img.example/100x100/edge.png">
+<img src="https://img.example/99x300/narrow.png">
+<img src="https://img.example/300x99/short.png">
+<!-- 1×1 透明像素 -->
+<img src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7">
+<!-- 坏图 -->
+<img src="https://img.example/broken/x.png">
+<!-- 懒加载：页面上显示的是占位图，要探测真图 -->
+<img src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" data-src="https://img.example/640x480/lazy.png">
+<!-- srcset：浏览器加载的是小的那张，不能拿它的 naturalWidth 当大图尺寸 -->
+<img src="https://img.example/150x100/ss-small.png" srcset="https://img.example/150x100/ss-small.png 150w, https://img.example/1500x1000/ss-big.png 1500w" sizes="50px">
+<span class="icon"></span>
+<a href="https://img.example/1600x1200/full.png">原图</a>
+</body>
+</html>

@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>img</title>
+<style>img { width: 120px; }</style>
+</head>
+<body>
+<!-- srcset w 描述符：应取 800w，不是 src，也不是排在最后的 400w -->
+<img id="w" src="https://img.example/200x150/s-small.png"
+     srcset="https://img.example/200x150/s-small.png 200w, https://img.example/800x600/s-large.png 800w, https://img.example/400x300/s-mid.png 400w"
+     sizes="120px">
+
+<!-- srcset x 描述符 + 相对地址 -->
+<img id="x" src="300x200/x1.png" srcset="300x200/x1.png 1x, 600x400/x2.png 2x, 450x300/x15.png 1.5x">
+
+<!-- <picture>：<source> 里的大图要压过 <img> 的 src -->
+<picture>
+    <source type="image/webp" srcset="https://img.example/1200x900/p-large.png 1200w, https://img.example/600x450/p-mid.png 600w">
+    <img id="p" src="https://img.example/300x200/p-small.png">
+</picture>
+
+<!-- 懒加载：src 是 1×1 占位 gif，真图在属性里 -->
+<img id="l1" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" data-src="https://img.example/500x400/lazy-src.png">
+<img id="l2" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" data-original="https://img.example/510x400/lazy-original.png">
+<img id="l3" data-lazy-src="https://img.example/520x400/lazy-lazysrc.png">
+<img id="l4" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" data-srcset="https://img.example/260x200/ls-1.png 1x, https://img.example/520x400/ls-2.png 2x">
+
+<!-- 相对地址 + #hash，与下面的绝对地址是同一张 -->
+<img id="r1" src="320x240/rel.png#top">
+<img id="r2" src="https://shop.example/320x240/rel.png">
+</body>
+</html>

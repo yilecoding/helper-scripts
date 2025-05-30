@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>edge</title>
+<style>img { width: 80px; }</style>
+</head>
+<body>
+<!-- 压缩过的 srcset：逗号后面没有空格 -->
+<img id="min" src="https://img.example/200x150/min-a.png" srcset="https://img.example/200x150/min-a.png 200w,https://img.example/900x600/min-b.png 900w">
+<!-- Cloudinary 风格：URL 里本身带逗号 -->
+<img id="cl" srcset="https://img.example/220x150/c_fill,w_220/cl.png 220w, https://img.example/880x600/c_fill,w_880/cl.png 880w">
+<!-- 只有 x 描述符、最后一项不带描述符 -->
+<img id="mix" srcset="https://img.example/300x200/mx-2.png 2x,https://img.example/150x100/mx-1.png">
+
+<!-- 页面自己的快捷键：画廊打开期间不该收到按键 -->
+<p>page keys: <span id="keys">0</span></p>
+<input id="search" placeholder="页面里的输入框">
+<script>
+    document.addEventListener('keydown', () => {
+        document.getElementById('keys').textContent = +document.getElementById('keys').textContent + 1
+    })
+</script>
+</body>
+</html>
