@@ -3,13 +3,14 @@
 // @name:zh-CN   划词翻译｜选中即译 · 中英自动互译
 // @name:en      Translate Selection | Select-to-Translate, Auto Chinese ⇄ English
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.05.30.1
+// @version      2025.06.02.2
 // @description  选中文字后旁边浮出小图标，点一下就翻译；按住 Alt 选中可直接翻译。中文译成英文、其他语言译成中文。
 // @description:zh-CN  选中文字后旁边浮出小图标，点一下就翻译；按住 Alt 选中可直接翻译。中文译成英文、其他语言译成中文。
 // @description:en  Select text and a small icon pops up next to it — click to translate. Hold Alt while selecting to translate instantly. Chinese is translated to English, everything else to Chinese.
 // @author       壹樂（V：ita1125）
 // @match        *://*/*
-// @grant        none
+// @grant        GM_xmlhttpRequest
+// @connect      translate.googleapis.com
 // @license      CC BY-NC-SA
 // @run-at       document-end
 // @homepageURL  https://github.com/yilecoding/helper-scripts
@@ -35,6 +36,10 @@
         iconSize: 24,        // 浮动图标边长（px）
         iconOffset: 6,       // 图标离选区末端的距离（px）
         minLength: 1,        // 选中少于这么多字（去掉首尾空白后）不出图标
+
+        targetLang: 'zh-CN', // 目标语言
+        cardWidth: 340,      // 结果卡片宽度（px）
+        sourcePreview: 80,   // 卡片顶部回显原文，超过这么多字截断
     };
 
     // =========================================================================
@@ -56,6 +61,23 @@
                 box-shadow: 0 2px 6px rgba(0, 0, 0, .25);
             }
             .icon:hover { background: #1d4ed8; }
+
+            .card {
+                position: absolute; box-sizing: border-box; padding: 10px 12px;
+                font: 14px/1.55 system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+                color: #1f2937; background: #fff; border: 1px solid #e5e7eb; border-radius: 8px;
+                box-shadow: 0 8px 24px rgba(0, 0, 0, .18);
+                text-align: left; white-space: normal; word-break: break-word;
+            }
+            .src { color: #6b7280; font-size: 12px; margin-bottom: 6px; }
+            .dst { font-size: 15px; white-space: pre-wrap; max-height: 320px; overflow: auto; }
+            .meta { margin-top: 8px; color: #9ca3af; font-size: 11px; }
+            .loading { color: #6b7280; }
+            .error { color: #dc2626; }
+            .error button {
+                margin-left: 8px; font: inherit; color: #2563eb; background: none;
+                border: 0; padding: 0; cursor: pointer; text-decoration: underline;
+            }
         `;
 
         function ensure() {
@@ -176,6 +198,126 @@
         return { show, hide, onClick: (fn) => { onTrigger = fn; } };
     })();
 
+
+    // =========================================================================
+    // 网络
+    // =========================================================================
+
+    /** GM_xmlhttpRequest 的 Promise 包装（跨域必须走它，页面的 fetch 会被 CORS 拦）。 */
+    function request({ method = 'GET', url, data, headers }) {
+        return new Promise((resolve, reject) => {
+            GM_xmlhttpRequest({
+                method, url, data, headers,
+                onload: (r) => {
+                    if (r.status >= 200 && r.status < 300) resolve(r.responseText);
+                    else reject(new Error(`HTTP ${r.status}`));
+                },
+                onerror: () => reject(new Error('网络错误')),
+            });
+        });
+    }
+
+    // =========================================================================
+    // 翻译接口
+    // =========================================================================
+
+    /**
+     * Google 网页版用的免费接口（client=gtx）。返回是一个嵌套数组，不是 JSON 对象：
+     *   [0] 分段译文：[[译文, 原文, …], …]，长文本会按句切成多段，要拼起来
+     *   [2] 识别出的源语言
+     */
+    const Google = {
+        name: 'Google 翻译',
+
+        async translate(text, tl) {
+            const url = 'https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto'
+                + `&tl=${encodeURIComponent(tl)}&dt=t&dt=bd&q=${encodeURIComponent(text)}`;
+            const data = JSON.parse(await request({ url }));
+            if (!Array.isArray(data) || !Array.isArray(data[0])) throw new Error('返回格式无法识别');
+            const translation = data[0].map((seg) => (seg && seg[0]) || '').join('');
+            if (!translation) throw new Error('没有译文');
+            return { text: translation, src: data[2] || '', tl, engine: this.name };
+        },
+    };
+
+    async function translate(text, tl) {
+        return Google.translate(text, tl);
+    }
+
+    // =========================================================================
+    // 结果卡片
+    // =========================================================================
+
+    const Card = (() => {
+        let el = null;
+
+        function h(tag, cls, text) {
+            const n = document.createElement(tag);
+            if (cls) n.className = cls;
+            if (text != null) n.textContent = text;
+            return n;
+        }
+
+        function preview(text) {
+            const t = text.replace(/\s+/g, ' ').trim();
+            return t.length > CONFIG.sourcePreview ? t.slice(0, CONFIG.sourcePreview) + '…' : t;
+        }
+
+        function place(anchor) {
+            const width = Math.min(CONFIG.cardWidth, document.documentElement.clientWidth - 16);
+            const minX = window.scrollX + 8;
+            const maxX = window.scrollX + document.documentElement.clientWidth - width - 8;
+            const x = Math.max(minX, Math.min(anchor.x - width / 2, maxX));
+            Object.assign(el.style, { left: `${x}px`, top: `${anchor.y + 8}px`, width: `${width}px`, display: 'block' });
+        }
+
+        function open(info) {
+            const root = UI.ensure();
+            if (!el) el = h('div', 'card');
+            if (!el.isConnected) root.appendChild(el);
+            el.replaceChildren(h('div', 'src', preview(info.text)), h('div', 'dst loading', '翻译中…'));
+            place(info.anchor);
+            run(info);
+        }
+
+        async function run(info) {
+            const token = {};
+            el.__token = token;   // 连续触发时只认最后一次的结果，旧请求晚到不能覆盖新卡片
+            let result;
+            try {
+                result = await translate(info.text, CONFIG.targetLang);
+            } catch (e) {
+                if (el.__token !== token) return;
+                console.warn(TAG, '翻译失败', e);
+                const err = h('div', 'dst error', `翻译失败：${e.message}`);
+                const retry = h('button', null, '重试');
+                retry.addEventListener('click', () => open(info));
+                err.appendChild(retry);
+                el.replaceChildren(h('div', 'src', preview(info.text)), err);
+                return;
+            }
+            if (el.__token !== token) return;
+            el.replaceChildren(
+                h('div', 'src', preview(info.text)),
+                h('div', 'dst', result.text),
+                h('div', 'meta', `${result.engine} · ${result.src || 'auto'} → ${result.tl}`),
+            );
+        }
+
+        function close() {
+            if (el) {
+                el.__token = null;
+                el.style.display = 'none';
+            }
+        }
+
+        function isOpen() {
+            return !!el && el.isConnected && el.style.display !== 'none';
+        }
+
+        return { open, close, isOpen };
+    })();
+
     // =========================================================================
     // 事件
     // =========================================================================
@@ -194,10 +336,11 @@
     function onMouseDown(e) {
         if (UI.owns(e)) return;
         Icon.hide();
+        Card.close();
     }
 
     function boot() {
-        Icon.onClick((info) => console.log(TAG, '待翻译：', info.text));
+        Icon.onClick((info) => Card.open(info));
         document.addEventListener('mouseup', onMouseUp, true);
         document.addEventListener('mousedown', onMouseDown, true);
         console.log(TAG, '已加载');

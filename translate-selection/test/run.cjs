@@ -11,6 +11,22 @@ const h = require('../../tools/userscript-harness.cjs')
 
 const SCRIPT = path.join(__dirname, '..', 'translate-selection.user.js')
 const ICON = 'translate-selection-host .icon'
+const CARD = 'translate-selection-host .card'
+const DST = CARD + ' .dst:not(.loading)'
+
+/**
+ * 按 translate_a/single 的真实格式构造返回（实测抓过 hello / 你好 / 两句中文）：
+ *   [[[译文, 原文, null, null, 10], …], 词典 | null, 源语言, null, null, null, 1, [], [[源语言], null, [1], [源语言]]]
+ */
+function googleBody(segments, { src = 'en', dict = null } = {}) {
+    return JSON.stringify([
+        segments.map(([dst, orig]) => [dst, orig, null, null, 10]),
+        dict, src, null, null, null, 1, [], [[src], null, [1], [src]],
+    ])
+}
+
+const isGoogle = d => d.url.startsWith('https://translate.googleapis.com/translate_a/single')
+const query = d => new URL(d.url).searchParams
 
 /** 新开一个页面并装好脚本。xhr 不传时所有请求都返回 500。返回 { page, requests }。 */
 async function open(env, { xhr, values } = {}) {
@@ -77,6 +93,58 @@ async function main() {
         await selectText(page, '#en')
         await page.click(ICON)
         t.eq(await page.evaluate(() => window.getSelection().toString()), 'Machine translation has improved a lot in recent years.')
+        await page.close()
+    })
+
+    await t.test('点图标后请求 Google 接口，参数正确，卡片显示译文', async () => {
+        const { page, requests } = await open(env, {
+            xhr: d => ({ responseText: googleBody([['近年来机器翻译进步很大。', 'Machine translation has improved a lot in recent years.']]) }),
+        })
+        await selectText(page, '#en')
+        await page.click(ICON)
+        await page.waitForSelector(DST)
+        t.eq(requests.length, 1)
+        const d = requests[0]
+        t.assert(isGoogle(d), d.url)
+        t.eq(d.method, 'GET')
+        const q = query(d)
+        t.eq(q.get('client'), 'gtx')
+        t.eq(q.get('sl'), 'auto')
+        t.eq(q.get('tl'), 'zh-CN')
+        t.eq(q.getAll('dt'), ['t', 'bd'])
+        t.eq(q.get('q'), 'Machine translation has improved a lot in recent years.')
+        t.eq(await page.textContent(DST), '近年来机器翻译进步很大。')
+        t.eq(await page.textContent(CARD + ' .src'), 'Machine translation has improved a lot in recent years.')
+        t.assert((await page.textContent(CARD + ' .meta')).includes('Google'))
+        t.eq(h.errors(page).map(String), [])
+        await page.close()
+    })
+
+    await t.test('多段译文按顺序拼接', async () => {
+        const { page } = await open(env, {
+            xhr: () => ({ responseText: googleBody([['The weather is nice today. ', '今天天气很好，'], ["Let's go for a walk in the park.", '我们去公园散步吧。']], { src: 'zh-CN' }) }),
+        })
+        await selectText(page, '#zh')
+        await page.click(ICON)
+        await page.waitForSelector(DST)
+        t.eq(await page.textContent(DST), "The weather is nice today. Let's go for a walk in the park.")
+        await page.close()
+    })
+
+    await t.test('接口失败时卡片显示错误和重试，而不是空白', async () => {
+        let fail = true
+        const { page, requests } = await open(env, {
+            xhr: () => (fail ? { status: 503, responseText: '' } : { responseText: googleBody([['好', 'good']]) }),
+        })
+        await selectText(page, '#word')
+        await page.click(ICON)
+        await page.waitForSelector(CARD + ' .error')
+        t.assert((await page.textContent(CARD + ' .error')).includes('503'))
+        fail = false
+        await page.click(CARD + ' .error button')
+        await page.waitForSelector(DST)
+        t.eq(await page.textContent(DST), '好')
+        t.eq(requests.length, 2)
         await page.close()
     })
 
