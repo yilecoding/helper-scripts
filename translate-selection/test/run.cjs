@@ -25,6 +25,24 @@ function googleBody(segments, { src = 'en', dict = null } = {}) {
     ])
 }
 
+/**
+ * MyMemory 的真实格式（实测）。注意出错时 HTTP 也是 200，
+ * responseStatus 是字符串 "403"，错误信息放在 translatedText 里。
+ */
+function myMemoryBody(text, { status = 200, detected = 'en', details = '' } = {}) {
+    return JSON.stringify({
+        responseData: status === 200 ? { translatedText: text, match: 0.85, detectedLanguage: detected } : { translatedText: details },
+        quotaFinished: status === 200 ? false : null,
+        mtLangSupported: null,
+        responseDetails: details,
+        responseStatus: status === 200 ? 200 : String(status),
+        responderId: null,
+        exception_code: null,
+        matches: [],
+    })
+}
+
+const isMyMemory = d => d.url.startsWith('https://api.mymemory.translated.net/get')
 const isGoogle = d => d.url.startsWith('https://translate.googleapis.com/translate_a/single')
 const query = d => new URL(d.url).searchParams
 
@@ -187,12 +205,55 @@ async function main() {
         await selectText(page, '#word')
         await page.click(ICON)
         await page.waitForSelector(CARD + ' .error')
-        t.assert((await page.textContent(CARD + ' .error')).includes('503'))
+        const msg = await page.textContent(CARD + ' .error')
+        t.assert(msg.includes('Google 翻译：HTTP 503') && msg.includes('MyMemory：HTTP 503'), msg)
         fail = false
         await page.click(CARD + ' .error button')
         await page.waitForSelector(DST)
         t.eq(await page.textContent(DST), '好')
+        t.eq(requests.length, 3)
+        await page.close()
+    })
+
+    await t.test('Google 失败时降级到 MyMemory，参数正确', async () => {
+        const { page, requests } = await open(env, {
+            xhr: d => (isGoogle(d) ? { status: 429, responseText: '' } : { responseText: myMemoryBody('机器翻译近年来进步很大。') }),
+        })
+        await selectText(page, '#en')
+        await page.click(ICON)
+        await page.waitForSelector(DST)
+        t.eq(requests.map(d => (isGoogle(d) ? 'google' : isMyMemory(d) ? 'mymemory' : d.url)), ['google', 'mymemory'])
+        const q = query(requests[1])
+        t.eq(q.get('q'), 'Machine translation has improved a lot in recent years.')
+        t.eq(q.get('langpair'), 'autodetect|zh-CN')
+        t.eq(await page.textContent(DST), '机器翻译近年来进步很大。')
+        t.assert((await page.textContent(CARD + ' .meta')).startsWith('MyMemory'))
+        await page.close()
+    })
+
+    await t.test('Google 超时（一直不返回）也会降级', async () => {
+        const { page, requests } = await open(env, {
+            values: { settings: { timeoutMs: 300 } },
+            xhr: d => (isGoogle(d) ? new Promise(() => {}) : { responseText: myMemoryBody('你好') }),
+        })
+        await selectText(page, '#word')
+        await page.click(ICON)
+        await page.waitForSelector(DST, { timeout: 3000 })
+        t.eq(await page.textContent(DST), '你好')
         t.eq(requests.length, 2)
+        await page.close()
+    })
+
+    await t.test('MyMemory 在 HTTP 200 里返回的错误不会被当成译文', async () => {
+        const details = "'XX' IS AN INVALID TARGET LANGUAGE . EXAMPLE: LANGPAIR=EN|IT USING 2 LETTER ISO OR RFC3066 LIKE ZH-CN."
+        const { page } = await open(env, {
+            xhr: d => (isGoogle(d) ? { status: 500, responseText: '' } : { responseText: myMemoryBody('', { status: 403, details }) }),
+        })
+        await selectText(page, '#en')
+        await page.click(ICON)
+        await page.waitForSelector(CARD + ' .error')
+        t.assert((await page.textContent(CARD + ' .error')).includes('INVALID TARGET LANGUAGE'))
+        t.eq(await page.$$(CARD + ' .dst:not(.error):not(.loading)'), [])
         await page.close()
     })
 

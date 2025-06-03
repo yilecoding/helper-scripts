@@ -3,14 +3,16 @@
 // @name:zh-CN   划词翻译｜选中即译 · 中英自动互译
 // @name:en      Translate Selection | Select-to-Translate, Auto Chinese ⇄ English
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.06.03.4
+// @version      2025.06.03.5
 // @description  选中文字后旁边浮出小图标，点一下就翻译；按住 Alt 选中可直接翻译。中文译成英文、其他语言译成中文。
 // @description:zh-CN  选中文字后旁边浮出小图标，点一下就翻译；按住 Alt 选中可直接翻译。中文译成英文、其他语言译成中文。
 // @description:en  Select text and a small icon pops up next to it — click to translate. Hold Alt while selecting to translate instantly. Chinese is translated to English, everything else to Chinese.
 // @author       壹樂（V：ita1125）
 // @match        *://*/*
 // @grant        GM_xmlhttpRequest
+// @grant        GM_getValue
 // @connect      translate.googleapis.com
+// @connect      api.mymemory.translated.net
 // @license      CC BY-NC-SA
 // @run-at       document-end
 // @homepageURL  https://github.com/yilecoding/helper-scripts
@@ -42,7 +44,15 @@
         cardWidth: 340,      // 结果卡片宽度（px）
         sourcePreview: 80,   // 卡片顶部回显原文，超过这么多字截断
         dictTerms: 6,        // 选中单词时每个词性最多列几个释义
+
+        timeoutMs: 8000,     // 单个接口超时，超时就换下一个
     };
+
+    /*
+     * CONFIG 的任何一项都能被 GM 存储里的 settings 覆盖（菜单里改的设置也存在这里），
+     * 改脚本源码会在自动更新时被覆盖，存储里的不会。
+     */
+    const S = Object.assign({}, CONFIG, GM_getValue('settings', {}));
 
     // =========================================================================
     // 宿主节点：所有 UI 都挂在一个 shadow root 里，页面样式进不来、我们的也出不去
@@ -77,6 +87,7 @@
             .dict .row { margin: 2px 0; }
             .dict .pos { display: inline-block; min-width: 3.2em; color: #2563eb; font-style: italic; }
             .meta { margin-top: 8px; color: #9ca3af; font-size: 11px; }
+            .note { margin-top: 6px; color: #b45309; font-size: 12px; }
             .loading { color: #6b7280; }
             .error { color: #dc2626; }
             .error button {
@@ -135,7 +146,7 @@
             const { selectionStart: s, selectionEnd: e } = active;
             if (s != null && e != null && e > s) {
                 const text = active.value.slice(s, e);
-                if (text.trim().length < CONFIG.minLength) return null;
+                if (text.trim().length < S.minLength) return null;
                 const r = active.getBoundingClientRect();
                 // 横向尽量跟着鼠标，但不能跑出输入框
                 const x = mouse ? Math.min(Math.max(mouse.clientX, r.left), r.right) : r.right;
@@ -146,7 +157,7 @@
         const sel = window.getSelection();
         if (!sel || sel.isCollapsed || !sel.rangeCount) return null;
         const text = sel.toString();
-        if (text.trim().length < CONFIG.minLength) return null;
+        if (text.trim().length < S.minLength) return null;
 
         const range = sel.getRangeAt(0);
         // 三击选整段时 Range 的终点落在下一个块的开头，最后一个 rect 宽度为 0，跳过这种
@@ -185,10 +196,10 @@
             if (!el.isConnected) root.appendChild(el);
             pending = info;
 
-            const size = CONFIG.iconSize;
+            const size = S.iconSize;
             const maxX = window.scrollX + document.documentElement.clientWidth - size - 2;
-            const x = Math.min(info.anchor.x + CONFIG.iconOffset, maxX);
-            const y = info.anchor.y + CONFIG.iconOffset;
+            const x = Math.min(info.anchor.x + S.iconOffset, maxX);
+            const y = info.anchor.y + S.iconOffset;
             Object.assign(el.style, {
                 left: `${x}px`, top: `${y}px`, width: `${size}px`, height: `${size}px`, display: 'flex',
             });
@@ -226,8 +237,8 @@
     }
 
     function pickTarget(text) {
-        const tl = CONFIG.targetLang;
-        if (/^zh/i.test(tl) && isMostlyChinese(text)) return CONFIG.chineseTarget;
+        const tl = S.targetLang;
+        if (/^zh/i.test(tl) && isMostlyChinese(text)) return S.chineseTarget;
         return tl;
     }
 
@@ -235,17 +246,35 @@
     // 网络
     // =========================================================================
 
-    /** GM_xmlhttpRequest 的 Promise 包装（跨域必须走它，页面的 fetch 会被 CORS 拦）。 */
+    /**
+     * GM_xmlhttpRequest 的 Promise 包装（跨域必须走它，页面的 fetch 会被 CORS 拦）。
+     *
+     * 超时自己计时，不只依赖 GM 的 timeout/ontimeout：
+     * 不同管理器对它的支持不一致，有的根本不触发 ontimeout，请求就永远挂着、卡片一直「翻译中」。
+     */
     function request({ method = 'GET', url, data, headers }) {
         return new Promise((resolve, reject) => {
-            GM_xmlhttpRequest({
+            let done = false;
+            const finish = (fn, arg) => {
+                if (done) return;
+                done = true;
+                clearTimeout(timer);
+                fn(arg);
+            };
+            const req = GM_xmlhttpRequest({
                 method, url, data, headers,
+                timeout: S.timeoutMs,
                 onload: (r) => {
-                    if (r.status >= 200 && r.status < 300) resolve(r.responseText);
-                    else reject(new Error(`HTTP ${r.status}`));
+                    if (r.status >= 200 && r.status < 300) finish(resolve, r.responseText);
+                    else finish(reject, new Error(`HTTP ${r.status}`));
                 },
-                onerror: () => reject(new Error('网络错误')),
+                onerror: () => finish(reject, new Error('网络错误')),
+                ontimeout: () => finish(reject, new Error('请求超时')),
             });
+            const timer = setTimeout(() => {
+                try { req && req.abort && req.abort(); } catch (e) { /* 已结束 */ }
+                finish(reject, new Error('请求超时'));
+            }, S.timeoutMs);
         });
     }
 
@@ -273,13 +302,60 @@
             if (!translation) throw new Error('没有译文');
             const dict = (Array.isArray(data[1]) ? data[1] : [])
                 .filter((e) => Array.isArray(e) && typeof e[0] === 'string' && Array.isArray(e[1]) && e[1].length)
-                .map((e) => ({ pos: e[0], terms: e[1].slice(0, CONFIG.dictTerms) }));
+                .map((e) => ({ pos: e[0], terms: e[1].slice(0, S.dictTerms) }));
             return { text: translation, dict, src: data[2] || '', tl, engine: this.name };
         },
     };
 
+    /**
+     * MyMemory，备用。两个坑：
+     *   - 出错时 HTTP 状态照样是 200，错误码在 body 的 responseStatus（还是字符串 "403"），
+     *     错误信息塞在 translatedText 里 —— 不检查就会把
+     *     「QUERY LENGTH LIMIT EXCEEDED…」当成译文显示出来。
+     *   - 单次最多 500 字，超了直接报上面那个错，所以先截断。
+     */
+    const MyMemory = {
+        name: 'MyMemory',
+        maxLength: 500,
+
+        async translate(text, tl) {
+            const truncated = text.length > this.maxLength;
+            const q = truncated ? text.slice(0, this.maxLength) : text;
+            // 不支持 auto，要写 autodetect；目标语言用 zh-CN 这种 RFC3066 写法即可
+            const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(q)}`
+                + `&langpair=autodetect|${encodeURIComponent(tl)}`;
+            const data = JSON.parse(await request({ url }));
+            const status = Number(data && data.responseStatus);
+            if (status !== 200) throw new Error((data && data.responseDetails) || `状态码 ${data && data.responseStatus}`);
+            if (data.quotaFinished) throw new Error('今日免费额度已用完');
+            const translation = data.responseData && data.responseData.translatedText;
+            if (!translation) throw new Error('没有译文');
+            return {
+                text: translation,
+                dict: [],
+                src: data.responseData.detectedLanguage || '',
+                tl,
+                engine: this.name,
+                note: truncated ? `备用接口单次最多 ${this.maxLength} 字，只译了前 ${this.maxLength} 字` : '',
+            };
+        },
+    };
+
+    const ENGINES = [Google, MyMemory];
+
+    /** 按顺序试，前一个失败（网络错误 / 超时 / 格式不对）就换下一个；全挂了把每个的原因都报出来。 */
     async function translate(text, tl) {
-        return Google.translate(text, tl);
+        const errors = [];
+        for (const engine of ENGINES) {
+            try {
+                const result = await engine.translate(text, tl);
+                if (errors.length) console.warn(TAG, '已降级到', engine.name, errors);
+                return result;
+            } catch (e) {
+                errors.push(`${engine.name}：${e.message}`);
+            }
+        }
+        throw new Error(errors.join('；'));
     }
 
     // =========================================================================
@@ -306,11 +382,11 @@
 
         function preview(text) {
             const t = text.replace(/\s+/g, ' ').trim();
-            return t.length > CONFIG.sourcePreview ? t.slice(0, CONFIG.sourcePreview) + '…' : t;
+            return t.length > S.sourcePreview ? t.slice(0, S.sourcePreview) + '…' : t;
         }
 
         function place(anchor) {
-            const width = Math.min(CONFIG.cardWidth, document.documentElement.clientWidth - 16);
+            const width = Math.min(S.cardWidth, document.documentElement.clientWidth - 16);
             const minX = window.scrollX + 8;
             const maxX = window.scrollX + document.documentElement.clientWidth - width - 8;
             const x = Math.max(minX, Math.min(anchor.x - width / 2, maxX));
@@ -353,6 +429,7 @@
                 }
                 parts.push(dict);
             }
+            if (result.note) parts.push(h('div', 'note', result.note));
             parts.push(h('div', 'meta', `${result.engine} · ${result.src || 'auto'} → ${result.tl}`));
             el.replaceChildren(...parts);
         }
