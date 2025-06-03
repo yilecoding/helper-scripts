@@ -131,6 +131,24 @@ async function main() {
         await page.close()
     })
 
+    for (const [sel, tl, why] of [
+        ['#zh', 'en', '中文 → 英文'],
+        ['#en', 'zh-CN', '英文 → 中文'],
+        ['#ja', 'zh-CN', '日文（汉字 + 假名）→ 中文'],
+        ['#mixed', 'en', '中文里夹英文术语仍按中文 → 英文'],
+        ['#zhword', 'en', '中文单词 → 英文'],
+    ]) {
+        await t.test(`方向判断：${why}`, async () => {
+            const { page, requests } = await open(env, { xhr: () => ({ responseText: googleBody([['x', 'y']]) }) })
+            await selectText(page, sel)
+            await page.click(ICON)
+            await page.waitForSelector(DST)
+            t.eq(query(requests[0]).get('tl'), tl)
+            t.assert((await page.textContent(CARD + ' .meta')).endsWith('→ ' + tl))
+            await page.close()
+        })
+    }
+
     await t.test('接口失败时卡片显示错误和重试，而不是空白', async () => {
         let fail = true
         const { page, requests } = await open(env, {

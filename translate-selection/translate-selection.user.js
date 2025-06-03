@@ -3,7 +3,7 @@
 // @name:zh-CN   划词翻译｜选中即译 · 中英自动互译
 // @name:en      Translate Selection | Select-to-Translate, Auto Chinese ⇄ English
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.06.02.2
+// @version      2025.06.03.3
 // @description  选中文字后旁边浮出小图标，点一下就翻译；按住 Alt 选中可直接翻译。中文译成英文、其他语言译成中文。
 // @description:zh-CN  选中文字后旁边浮出小图标，点一下就翻译；按住 Alt 选中可直接翻译。中文译成英文、其他语言译成中文。
 // @description:en  Select text and a small icon pops up next to it — click to translate. Hold Alt while selecting to translate instantly. Chinese is translated to English, everything else to Chinese.
@@ -37,7 +37,8 @@
         iconOffset: 6,       // 图标离选区末端的距离（px）
         minLength: 1,        // 选中少于这么多字（去掉首尾空白后）不出图标
 
-        targetLang: 'zh-CN', // 目标语言
+        targetLang: 'zh-CN',    // 非中文译成什么
+        chineseTarget: 'en',    // 中文译成什么（只在 targetLang 本身是中文时生效）
         cardWidth: 340,      // 结果卡片宽度（px）
         sourcePreview: 80,   // 卡片顶部回显原文，超过这么多字截断
     };
@@ -200,6 +201,33 @@
 
 
     // =========================================================================
+    // 翻译方向
+    // =========================================================================
+
+    /**
+     * 文本是不是以中文为主。
+     *
+     * 不能按「字符」比：拉丁字母一个词五六个字母，「我们用 React 和 TypeScript 写前端」
+     * 汉字 7 个、字母 15 个，按字符数会判成英文、再被「译成中文」原样返回。
+     * 所以汉字按字数、拉丁/西里尔按词数比，大致是同一量级的「语义单位」。
+     * 有假名就是日文（日文里的汉字也是 Han），按非中文处理。
+     */
+    function isMostlyChinese(text) {
+        const han = (text.match(/\p{Script=Han}/gu) || []).length;
+        if (!han) return false;
+        const kana = (text.match(/[\p{Script=Hiragana}\p{Script=Katakana}]/gu) || []).length;
+        const hangul = (text.match(/\p{Script=Hangul}/gu) || []).length;
+        const words = (text.match(/[\p{Script=Latin}\p{Script=Cyrillic}\p{Script=Greek}]+/gu) || []).length;
+        return han >= kana + hangul + words;
+    }
+
+    function pickTarget(text) {
+        const tl = CONFIG.targetLang;
+        if (/^zh/i.test(tl) && isMostlyChinese(text)) return CONFIG.chineseTarget;
+        return tl;
+    }
+
+    // =========================================================================
     // 网络
     // =========================================================================
 
@@ -285,7 +313,7 @@
             el.__token = token;   // 连续触发时只认最后一次的结果，旧请求晚到不能覆盖新卡片
             let result;
             try {
-                result = await translate(info.text, CONFIG.targetLang);
+                result = await translate(info.text, pickTarget(info.text));
             } catch (e) {
                 if (el.__token !== token) return;
                 console.warn(TAG, '翻译失败', e);
