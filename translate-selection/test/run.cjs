@@ -149,6 +149,36 @@ async function main() {
         })
     }
 
+    await t.test('选中单词时渲染词典释义（词性缩写 + 释义）', async () => {
+        // 结构照 q=run 的真实返回裁剪：每个词性一项，第三列是带反查词和权重的明细
+        const dict = [
+            ['verb', ['运行', '执行', '跑', '经营', '奔跑', '办', '跑步', '管理'], [['运行', ['run', 'move'], null, 0.597], ['执行', ['execute', 'run'], null, 0.078]], 'run', 2],
+            ['noun', ['跑', '运转', '奔跑'], [['跑', ['run'], null, 0.1]], 'run', 1],
+            ['unknown-pos', ['某义'], [], 'run', 99],
+        ]
+        const { page } = await open(env, { xhr: () => ({ responseText: googleBody([['跑步', 'run']], { dict }) }) })
+        await selectText(page, '#run')
+        await page.click(ICON)
+        await page.waitForSelector(DST)
+        t.eq(await page.textContent(DST), '跑步')
+        const rows = await page.$$eval(CARD + ' .dict .row', rs => rs.map(r => [r.querySelector('.pos').textContent, r.querySelector('.terms').textContent]))
+        t.eq(rows, [
+            ['v.', '运行；执行；跑；经营；奔跑；办'],   // 截到 dictTerms = 6 个
+            ['n.', '跑；运转；奔跑'],
+            ['unknown-pos', '某义'],                  // 不认识的词性原样显示
+        ])
+        await page.close()
+    })
+
+    await t.test('句子（dict 为 null）不显示词典区', async () => {
+        const { page } = await open(env, { xhr: () => ({ responseText: googleBody([['偶然性', 'serendipity']]) }) })
+        await selectText(page, '#word')
+        await page.click(ICON)
+        await page.waitForSelector(DST)
+        t.eq(await page.$$(CARD + ' .dict'), [])
+        await page.close()
+    })
+
     await t.test('接口失败时卡片显示错误和重试，而不是空白', async () => {
         let fail = true
         const { page, requests } = await open(env, {

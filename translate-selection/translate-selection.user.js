@@ -3,7 +3,7 @@
 // @name:zh-CN   划词翻译｜选中即译 · 中英自动互译
 // @name:en      Translate Selection | Select-to-Translate, Auto Chinese ⇄ English
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.06.03.3
+// @version      2025.06.03.4
 // @description  选中文字后旁边浮出小图标，点一下就翻译；按住 Alt 选中可直接翻译。中文译成英文、其他语言译成中文。
 // @description:zh-CN  选中文字后旁边浮出小图标，点一下就翻译；按住 Alt 选中可直接翻译。中文译成英文、其他语言译成中文。
 // @description:en  Select text and a small icon pops up next to it — click to translate. Hold Alt while selecting to translate instantly. Chinese is translated to English, everything else to Chinese.
@@ -41,6 +41,7 @@
         chineseTarget: 'en',    // 中文译成什么（只在 targetLang 本身是中文时生效）
         cardWidth: 340,      // 结果卡片宽度（px）
         sourcePreview: 80,   // 卡片顶部回显原文，超过这么多字截断
+        dictTerms: 6,        // 选中单词时每个词性最多列几个释义
     };
 
     // =========================================================================
@@ -72,6 +73,9 @@
             }
             .src { color: #6b7280; font-size: 12px; margin-bottom: 6px; }
             .dst { font-size: 15px; white-space: pre-wrap; max-height: 320px; overflow: auto; }
+            .dict { margin-top: 8px; padding-top: 6px; border-top: 1px dashed #e5e7eb; font-size: 13px; }
+            .dict .row { margin: 2px 0; }
+            .dict .pos { display: inline-block; min-width: 3.2em; color: #2563eb; font-style: italic; }
             .meta { margin-top: 8px; color: #9ca3af; font-size: 11px; }
             .loading { color: #6b7280; }
             .error { color: #dc2626; }
@@ -252,6 +256,9 @@
     /**
      * Google 网页版用的免费接口（client=gtx）。返回是一个嵌套数组，不是 JSON 对象：
      *   [0] 分段译文：[[译文, 原文, …], …]，长文本会按句切成多段，要拼起来
+     *   [1] 词典（dt=bd），只有选中的是单个词/短语时才有，否则是 null：
+     *       [[词性, [释义, …], [[释义, [反查词, …], null, 权重], …], 原形, 词性编号], …]
+     *       释义已按常用程度排好序，取前几个即可
      *   [2] 识别出的源语言
      */
     const Google = {
@@ -264,7 +271,10 @@
             if (!Array.isArray(data) || !Array.isArray(data[0])) throw new Error('返回格式无法识别');
             const translation = data[0].map((seg) => (seg && seg[0]) || '').join('');
             if (!translation) throw new Error('没有译文');
-            return { text: translation, src: data[2] || '', tl, engine: this.name };
+            const dict = (Array.isArray(data[1]) ? data[1] : [])
+                .filter((e) => Array.isArray(e) && typeof e[0] === 'string' && Array.isArray(e[1]) && e[1].length)
+                .map((e) => ({ pos: e[0], terms: e[1].slice(0, CONFIG.dictTerms) }));
+            return { text: translation, dict, src: data[2] || '', tl, engine: this.name };
         },
     };
 
@@ -275,6 +285,14 @@
     // =========================================================================
     // 结果卡片
     // =========================================================================
+
+    /** 接口返回的词性是英文全称（不带 hl 参数时），缩写成词典里常见的样子。 */
+    const POS = {
+        noun: 'n.', verb: 'v.', adjective: 'adj.', adverb: 'adv.', pronoun: 'pron.',
+        preposition: 'prep.', conjunction: 'conj.', interjection: 'int.', article: 'art.',
+        abbreviation: 'abbr.', prefix: 'pref.', suffix: 'suf.', phrase: 'phr.',
+        'auxiliary verb': 'aux.', numeral: 'num.', particle: 'part.',
+    };
 
     const Card = (() => {
         let el = null;
@@ -325,11 +343,18 @@
                 return;
             }
             if (el.__token !== token) return;
-            el.replaceChildren(
-                h('div', 'src', preview(info.text)),
-                h('div', 'dst', result.text),
-                h('div', 'meta', `${result.engine} · ${result.src || 'auto'} → ${result.tl}`),
-            );
+            const parts = [h('div', 'src', preview(info.text)), h('div', 'dst', result.text)];
+            if (result.dict && result.dict.length) {
+                const dict = h('div', 'dict');
+                for (const { pos, terms } of result.dict) {
+                    const row = h('div', 'row');
+                    row.append(h('span', 'pos', POS[pos] || pos), h('span', 'terms', terms.join('；')));
+                    dict.appendChild(row);
+                }
+                parts.push(dict);
+            }
+            parts.push(h('div', 'meta', `${result.engine} · ${result.src || 'auto'} → ${result.tl}`));
+            el.replaceChildren(...parts);
         }
 
         function close() {
