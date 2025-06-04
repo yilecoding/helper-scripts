@@ -354,6 +354,126 @@ async function main() {
         await page.close()
     })
 
+    await t.test('Esc 关闭卡片', async () => {
+        const { page } = await open(env, { xhr: () => ({ responseText: googleBody([['好', 'good']]) }) })
+        await selectText(page, '#word')
+        await page.click(ICON)
+        await page.waitForSelector(DST)
+        await page.keyboard.press('Escape')
+        await page.waitForSelector(CARD, { state: 'hidden' })
+        await page.close()
+    })
+
+    await t.test('页面滚动一点不关，滚太远才关', async () => {
+        const { page } = await open(env, { xhr: () => ({ responseText: googleBody([['好', 'good']]) }) })
+        await selectText(page, '#word')
+        await page.click(ICON)
+        await page.waitForSelector(DST)
+        await page.evaluate(() => window.scrollBy(0, 100))
+        await page.waitForTimeout(100)
+        t.assert(await page.isVisible(CARD), '滚 100px 卡片应还在')
+        await page.evaluate(() => window.scrollBy(0, 500))
+        await page.waitForSelector(CARD, { state: 'hidden' })
+        await page.close()
+    })
+
+    await t.test('复制按钮把译文写进剪贴板', async () => {
+        const { page } = await open(env, { xhr: () => ({ responseText: googleBody([['近年来机器翻译进步很大。', 'x']]) }) })
+        await selectText(page, '#en')
+        await page.click(ICON)
+        await page.click(CARD + ' button.copy')
+        t.eq((await h.gm(page)).clipboard, { text: '近年来机器翻译进步很大。', type: 'text' })
+        t.eq(await page.textContent(CARD + ' button.copy'), '已复制')
+        await page.close()
+    })
+
+    await t.test('朗读按目标语言挑 voice', async () => {
+        const page = await env.browser.newPage()
+        // 在脚本之前把 speechSynthesis 换成记录器，并提供几个假嗓音。
+        // Utterance 也要换：真的 utterance.voice 只接受 SpeechSynthesisVoice 实例，赋假对象会抛 TypeError
+        await page.addInitScript(() => {
+            window.SpeechSynthesisUtterance = class { constructor(text) { this.text = text; this.lang = ''; this.voice = null } }
+            window.__spoken = []
+            const voices = [
+                { name: 'Google US English', lang: 'en-US' },
+                { name: 'Google 普通话（中国大陆）', lang: 'zh-CN' },
+                { name: 'Google 日本語', lang: 'ja-JP' },
+            ]
+            speechSynthesis.getVoices = () => voices
+            speechSynthesis.speak = u => window.__spoken.push({ text: u.text, lang: u.lang, voice: u.voice && u.voice.name })
+        })
+        const requests = []
+        await h.install(page, SCRIPT, {
+            xhr: d => {
+                requests.push(d)
+                const tl = query(d).get('tl')
+                return { responseText: googleBody([[tl === 'en' ? 'The weather is nice today.' : '今日はいい天気です。', 'x']], { src: 'zh-CN' }) }
+            },
+        })
+        await page.goto(env.base + '/index.html')
+        await selectText(page, '#zh')
+        await page.click(ICON)
+        await page.click(CARD + ' button.speak')
+        // 换成日文重译后再念一次
+        await page.selectOption(CARD + ' select.lang', 'ja')
+        await page.waitForFunction(() => {
+            const host = document.querySelector('translate-selection-host')
+            const d = host && host.shadowRoot.querySelector('.dst:not(.loading)')
+            return d && d.textContent.includes('天気')
+        })
+        await page.click(CARD + ' button.speak')
+        t.eq(await page.evaluate(() => window.__spoken), [
+            { text: 'The weather is nice today.', lang: 'en', voice: 'Google US English' },
+            { text: '今日はいい天気です。', lang: 'ja', voice: 'Google 日本語' },
+        ])
+        await page.close()
+    })
+
+    await t.test('切换目标语言重新请求，下拉框显示当前语言', async () => {
+        const { page, requests } = await open(env, {
+            xhr: d => ({ responseText: googleBody([[query(d).get('tl') === 'ja' ? '機械翻訳' : '机器翻译', 'x']]) }),
+        })
+        await selectText(page, '#en')
+        await page.click(ICON)
+        await page.waitForSelector(DST)
+        t.eq(await page.$eval(CARD + ' select.lang', s => s.value), 'zh-CN')
+        await page.selectOption(CARD + ' select.lang', 'ja')
+        await page.waitForFunction(() => {
+            const d = document.querySelector('translate-selection-host').shadowRoot.querySelector('.dst:not(.loading)')
+            return d && d.textContent === '機械翻訳'
+        })
+        t.eq(requests.map(d => query(d).get('tl')), ['zh-CN', 'ja'])
+        t.eq(await page.$eval(CARD + ' select.lang', s => s.value), 'ja')
+        t.assert(await page.isVisible(CARD), '操作下拉框不应关掉卡片')
+        await page.close()
+    })
+
+    await t.test('靠近视口底部时卡片翻到选区上方', async () => {
+        const { page } = await open(env, { xhr: () => ({ responseText: googleBody([['这一段在页面最底部。', 'x']]) }) })
+        await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight))
+        await selectText(page, '#bottom')
+        await page.click(ICON)
+        await page.waitForSelector(DST)
+        const card = await page.locator(CARD).boundingBox()
+        const sel = await page.evaluate(() => document.querySelector('#bottom').getBoundingClientRect().toJSON())
+        t.assert(card.y + card.height <= sel.top + 1, `卡片应在选区上方：card=${JSON.stringify(card)} sel.top=${sel.top}`)
+        const vh = await page.evaluate(() => document.documentElement.clientHeight)
+        t.assert(card.y >= 0 && card.y + card.height <= vh, '卡片应完整留在视口里')
+        await page.close()
+    })
+
+    await t.test('跟随系统暗色模式', async () => {
+        const { page } = await open(env, { xhr: () => ({ responseText: googleBody([['好', 'good']]) }) })
+        await selectText(page, '#word')
+        await page.click(ICON)
+        await page.waitForSelector(DST)
+        const bg = () => page.$eval(CARD, el => getComputedStyle(el).backgroundColor)
+        t.eq(await bg(), 'rgb(255, 255, 255)')
+        await page.emulateMedia({ colorScheme: 'dark' })
+        t.eq(await bg(), 'rgb(31, 41, 55)')
+        await page.close()
+    })
+
     await env.close()
     t.done()
 }

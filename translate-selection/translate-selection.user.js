@@ -3,7 +3,7 @@
 // @name:zh-CN   划词翻译｜选中即译 · 中英自动互译
 // @name:en      Translate Selection | Select-to-Translate, Auto Chinese ⇄ English
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.06.04.6
+// @version      2025.06.04.7
 // @description  选中文字后旁边浮出小图标，点一下就翻译；按住 Alt 选中可直接翻译。中文译成英文、其他语言译成中文。
 // @description:zh-CN  选中文字后旁边浮出小图标，点一下就翻译；按住 Alt 选中可直接翻译。中文译成英文、其他语言译成中文。
 // @description:en  Select text and a small icon pops up next to it — click to translate. Hold Alt while selecting to translate instantly. Chinese is translated to English, everything else to Chinese.
@@ -11,6 +11,7 @@
 // @match        *://*/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_getValue
+// @grant        GM_setClipboard
 // @connect      translate.googleapis.com
 // @connect      api.mymemory.translated.net
 // @license      CC BY-NC-SA
@@ -48,6 +49,13 @@
         timeoutMs: 8000,     // 单个接口超时，超时就换下一个
         maxLength: 5000,     // 选区超过这么多字只翻译前面这些，并在卡片里提示
         cacheSize: 100,      // 内存 LRU 缓存条数，同一段文字 + 同一目标语言不重复请求
+        closeScrollDistance: 400,   // 卡片打开后页面滚动超过这么多（px）就自动关掉
+
+        /** 卡片里「切换目标语言」下拉的选项。 */
+        languages: [
+            ['zh-CN', '简体中文'], ['zh-TW', '繁體中文'], ['en', 'English'], ['ja', '日本語'],
+            ['ko', '한국어'], ['fr', 'Français'], ['de', 'Deutsch'], ['es', 'Español'], ['ru', 'Русский'],
+        ],
     };
 
     /*
@@ -66,6 +74,16 @@
 
         const CSS = `
             :host { all: initial; }
+            .icon, .card {
+                --bg: #fff; --fg: #1f2937; --muted: #6b7280; --faint: #9ca3af; --line: #e5e7eb;
+                --accent: #2563eb; --accent-hover: #1d4ed8; --warn: #b45309; --err: #dc2626; --btn: #f3f4f6;
+            }
+            @media (prefers-color-scheme: dark) {
+                .icon, .card {
+                    --bg: #1f2937; --fg: #e5e7eb; --muted: #9ca3af; --faint: #6b7280; --line: #374151;
+                    --accent: #60a5fa; --accent-hover: #93c5fd; --warn: #fbbf24; --err: #f87171; --btn: #374151;
+                }
+            }
             .icon {
                 position: absolute; box-sizing: border-box;
                 display: flex; align-items: center; justify-content: center;
@@ -79,23 +97,29 @@
             .card {
                 position: absolute; box-sizing: border-box; padding: 10px 12px;
                 font: 14px/1.55 system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
-                color: #1f2937; background: #fff; border: 1px solid #e5e7eb; border-radius: 8px;
+                color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
                 box-shadow: 0 8px 24px rgba(0, 0, 0, .18);
                 text-align: left; white-space: normal; word-break: break-word;
             }
-            .src { color: #6b7280; font-size: 12px; margin-bottom: 6px; }
+            .src { color: var(--muted); font-size: 12px; margin-bottom: 6px; }
             .dst { font-size: 15px; white-space: pre-wrap; max-height: 320px; overflow: auto; }
-            .dict { margin-top: 8px; padding-top: 6px; border-top: 1px dashed #e5e7eb; font-size: 13px; }
+            .dict { margin-top: 8px; padding-top: 6px; border-top: 1px dashed var(--line); font-size: 13px; }
             .dict .row { margin: 2px 0; }
-            .dict .pos { display: inline-block; min-width: 3.2em; color: #2563eb; font-style: italic; }
-            .meta { margin-top: 8px; color: #9ca3af; font-size: 11px; }
-            .note { margin-top: 6px; color: #b45309; font-size: 12px; }
-            .loading { color: #6b7280; }
-            .error { color: #dc2626; }
+            .dict .pos { display: inline-block; min-width: 3.2em; color: var(--accent); font-style: italic; }
+            .note { margin-top: 6px; color: var(--warn); font-size: 12px; }
+            .loading { color: var(--muted); }
+            .error { color: var(--err); }
             .error button {
-                margin-left: 8px; font: inherit; color: #2563eb; background: none;
+                margin-left: 8px; font: inherit; color: var(--accent); background: none;
                 border: 0; padding: 0; cursor: pointer; text-decoration: underline;
             }
+            .bar { display: flex; align-items: center; gap: 6px; margin-top: 8px; }
+            .bar button, .bar select {
+                font-family: inherit; font-size: 12px; line-height: 1.6; color: var(--fg); background: var(--btn);
+                border: 1px solid var(--line); border-radius: 4px; padding: 1px 8px; cursor: pointer;
+            }
+            .bar button:hover { border-color: var(--accent); }
+            .meta { margin-left: auto; color: var(--faint); font-size: 11px; white-space: nowrap; }
         `;
 
         function ensure() {
@@ -431,8 +455,32 @@
         'auxiliary verb': 'aux.', numeral: 'num.', particle: 'part.',
     };
 
+    /**
+     * 朗读。voice 要自己挑：不指定的话浏览器用系统默认嗓音，
+     * 中文系统念英文是一股「中文口音」，英文系统念中文干脆不出声。
+     * getVoices() 首次调用常常是空数组（异步加载），空就只设 lang，交给浏览器兜底。
+     */
+    function speak(text, lang) {
+        const synth = window.speechSynthesis;
+        if (!synth) return false;
+        synth.cancel();
+        const u = new SpeechSynthesisUtterance(text);
+        u.lang = lang;
+        const voices = synth.getVoices() || [];
+        const norm = (l) => (l || '').toLowerCase().replace('_', '-');
+        const want = norm(lang);
+        const base = want.split('-')[0];
+        u.voice = voices.find((v) => norm(v.lang) === want)
+            || voices.find((v) => norm(v.lang).split('-')[0] === base)
+            || null;
+        synth.speak(u);
+        return true;
+    }
+
     const Card = (() => {
         let el = null;
+        let anchor = null;
+        let openedAt = null;   // 打开时的滚动位置，滚出太远就关
 
         function h(tag, cls, text) {
             const n = document.createElement(tag);
@@ -446,12 +494,28 @@
             return t.length > S.sourcePreview ? t.slice(0, S.sourcePreview) + '…' : t;
         }
 
-        function place(anchor) {
-            const width = Math.min(S.cardWidth, document.documentElement.clientWidth - 16);
+        /**
+         * 默认放在选区下方；下方放不下而上方放得下就翻到选区上方。
+         * 卡片高度要等内容渲染后才知道，所以「翻译中」和出结果后各算一次。
+         */
+        function place() {
+            const vw = document.documentElement.clientWidth;
+            const vh = document.documentElement.clientHeight;
+            const width = Math.min(S.cardWidth, vw - 16);
+            el.style.width = `${width}px`;
+            el.style.display = 'block';
             const minX = window.scrollX + 8;
-            const maxX = window.scrollX + document.documentElement.clientWidth - width - 8;
+            const maxX = window.scrollX + vw - width - 8;
             const x = Math.max(minX, Math.min(anchor.x - width / 2, maxX));
-            Object.assign(el.style, { left: `${x}px`, top: `${anchor.y + 8}px`, width: `${width}px`, display: 'block' });
+
+            const height = el.offsetHeight;
+            const below = anchor.y + 8;
+            const above = anchor.top - 8 - height;
+            const fitsBelow = below + height <= window.scrollY + vh - 8;
+            const fitsAbove = above >= window.scrollY + 8;
+            const y = !fitsBelow && fitsAbove ? above : below;
+            el.dataset.side = y === below ? 'below' : 'above';
+            Object.assign(el.style, { left: `${x}px`, top: `${y}px` });
         }
 
         function open(info) {
@@ -461,25 +525,28 @@
             if (info.text.length > S.maxLength) {
                 info = { ...info, text: cut(info.text, S.maxLength), fullLength: info.text.length };
             }
-            el.replaceChildren(h('div', 'src', preview(info.text)), h('div', 'dst loading', '翻译中…'));
-            place(info.anchor);
-            run(info);
+            anchor = info.anchor;
+            openedAt = { x: window.scrollX, y: window.scrollY };
+            run(info, pickTarget(info.text));
         }
 
-        async function run(info) {
+        async function run(info, tl) {
             const token = {};
             el.__token = token;   // 连续触发时只认最后一次的结果，旧请求晚到不能覆盖新卡片
+            el.replaceChildren(h('div', 'src', preview(info.text)), h('div', 'dst loading', '翻译中…'));
+            place();
             let result;
             try {
-                result = await translate(info.text, pickTarget(info.text));
+                result = await translate(info.text, tl);
             } catch (e) {
                 if (el.__token !== token) return;
                 console.warn(TAG, '翻译失败', e);
                 const err = h('div', 'dst error', `翻译失败：${e.message}`);
                 const retry = h('button', null, '重试');
-                retry.addEventListener('click', () => open(info));
+                retry.addEventListener('click', () => run(info, tl));
                 err.appendChild(retry);
-                el.replaceChildren(h('div', 'src', preview(info.text)), err);
+                el.replaceChildren(h('div', 'src', preview(info.text)), err, toolbar(info, tl, null));
+                place();
                 return;
             }
             if (el.__token !== token) return;
@@ -495,8 +562,44 @@
             }
             if (info.fullLength) parts.push(h('div', 'note', `选中了 ${info.fullLength} 字，只翻译了前 ${info.text.length} 字`));
             if (result.note) parts.push(h('div', 'note', result.note));
-            parts.push(h('div', 'meta', `${result.engine} · ${result.src || 'auto'} → ${result.tl}`));
+            parts.push(toolbar(info, tl, result));
             el.replaceChildren(...parts);
+            place();
+        }
+
+        /** 底栏：复制 · 朗读 · 目标语言 · 来源。result 为 null（失败）时只留语言切换。 */
+        function toolbar(info, tl, result) {
+            const bar = h('div', 'bar');
+            if (result) {
+                const copy = h('button', 'copy', '复制');
+                copy.title = '复制译文';
+                copy.addEventListener('click', () => {
+                    GM_setClipboard(result.text, 'text');
+                    copy.textContent = '已复制';
+                    setTimeout(() => { copy.textContent = '复制'; }, 1200);
+                });
+                const say = h('button', 'speak', '朗读');
+                say.title = '朗读译文';
+                say.addEventListener('click', () => {
+                    if (!speak(result.text, result.tl)) say.textContent = '不支持朗读';
+                });
+                bar.append(copy, say);
+            }
+
+            const select = h('select', 'lang');
+            select.title = '换一种目标语言重新翻译';
+            const langs = S.languages.some(([code]) => code === tl) ? S.languages : [[tl, tl], ...S.languages];
+            for (const [code, label] of langs) {
+                const o = h('option', null, label);
+                o.value = code;
+                o.selected = code === tl;
+                select.appendChild(o);
+            }
+            select.addEventListener('change', () => run(info, select.value));
+            bar.appendChild(select);
+
+            if (result) bar.appendChild(h('span', 'meta', `${result.engine} · ${result.src || 'auto'} → ${result.tl}`));
+            return bar;
         }
 
         function close() {
@@ -504,13 +607,20 @@
                 el.__token = null;
                 el.style.display = 'none';
             }
+            if (window.speechSynthesis) window.speechSynthesis.cancel();
         }
 
         function isOpen() {
             return !!el && el.isConnected && el.style.display !== 'none';
         }
 
-        return { open, close, isOpen };
+        function onScroll() {
+            if (!isOpen() || !openedAt) return;
+            const d = Math.max(Math.abs(window.scrollY - openedAt.y), Math.abs(window.scrollX - openedAt.x));
+            if (d > S.closeScrollDistance) close();
+        }
+
+        return { open, close, isOpen, onScroll };
     })();
 
     // =========================================================================
@@ -534,10 +644,19 @@
         Card.close();
     }
 
+    function onKeyDown(e) {
+        if (e.key !== 'Escape') return;
+        Icon.hide();
+        if (Card.isOpen()) Card.close();
+    }
+
     function boot() {
         Icon.onClick((info) => Card.open(info));
         document.addEventListener('mouseup', onMouseUp, true);
         document.addEventListener('mousedown', onMouseDown, true);
+        document.addEventListener('keydown', onKeyDown, true);
+        // 不用捕获：只关心整页滚动，卡片里译文区自己的滚动不算
+        window.addEventListener('scroll', Card.onScroll, { passive: true });
         console.log(TAG, '已加载');
     }
 
