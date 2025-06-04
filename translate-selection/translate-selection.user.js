@@ -3,7 +3,7 @@
 // @name:zh-CN   划词翻译｜选中即译 · 中英自动互译
 // @name:en      Translate Selection | Select-to-Translate, Auto Chinese ⇄ English
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.06.03.5
+// @version      2025.06.04.6
 // @description  选中文字后旁边浮出小图标，点一下就翻译；按住 Alt 选中可直接翻译。中文译成英文、其他语言译成中文。
 // @description:zh-CN  选中文字后旁边浮出小图标，点一下就翻译；按住 Alt 选中可直接翻译。中文译成英文、其他语言译成中文。
 // @description:en  Select text and a small icon pops up next to it — click to translate. Hold Alt while selecting to translate instantly. Chinese is translated to English, everything else to Chinese.
@@ -46,6 +46,8 @@
         dictTerms: 6,        // 选中单词时每个词性最多列几个释义
 
         timeoutMs: 8000,     // 单个接口超时，超时就换下一个
+        maxLength: 5000,     // 选区超过这么多字只翻译前面这些，并在卡片里提示
+        cacheSize: 100,      // 内存 LRU 缓存条数，同一段文字 + 同一目标语言不重复请求
     };
 
     /*
@@ -242,6 +244,16 @@
         return tl;
     }
 
+    /**
+     * 按 UTF-16 长度截断，但不切开代理对（emoji、生僻字）。
+     * 留下半个代理对的话 encodeURIComponent 会直接抛 URIError，请求根本发不出去。
+     */
+    function cut(text, n) {
+        if (text.length <= n) return text;
+        const code = text.charCodeAt(n - 1);
+        return text.slice(0, code >= 0xd800 && code <= 0xdbff ? n - 1 : n);
+    }
+
     // =========================================================================
     // 网络
     // =========================================================================
@@ -293,10 +305,24 @@
     const Google = {
         name: 'Google 翻译',
 
+        /*
+         * 长文本改 POST：q 放在 URL 里，4000 个汉字编码后 3 万多字符，接口直接回 400（实测）。
+         * 同一个地址 POST 表单 q=… 是能用的，其余参数照旧放在 URL 上。
+         */
+        maxGetLength: 1800,
+
         async translate(text, tl) {
-            const url = 'https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto'
-                + `&tl=${encodeURIComponent(tl)}&dt=t&dt=bd&q=${encodeURIComponent(text)}`;
-            const data = JSON.parse(await request({ url }));
+            const base = 'https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto'
+                + `&tl=${encodeURIComponent(tl)}&dt=t&dt=bd`;
+            const q = encodeURIComponent(text);
+            const data = JSON.parse(await request(q.length <= this.maxGetLength
+                ? { url: `${base}&q=${q}` }
+                : {
+                    method: 'POST',
+                    url: base,
+                    data: `q=${q}`,
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+                }));
             if (!Array.isArray(data) || !Array.isArray(data[0])) throw new Error('返回格式无法识别');
             const translation = data[0].map((seg) => (seg && seg[0]) || '').join('');
             if (!translation) throw new Error('没有译文');
@@ -320,7 +346,7 @@
 
         async translate(text, tl) {
             const truncated = text.length > this.maxLength;
-            const q = truncated ? text.slice(0, this.maxLength) : text;
+            const q = cut(text, this.maxLength);
             // 不支持 auto，要写 autodetect；目标语言用 zh-CN 这种 RFC3066 写法即可
             const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(q)}`
                 + `&langpair=autodetect|${encodeURIComponent(tl)}`;
@@ -344,7 +370,7 @@
     const ENGINES = [Google, MyMemory];
 
     /** 按顺序试，前一个失败（网络错误 / 超时 / 格式不对）就换下一个；全挂了把每个的原因都报出来。 */
-    async function translate(text, tl) {
+    async function translateUncached(text, tl) {
         const errors = [];
         for (const engine of ENGINES) {
             try {
@@ -356,6 +382,41 @@
             }
         }
         throw new Error(errors.join('；'));
+    }
+
+    /** 最近最少使用淘汰。Map 的迭代顺序就是插入顺序，命中时删了重插就挪到了最新。 */
+    const Cache = (() => {
+        const map = new Map();
+        return {
+            get(key) {
+                if (!map.has(key)) return undefined;
+                const v = map.get(key);
+                map.delete(key);
+                map.set(key, v);
+                return v;
+            },
+            set(key, v) {
+                map.delete(key);
+                map.set(key, v);
+                while (map.size > S.cacheSize) map.delete(map.keys().next().value);
+            },
+            delete: (key) => map.delete(key),
+        };
+    })();
+
+    /**
+     * 带缓存的翻译。缓存的是 Promise 而不是结果：连点两次、或者结果还没回来又触发同一段，
+     * 也只发一次请求。失败的要从缓存里删掉，否则同一段文字以后永远是那个失败。
+     */
+    function translate(text, tl) {
+        const key = `${tl}\u0000${text}`;
+        let p = Cache.get(key);
+        if (!p) {
+            p = translateUncached(text, tl);
+            Cache.set(key, p);
+            p.catch(() => Cache.delete(key));
+        }
+        return p;
     }
 
     // =========================================================================
@@ -397,6 +458,9 @@
             const root = UI.ensure();
             if (!el) el = h('div', 'card');
             if (!el.isConnected) root.appendChild(el);
+            if (info.text.length > S.maxLength) {
+                info = { ...info, text: cut(info.text, S.maxLength), fullLength: info.text.length };
+            }
             el.replaceChildren(h('div', 'src', preview(info.text)), h('div', 'dst loading', '翻译中…'));
             place(info.anchor);
             run(info);
@@ -429,6 +493,7 @@
                 }
                 parts.push(dict);
             }
+            if (info.fullLength) parts.push(h('div', 'note', `选中了 ${info.fullLength} 字，只翻译了前 ${info.text.length} 字`));
             if (result.note) parts.push(h('div', 'note', result.note));
             parts.push(h('div', 'meta', `${result.engine} · ${result.src || 'auto'} → ${result.tl}`));
             el.replaceChildren(...parts);

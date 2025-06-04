@@ -61,10 +61,15 @@ async function open(env, { xhr, values } = {}) {
     return { page, requests }
 }
 
-/** 用 Range 选中元素的全部文字，然后在选区末端派发 mouseup（可带 altKey）。 */
+/**
+ * 模拟一次拖选：先 mousedown（和真实操作一样，会关掉已开的卡片），
+ * 再用 Range 选中元素的全部文字，最后在选区末端派发 mouseup（可带 altKey）。
+ */
 async function selectText(page, selector, { alt = false } = {}) {
     await page.evaluate(({ selector, alt }) => {
         const el = document.querySelector(selector)
+        const r0 = el.getBoundingClientRect()
+        el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0, clientX: r0.left, clientY: r0.top, altKey: alt }))
         const range = document.createRange()
         range.selectNodeContents(el)
         const sel = window.getSelection()
@@ -73,6 +78,20 @@ async function selectText(page, selector, { alt = false } = {}) {
         const r = el.getBoundingClientRect()
         el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, button: 0, clientX: r.right, clientY: r.bottom, altKey: alt }))
     }, { selector, alt })
+}
+
+/** 往页面末尾塞一段长文本（第 5000 个 UTF-16 码元正好是一个 emoji 的前半个），返回它的长度。 */
+async function addLongText(page) {
+    return page.evaluate(() => {
+        const sentence = 'The quick brown fox jumps over the lazy dog. '   // 45 字
+        const text = sentence.repeat(111) + 'abcd' + '😀' + sentence.repeat(30).trimEnd()  // 4995 + 4 = 4999，emoji 占 4999-5000
+        // 末尾不留空格：块末尾的空白不渲染，Selection.toString() 里也没有，长度会差 1
+        const p = document.createElement('p')
+        p.id = 'long'
+        p.textContent = text
+        document.body.insertBefore(p, document.body.firstChild)
+        return text.length
+    })
 }
 
 async function main() {
@@ -254,6 +273,84 @@ async function main() {
         await page.waitForSelector(CARD + ' .error')
         t.assert((await page.textContent(CARD + ' .error')).includes('INVALID TARGET LANGUAGE'))
         t.eq(await page.$$(CARD + ' .dst:not(.error):not(.loading)'), [])
+        await page.close()
+    })
+
+    await t.test('缓存命中：同一段再翻译不再发请求', async () => {
+        const { page, requests } = await open(env, { xhr: () => ({ responseText: googleBody([['近年来机器翻译进步很大。', 'x']]) }) })
+        for (let i = 0; i < 2; i++) {
+            await selectText(page, '#en')
+            await page.click(ICON)
+            await page.waitForSelector(DST)
+            t.eq(await page.textContent(DST), '近年来机器翻译进步很大。')
+            await page.mouse.click(700, 600)   // 点外面关掉卡片
+            await page.waitForSelector(CARD, { state: 'hidden' })
+        }
+        t.eq(requests.length, 1)
+        await page.close()
+    })
+
+    await t.test('LRU：超过容量淘汰最久没用的那条', async () => {
+        const { page, requests } = await open(env, {
+            values: { settings: { cacheSize: 2 } },
+            xhr: () => ({ responseText: googleBody([['x', 'y']]) }),
+        })
+        for (const sel of ['#en', '#zh', '#en', '#word', '#en', '#zh']) {
+            await selectText(page, sel)
+            await page.click(ICON)
+            await page.waitForSelector(DST)
+        }
+        // #en 第二次命中（被挪到最新）；#word 进来时挤掉的是 #zh；所以 #en 第三次命中、#zh 第二次要重新请求
+        t.eq(requests.map(d => query(d).get('q').slice(0, 7)), ['Machine', '今天天气很好，', 'serendi', '今天天气很好，'])
+        await page.close()
+    })
+
+    await t.test('失败的结果不进缓存', async () => {
+        let fail = true
+        const { page, requests } = await open(env, {
+            xhr: () => (fail ? { status: 500, responseText: '' } : { responseText: googleBody([['好', 'good']]) }),
+        })
+        await selectText(page, '#word')
+        await page.click(ICON)
+        await page.waitForSelector(CARD + ' .error')
+        fail = false
+        await selectText(page, '#word')
+        await page.click(ICON)
+        await page.waitForSelector(DST)
+        t.eq(requests.length, 3)
+        await page.close()
+    })
+
+    await t.test('超长选区截断到 5000 字并提示；长文本走 POST；不切开 emoji', async () => {
+        const { page, requests } = await open(env, { xhr: () => ({ responseText: googleBody([['很长的译文', 'x']]) }) })
+        const total = await addLongText(page)
+        t.assert(total > 5000, `长文本应超过 5000 字，实际 ${total}`)
+        await selectText(page, '#long')
+        await page.click(ICON)
+        await page.waitForSelector(DST)
+        const d = requests[0]
+        t.eq(d.method, 'POST')
+        t.eq(query(d).get('q'), null)
+        t.eq(query(d).get('tl'), 'zh-CN')
+        const q = new URLSearchParams(d.data).get('q')
+        t.eq(q.length, 4999)        // 第 5000 个码元是半个 emoji，整个丢掉
+        t.assert(q.endsWith('abcd'), q.slice(-10))
+        t.eq(await page.textContent(CARD + ' .note'), `选中了 ${total} 字，只翻译了前 4999 字`)
+        t.eq(h.errors(page).map(String), [])
+        await page.close()
+    })
+
+    await t.test('降级到 MyMemory 时按 500 字截断并提示', async () => {
+        const { page, requests } = await open(env, {
+            xhr: d => (isGoogle(d) ? { status: 500, responseText: '' } : { responseText: myMemoryBody('一部分译文') }),
+        })
+        await addLongText(page)
+        await selectText(page, '#long')
+        await page.click(ICON)
+        await page.waitForSelector(DST)
+        t.eq(query(requests[1]).get('q').length, 500)
+        const notes = await page.$$eval(CARD + ' .note', ns => ns.map(n => n.textContent))
+        t.assert(notes.some(n => n.includes('500')), JSON.stringify(notes))
         await page.close()
     })
 
