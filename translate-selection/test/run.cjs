@@ -94,6 +94,18 @@ async function addLongText(page) {
     })
 }
 
+/** 在输入框里选中 [start, end)，然后在输入框上派发 mouseup（和真实拖选一样，焦点在输入框里）。 */
+async function selectInField(page, selector, start, end) {
+    await page.evaluate(({ selector, start, end }) => {
+        const el = document.querySelector(selector)
+        const r = el.getBoundingClientRect()
+        el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0, clientX: r.left + 5, clientY: r.top + 5 }))
+        el.focus()
+        el.setSelectionRange(start, end)
+        el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, button: 0, clientX: r.left + 120, clientY: r.top + 10 }))
+    }, { selector, start, end })
+}
+
 async function main() {
     const env = await h.setup(path.join(__dirname, 'fixtures'))
     const t = h.createRunner('translate-selection')
@@ -471,6 +483,72 @@ async function main() {
         t.eq(await bg(), 'rgb(255, 255, 255)')
         await page.emulateMedia({ colorScheme: 'dark' })
         t.eq(await bg(), 'rgb(31, 41, 55)')
+        await page.close()
+    })
+
+    await t.test('按住 Alt 选中直接翻译，不出图标', async () => {
+        const { page, requests } = await open(env, { xhr: () => ({ responseText: googleBody([['近年来机器翻译进步很大。', 'x']]) }) })
+        await selectText(page, '#en', { alt: true })
+        await page.waitForSelector(DST)
+        t.eq(await page.textContent(DST), '近年来机器翻译进步很大。')
+        t.assert(!(await page.isVisible(ICON)), '直接翻译时不该再出图标')
+        t.eq(requests.length, 1)
+        await page.close()
+    })
+
+    await t.test('快捷键 Alt+T 翻译当前选区', async () => {
+        const { page, requests } = await open(env, { xhr: () => ({ responseText: googleBody([['今天天气很好。', 'x']]) }) })
+        // 键盘选中（不经过 mouseup），所以不会有图标，只能靠快捷键
+        await page.evaluate(() => {
+            const r = document.createRange()
+            r.selectNodeContents(document.querySelector('#zh'))
+            getSelection().removeAllRanges()
+            getSelection().addRange(r)
+        })
+        await page.keyboard.press('Control+Alt+KeyT')   // 修饰键不对不触发
+        await page.waitForTimeout(100)
+        t.eq(requests.length, 0)
+        await page.keyboard.press('Alt+KeyT')
+        await page.waitForSelector(DST)
+        t.eq(query(requests[0]).get('q'), '今天天气很好，我们去公园散步吧。')
+        t.eq(query(requests[0]).get('tl'), 'en')
+        await page.close()
+    })
+
+    await t.test('输入框里的选区：取选中部分，图标在输入框下方', async () => {
+        const { page, requests } = await open(env, { xhr: () => ({ responseText: googleBody([['敏捷的棕色狐狸', 'x']]) }) })
+        await selectInField(page, '#inp', 4, 19)
+        await page.waitForSelector(ICON, { state: 'visible' })
+        const icon = await page.locator(ICON).boundingBox()
+        const box = await page.locator('#inp').boundingBox()
+        t.assert(icon.y >= box.y + box.height && icon.y < box.y + box.height + 20, `图标应紧贴输入框下沿：${JSON.stringify({ icon, box })}`)
+        t.assert(icon.x >= box.x && icon.x <= box.x + box.width + 10, '图标横向应在输入框范围内')
+        await page.click(ICON)
+        await page.waitForSelector(DST)
+        t.eq(query(requests[0]).get('q'), 'quick brown fox')
+        t.eq(await page.textContent(DST), '敏捷的棕色狐狸')
+        // 点图标不应让输入框失焦、丢选区
+        t.eq(await page.evaluate(() => [document.activeElement.id, document.activeElement.selectionStart, document.activeElement.selectionEnd]), ['inp', 4, 19])
+        await page.close()
+    })
+
+    await t.test('textarea 里的中文选区按中文 → 英文；快捷键也能用', async () => {
+        const { page, requests } = await open(env, { xhr: () => ({ responseText: googleBody([['Chinese in a text box', 'x']], { src: 'zh-CN' }) }) })
+        await page.focus('#ta')
+        await page.evaluate(() => document.querySelector('#ta').setSelectionRange(2, 12))
+        await page.keyboard.press('Alt+KeyT')
+        await page.waitForSelector(DST)
+        t.eq(query(requests[0]).get('q'), '一段在文本框里的中文')
+        t.eq(query(requests[0]).get('tl'), 'en')
+        t.eq(await page.$eval('#ta', el => el.value), '这是一段在文本框里的中文。')   // 快捷键没往文本框里打字
+        await page.close()
+    })
+
+    await t.test('密码框里的选区不处理', async () => {
+        const { page } = await open(env)
+        await selectInField(page, '#pwd', 0, 6)
+        await page.waitForTimeout(200)
+        t.assert(!(await page.isVisible(ICON)), '密码框不该出图标')
         await page.close()
     })
 

@@ -3,10 +3,10 @@
 // @name:zh-CN   划词翻译｜选中即译 · 中英自动互译
 // @name:en      Translate Selection | Select-to-Translate, Auto Chinese ⇄ English
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.06.04.7
-// @description  选中文字后旁边浮出小图标，点一下就翻译；按住 Alt 选中可直接翻译。中文译成英文、其他语言译成中文。
-// @description:zh-CN  选中文字后旁边浮出小图标，点一下就翻译；按住 Alt 选中可直接翻译。中文译成英文、其他语言译成中文。
-// @description:en  Select text and a small icon pops up next to it — click to translate. Hold Alt while selecting to translate instantly. Chinese is translated to English, everything else to Chinese.
+// @version      2025.06.05.8
+// @description  选中文字后旁边浮出小图标，点一下就翻译；按住 Alt 选中或按 Alt+T 直接翻译。中文译成英文、其他语言译成中文。
+// @description:zh-CN  选中文字后旁边浮出小图标，点一下就翻译；按住 Alt 选中或按 Alt+T 直接翻译。中文译成英文、其他语言译成中文。
+// @description:en  Select text and a small icon pops up next to it — click to translate. Hold Alt while selecting, or press Alt+T, to translate instantly. Chinese is translated to English, everything else to Chinese.
 // @author       壹樂（V：ita1125）
 // @match        *://*/*
 // @grant        GM_xmlhttpRequest
@@ -39,6 +39,12 @@
         iconSize: 24,        // 浮动图标边长（px）
         iconOffset: 6,       // 图标离选区末端的距离（px）
         minLength: 1,        // 选中少于这么多字（去掉首尾空白后）不出图标
+        directModifier: 'altKey',   // 按住它选中直接翻译、不出图标。可改 'ctrlKey' / 'shiftKey' / 'metaKey'，'' 关闭
+        /*
+         * 快捷键：翻译当前选区。按物理键位 e.code 匹配而不是 e.key ——
+         * macOS 上 Option+T 的 e.key 是「†」，按 e.key 永远匹配不上。
+         */
+        hotkey: 'Alt+KeyT',
 
         targetLang: 'zh-CN',    // 非中文译成什么
         chineseTarget: 'en',    // 中文译成什么（只在 targetLang 本身是中文时生效）
@@ -150,6 +156,13 @@
     /** 支持 selectionStart/End 的 input 类型。email/number 读 selectionStart 会直接抛异常。 */
     const TEXT_INPUT_TYPES = ['text', 'search', 'url', 'tel', ''];
 
+    /** document.activeElement 只到 shadow host 为止，输入框在 Web Component 里时要一层层钻进去。 */
+    function deepActiveElement() {
+        let a = document.activeElement;
+        while (a && a.shadowRoot && a.shadowRoot.activeElement) a = a.shadowRoot.activeElement;
+        return a;
+    }
+
     function isTextField(el) {
         if (!el) return false;
         if (el.tagName === 'TEXTAREA') return true;
@@ -160,13 +173,14 @@
      * 当前选区 → { text, anchor: {x, y, top} }，坐标是文档坐标（含滚动）。
      * 没有有效选区返回 null。
      *
-     * input/textarea 里的选区不在 window.getSelection() 里（Firefox 下 toString() 是空串，
-     * 也拿不到 Range 的几何信息），只能用 selectionStart/End 取文本，位置退而用输入框本身。
+     * input/textarea 里的选区 window.getSelection() 靠不住：Chrome 下 toString() 倒是能返回
+     * 选中的字，但 isCollapsed 是 true、Range 没有任何 rect（实测），密码框还会返回「•••••」。
+     * 所以输入框单独走 selectionStart/End 取文本，位置退而用输入框本身；密码框不处理。
      */
     function readSelection(mouse) {
         const sx = window.scrollX;
         const sy = window.scrollY;
-        const active = document.activeElement;
+        const active = deepActiveElement();
 
         if (isTextField(active)) {
             const { selectionStart: s, selectionEnd: e } = active;
@@ -631,12 +645,33 @@
         if (e.button !== 0 || UI.owns(e)) return;
         // mouseup 那一刻选区可能还没定下来（比如在已有选区里单击，是 mouseup 之后才清空），推迟一拍再读
         const mouse = { clientX: e.clientX, clientY: e.clientY };
+        const direct = !!S.directModifier && e[S.directModifier];
         setTimeout(() => {
             const info = readSelection(mouse);
             if (!info) return Icon.hide();
-            Icon.show(info);
+            if (direct) {
+                Icon.hide();
+                Card.open(info);
+            } else {
+                Icon.show(info);
+            }
         }, 0);
     }
+
+    /** 'Alt+KeyT' → 判定函数。修饰键要求精确匹配，Ctrl+Alt+T 不算 Alt+T。 */
+    function parseHotkey(spec) {
+        if (!spec) return () => false;
+        const parts = spec.split('+');
+        const code = parts.pop();
+        const mods = new Set(parts.map((p) => p.toLowerCase()));
+        return (e) => e.code === code
+            && e.altKey === mods.has('alt')
+            && e.ctrlKey === mods.has('ctrl')
+            && e.shiftKey === mods.has('shift')
+            && e.metaKey === mods.has('meta');
+    }
+
+    const isHotkey = parseHotkey(S.hotkey);
 
     function onMouseDown(e) {
         if (UI.owns(e)) return;
@@ -645,6 +680,16 @@
     }
 
     function onKeyDown(e) {
+        if (isHotkey(e)) {
+            const info = readSelection(null);
+            if (!info) return;
+            // 在输入框里按 Alt+T，不拦的话 macOS 会顺手输入一个「†」
+            e.preventDefault();
+            e.stopPropagation();
+            Icon.hide();
+            Card.open(info);
+            return;
+        }
         if (e.key !== 'Escape') return;
         Icon.hide();
         if (Card.isOpen()) Card.close();
