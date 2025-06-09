@@ -3,7 +3,7 @@
 // @name:zh-CN   划词翻译｜选中即译 · 中英自动互译
 // @name:en      Translate Selection | Select-to-Translate, Auto Chinese ⇄ English
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.06.09.9
+// @version      2025.06.09.10
 // @description  选中文字后旁边浮出小图标，点一下就翻译；按住 Alt 选中或按 Alt+T 直接翻译。中文译成英文、其他语言译成中文。
 // @description:zh-CN  选中文字后旁边浮出小图标，点一下就翻译；按住 Alt 选中或按 Alt+T 直接翻译。中文译成英文、其他语言译成中文。
 // @description:en  Select text and a small icon pops up next to it — click to translate. Hold Alt while selecting, or press Alt+T, to translate instantly. Chinese is translated to English, everything else to Chinese.
@@ -194,8 +194,8 @@
         if (isTextField(active)) {
             const { selectionStart: s, selectionEnd: e } = active;
             if (s != null && e != null && e > s) {
-                const text = active.value.slice(s, e);
-                if (text.trim().length < S.minLength) return null;
+                const text = active.value.slice(s, e).trim();
+                if (text.length < S.minLength) return null;
                 const r = active.getBoundingClientRect();
                 // 横向尽量跟着鼠标，但不能跑出输入框
                 const x = mouse ? Math.min(Math.max(mouse.clientX, r.left), r.right) : r.right;
@@ -205,8 +205,10 @@
 
         const sel = window.getSelection();
         if (!sel || sel.isCollapsed || !sel.rangeCount) return null;
-        const text = sel.toString();
-        if (text.trim().length < S.minLength) return null;
+        // 三击选整段时 toString() 末尾会带上 "\n\n"（实测），不去掉的话请求里多了换行，
+        // 缓存键也和拖选同一段对不上
+        const text = sel.toString().trim();
+        if (text.length < S.minLength) return null;
 
         const range = sel.getRangeAt(0);
         // 三击选整段时 Range 的终点落在下一个块的开头，最后一个 rect 宽度为 0，跳过这种
@@ -447,7 +449,10 @@
                 map.set(key, v);
                 while (map.size > S.cacheSize) map.delete(map.keys().next().value);
             },
-            delete: (key) => map.delete(key),
+            /** 只在 key 还指向 v 时删除，不改变 LRU 顺序。 */
+            deleteIf(key, v) {
+                if (map.get(key) === v) map.delete(key);
+            },
         };
     })();
 
@@ -461,7 +466,8 @@
         if (!p) {
             p = translateUncached(text, tl);
             Cache.set(key, p);
-            p.catch(() => Cache.delete(key));
+            // 只删自己：这个请求挂着的时候可能已被挤出缓存、同一段又发了新请求
+            p.catch(() => Cache.deleteIf(key, p));
         }
         return p;
     }

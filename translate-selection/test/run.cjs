@@ -628,6 +628,19 @@ async function main() {
         await page.close()
     })
 
+    await t.test('三击选整段：末尾换行不带进请求，和拖选同一段共用缓存', async () => {
+        const { page, requests } = await open(env, { xhr: () => ({ responseText: googleBody([['近年来机器翻译进步很大。', 'x']]) }) })
+        await page.click('#en', { clickCount: 3 })   // 真实三击，Selection.toString() 末尾会带 "\n\n"
+        await page.click(ICON)
+        await page.waitForSelector(DST)
+        t.eq(query(requests[0]).get('q'), 'Machine translation has improved a lot in recent years.')
+        await selectText(page, '#en')
+        await page.click(ICON)
+        await page.waitForSelector(DST)
+        t.eq(requests.length, 1)
+        await page.close()
+    })
+
     await env.close()
     t.done()
 }
