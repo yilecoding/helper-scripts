@@ -552,6 +552,82 @@ async function main() {
         await page.close()
     })
 
+    await t.test('菜单注册了三项命令，文字带当前状态', async () => {
+        const { page } = await open(env)
+        t.eq((await h.gm(page)).menu, ['✅ 选中后显示翻译图标', '🌐 设置目标语言（当前：zh-CN）', '⛔ 在 127.0.0.1 上禁用'])
+        await page.close()
+    })
+
+    await t.test('菜单关掉图标模式：选中不出图标，Alt 选中照样翻译，设置持久化', async () => {
+        const { page, requests } = await open(env, { xhr: () => ({ responseText: googleBody([['好', 'good']]) }) })
+        await h.menu(page, '显示翻译图标')
+        t.eq((await h.gm(page)).menu[0], '⬜ 选中后显示翻译图标')
+        await selectText(page, '#word')
+        await page.waitForTimeout(200)
+        t.assert(!(await page.isVisible(ICON)), '关了图标模式不该出图标')
+        await selectText(page, '#word', { alt: true })
+        await page.waitForSelector(DST)
+        t.eq(requests.length, 1)
+        t.eq(await page.evaluate(() => JSON.parse(localStorage.getItem('__gm:settings'))), { showIcon: false })
+        // 刷新后仍然是关的
+        await page.reload()
+        t.eq((await h.gm(page)).menu[0], '⬜ 选中后显示翻译图标')
+        await selectText(page, '#word')
+        await page.waitForTimeout(200)
+        t.assert(!(await page.isVisible(ICON)), '刷新后图标模式应仍是关的')
+        await page.close()
+    })
+
+    await t.test('菜单设置目标语言：无效代码被拒，有效的立即生效并持久化', async () => {
+        const { page, requests } = await open(env, { xhr: () => ({ responseText: googleBody([['x', 'y']]) }) })
+        // 弹窗按出现顺序处理：prompt 填 answers 里的下一个值，alert 记下内容
+        const answers = ['日语', 'ja']
+        const alerts = []
+        page.on('dialog', d => (d.type() === 'prompt' ? d.accept(answers.shift()) : (alerts.push(d.message()), d.dismiss())))
+        await h.menu(page, '设置目标语言')
+        t.assert(alerts.length === 1 && alerts[0].includes('不是有效的语言代码'), JSON.stringify(alerts))
+        t.eq((await h.gm(page)).menu[1], '🌐 设置目标语言（当前：zh-CN）')
+        await h.menu(page, '设置目标语言')
+        t.eq((await h.gm(page)).menu[1], '🌐 设置目标语言（当前：ja）')
+        await selectText(page, '#en')
+        await page.click(ICON)
+        await page.waitForSelector(DST)
+        // 目标语言不是中文时，中文也译成它
+        await selectText(page, '#zh')
+        await page.click(ICON)
+        await page.waitForSelector(DST)
+        t.eq(requests.map(d => query(d).get('tl')), ['ja', 'ja'])
+        t.eq(await page.evaluate(() => JSON.parse(localStorage.getItem('__gm:settings'))), { targetLang: 'ja' })
+        await page.close()
+    })
+
+    await t.test('站点黑名单：禁用后选中 / Alt / 快捷键都不响应，启用后恢复', async () => {
+        const { page, requests } = await open(env, { xhr: () => ({ responseText: googleBody([['好', 'good']]) }) })
+        await h.menu(page, '上禁用')
+        t.eq((await h.gm(page)).menu[2], '▶️ 在 127.0.0.1 上启用')
+        t.eq(await page.evaluate(() => JSON.parse(localStorage.getItem('__gm:blacklist'))), ['127.0.0.1'])
+        await selectText(page, '#word')
+        await selectText(page, '#word', { alt: true })
+        await page.keyboard.press('Alt+KeyT')
+        await page.waitForTimeout(200)
+        t.assert(!(await page.isVisible(ICON)), '禁用后不该出图标')
+        t.eq(requests.length, 0)
+        await h.menu(page, '上启用')
+        await selectText(page, '#word')
+        await page.waitForSelector(ICON, { state: 'visible' })
+        t.eq(await page.evaluate(() => JSON.parse(localStorage.getItem('__gm:blacklist'))), [])
+        await page.close()
+    })
+
+    await t.test('黑名单里的站点加载时就不挂监听', async () => {
+        const { page } = await open(env, { values: { blacklist: ['127.0.0.1'] } })
+        await selectText(page, '#word')
+        await page.waitForTimeout(200)
+        t.assert(!(await page.isVisible(ICON)), '黑名单站点不该出图标')
+        t.eq((await h.gm(page)).menu[2], '▶️ 在 127.0.0.1 上启用')
+        await page.close()
+    })
+
     await env.close()
     t.done()
 }

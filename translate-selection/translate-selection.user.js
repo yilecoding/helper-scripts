@@ -3,7 +3,7 @@
 // @name:zh-CN   划词翻译｜选中即译 · 中英自动互译
 // @name:en      Translate Selection | Select-to-Translate, Auto Chinese ⇄ English
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.06.05.8
+// @version      2025.06.09.9
 // @description  选中文字后旁边浮出小图标，点一下就翻译；按住 Alt 选中或按 Alt+T 直接翻译。中文译成英文、其他语言译成中文。
 // @description:zh-CN  选中文字后旁边浮出小图标，点一下就翻译；按住 Alt 选中或按 Alt+T 直接翻译。中文译成英文、其他语言译成中文。
 // @description:en  Select text and a small icon pops up next to it — click to translate. Hold Alt while selecting, or press Alt+T, to translate instantly. Chinese is translated to English, everything else to Chinese.
@@ -11,7 +11,10 @@
 // @match        *://*/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_getValue
+// @grant        GM_setValue
 // @grant        GM_setClipboard
+// @grant        GM_registerMenuCommand
+// @grant        GM_unregisterMenuCommand
 // @connect      translate.googleapis.com
 // @connect      api.mymemory.translated.net
 // @license      CC BY-NC-SA
@@ -38,6 +41,7 @@
     const CONFIG = {
         iconSize: 24,        // 浮动图标边长（px）
         iconOffset: 6,       // 图标离选区末端的距离（px）
+        showIcon: true,      // 选中后出图标。关掉后只能按住 Alt 选中或按快捷键翻译（菜单里可切换）
         minLength: 1,        // 选中少于这么多字（去掉首尾空白后）不出图标
         directModifier: 'altKey',   // 按住它选中直接翻译、不出图标。可改 'ctrlKey' / 'shiftKey' / 'metaKey'，'' 关闭
         /*
@@ -69,6 +73,11 @@
      * 改脚本源码会在自动更新时被覆盖，存储里的不会。
      */
     const S = Object.assign({}, CONFIG, GM_getValue('settings', {}));
+
+    function saveSetting(key, value) {
+        S[key] = value;
+        GM_setValue('settings', Object.assign({}, GM_getValue('settings', {}), { [key]: value }));
+    }
 
     // =========================================================================
     // 宿主节点：所有 UI 都挂在一个 shadow root 里，页面样式进不来、我们的也出不去
@@ -652,7 +661,7 @@
             if (direct) {
                 Icon.hide();
                 Card.open(info);
-            } else {
+            } else if (S.showIcon) {
                 Icon.show(info);
             }
         }, 0);
@@ -695,13 +704,96 @@
         if (Card.isOpen()) Card.close();
     }
 
+    let listening = false;
+
+    function listen(on) {
+        if (on === listening) return;
+        listening = on;
+        const fn = on ? 'addEventListener' : 'removeEventListener';
+        document[fn]('mouseup', onMouseUp, true);
+        document[fn]('mousedown', onMouseDown, true);
+        document[fn]('keydown', onKeyDown, true);
+        // 不用捕获：只关心整页滚动，卡片里译文区自己的滚动不算
+        window[fn]('scroll', Card.onScroll, { passive: true });
+        if (!on) {
+            Icon.hide();
+            Card.close();
+        }
+    }
+
+    // =========================================================================
+    // 站点黑名单
+    // =========================================================================
+
+    const Blacklist = {
+        list: () => GM_getValue('blacklist', []),
+        has: (host) => Blacklist.list().includes(host),
+        toggle(host) {
+            const list = Blacklist.list();
+            const i = list.indexOf(host);
+            if (i >= 0) list.splice(i, 1);
+            else list.push(host);
+            GM_setValue('blacklist', list);
+            return i < 0;   // true = 现在被禁用了
+        },
+    };
+
+    // =========================================================================
+    // 菜单
+    // =========================================================================
+
+    const LANG_CODE = /^[a-z]{2,3}(-[A-Za-z]{2,4})?$/;
+
+    /*
+     * 菜单文字里带着当前状态，状态变了要整组注销重注册才能刷新文字。
+     * 只在顶层窗口注册：iframe 里也注册的话，管理器的菜单里每个 iframe 都会多出一组同名命令。
+     */
+    const Menu = (() => {
+        let ids = [];
+
+        function render() {
+            if (window.top !== window) return;
+            for (const id of ids) GM_unregisterMenuCommand(id);
+            const host = location.hostname;
+            const blocked = Blacklist.has(host);
+            ids = [
+                GM_registerMenuCommand(`${S.showIcon ? '✅' : '⬜'} 选中后显示翻译图标`, () => {
+                    saveSetting('showIcon', !S.showIcon);
+                    if (!S.showIcon) Icon.hide();
+                    render();
+                }),
+                GM_registerMenuCommand(`🌐 设置目标语言（当前：${S.targetLang}）`, () => {
+                    const hint = S.languages.map(([code, label]) => `${code} ${label}`).join('\n');
+                    const input = window.prompt(`非中文译成哪种语言？填语言代码：\n${hint}`, S.targetLang);
+                    if (input == null) return;
+                    const code = input.trim();
+                    if (!LANG_CODE.test(code)) {
+                        window.alert(`「${code}」不是有效的语言代码，例如 zh-CN、en、ja`);
+                        return;
+                    }
+                    saveSetting('targetLang', code);
+                    render();
+                }),
+                GM_registerMenuCommand(blocked ? `▶️ 在 ${host} 上启用` : `⛔ 在 ${host} 上禁用`, () => {
+                    const nowBlocked = Blacklist.toggle(host);
+                    listen(!nowBlocked);
+                    console.log(TAG, nowBlocked ? '已在本站禁用' : '已在本站启用', host);
+                    render();
+                }),
+            ];
+        }
+
+        return { render };
+    })();
+
     function boot() {
         Icon.onClick((info) => Card.open(info));
-        document.addEventListener('mouseup', onMouseUp, true);
-        document.addEventListener('mousedown', onMouseDown, true);
-        document.addEventListener('keydown', onKeyDown, true);
-        // 不用捕获：只关心整页滚动，卡片里译文区自己的滚动不算
-        window.addEventListener('scroll', Card.onScroll, { passive: true });
+        Menu.render();
+        if (Blacklist.has(location.hostname)) {
+            console.log(TAG, '本站在黑名单里，不启用', location.hostname);
+            return;
+        }
+        listen(true);
         console.log(TAG, '已加载');
     }
 
