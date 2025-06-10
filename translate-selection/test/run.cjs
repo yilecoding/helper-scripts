@@ -641,6 +641,24 @@ async function main() {
         await page.close()
     })
 
+    await t.test('先发的请求晚回来，不会覆盖后一次的卡片', async () => {
+        const { page } = await open(env, {
+            xhr: async d => {
+                const slow = query(d).get('q').startsWith('Machine')
+                if (slow) await new Promise(r => setTimeout(r, 600))
+                return { responseText: googleBody([[slow ? '旧的' : '新的', 'x']]) }
+            },
+        })
+        await selectText(page, '#en')
+        await page.click(ICON)
+        await selectText(page, '#word')
+        await page.click(ICON)
+        await page.waitForSelector(DST)
+        await page.waitForTimeout(800)
+        t.eq(await page.textContent(DST), '新的')
+        await page.close()
+    })
+
     await env.close()
     t.done()
 }
