@@ -104,6 +104,27 @@ async function main() {
         await page.close()
     })
 
+    await t.test('侧栏 / 评论区 / 页脚 / 文内旁注 / 不可见的标题被排除', async () => {
+        const page = await open(browser, 'blog.html')
+        await waitToc(page)
+        const texts = await page.evaluate(() => Array.from(
+            document.getElementById('article-toc-host').shadowRoot.querySelectorAll('.item'),
+        ).map((b) => b.textContent))
+        t.eq(texts, ['如何写一个用户脚本', '准备工作', '安装 Tampermonkey', '新建脚本', '元数据', '调试技巧', '日志', '发布'])
+        await page.close()
+    })
+
+    await t.test('没有 article/main 时按标题密度推断正文，侧栏和评论按类名排除', async () => {
+        const page = await open(browser, 'nocontainer.html')
+        await waitToc(page)
+        t.eq(await readTree(page), [
+            { text: '一、背景', children: [{ text: '1. 现状' }] },
+            { text: '二、方案', children: [{ text: '1. 设计' }, { text: '2. 实现' }] },
+            { text: '三、总结' },
+        ])
+        await page.close()
+    })
+
     await t.test('少于 3 个标题不显示目录', async () => {
         const page = await open(browser, 'few.html')
         await settle(page)

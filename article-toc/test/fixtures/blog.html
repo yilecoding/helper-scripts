@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>如何写一个用户脚本 - 示例博客</title>
+<style>
+    body { margin: 0; font: 16px/1.7 sans-serif; }
+    .site-header { position: fixed; top: 0; left: 0; right: 0; height: 56px; background: #222; color: #fff; z-index: 10; }
+    .site-header h1 { margin: 0; font-size: 20px; line-height: 56px; padding: 0 16px; }
+    .layout { display: flex; gap: 24px; max-width: 1100px; margin: 0 auto; padding-top: 72px; }
+    article { flex: 1; }
+    .sidebar { width: 240px; }
+    .filler { height: 520px; background: linear-gradient(#f6f6f6, #fff); }
+    .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); margin: -1px; }
+    footer { padding: 40px; background: #eee; }
+</style>
+</head>
+<body>
+<header class="site-header">
+    <h1>示例博客</h1>
+    <nav><h2 class="sr-only">站点导航</h2></nav>
+</header>
+<main class="layout">
+    <article>
+        <h1 id="title">如何写一个用户脚本</h1>
+        <p class="filler">导语。</p>
+        <h2>准备工作</h2>
+        <p class="filler">正文。</p>
+        <h3>安装 Tampermonkey</h3>
+        <p class="filler">正文。</p>
+        <aside class="note"><h4>小贴士</h4><p>文内插的旁注，不是章节。</p></aside>
+        <h3>新建脚本</h3>
+        <p class="filler">正文。</p>
+        <h2>元数据</h2>
+        <h2 style="display: none">隐藏的标题</h2>
+        <p class="filler">正文。</p>
+        <h2 class="sr-only">仅读屏可见</h2>
+        <h2>调试技巧</h2>
+        <p class="filler">正文。</p>
+        <h3>日志</h3>
+        <p class="filler">正文。</p>
+        <h2>发布</h2>
+        <p class="filler">正文。</p>
+        <section id="comments" class="comments-area">
+            <h3>2 条评论</h3>
+            <h4>访客 A</h4><p>写得好。</p>
+            <h4>访客 B</h4><p>学到了。</p>
+        </section>
+    </article>
+    <aside class="sidebar">
+        <h3>热门文章</h3><p>…</p>
+        <h3>标签</h3><p>…</p>
+        <h3>归档</h3><p>…</p>
+    </aside>
+</main>
+<footer>
+    <h4>关于</h4>
+    <h4>联系</h4>
+    <h4>友链</h4>
+</footer>
+</body>
+</html>
