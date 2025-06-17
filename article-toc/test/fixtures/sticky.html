@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>吸顶导航栏</title>
+<style>
+    body { margin: 0; font: 16px/1.7 sans-serif; }
+    .banner { height: 40px; background: #fc0; }
+    .topbar { position: sticky; top: 0; height: 50px; background: #0366d6; color: #fff; z-index: 5; }
+    .filler { height: 600px; }
+</style>
+</head>
+<body>
+<!-- 页面顶部时吸顶栏在 40px 处，还没「吸」住；滚下去以后它才贴在视口顶上 -->
+<div class="banner">公告</div>
+<div class="topbar">导航</div>
+<main>
+    <h2>第一节</h2><p class="filler"></p>
+    <h2>第二节</h2><p class="filler"></p>
+    <h2>第三节</h2><p class="filler"></p>
+    <h2>第四节</h2><p class="filler"></p>
+</main>
+</body>
+</html>

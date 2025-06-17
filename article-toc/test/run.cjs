@@ -62,6 +62,31 @@ function readTree(page) {
     })
 }
 
+/** 点目录项（Playwright 的 CSS 选择器会穿透 open shadow root）。 */
+function clickItem(page, text) {
+    return page.locator('#article-toc-host .item').filter({ hasText: new RegExp('^' + text + '$') }).click()
+}
+
+/** 等平滑滚动停下来：连续几次采样 scrollY 不变。 */
+async function waitScrollIdle(page) {
+    let last = -1
+    let same = 0
+    for (let i = 0; i < 60 && same < 3; i++) {
+        const y = await page.evaluate(() => window.scrollY)
+        same = y === last ? same + 1 : 0
+        last = y
+        await page.waitForTimeout(80)
+    }
+}
+
+/** 页面里某个标题（按文字找）相对视口的 top。 */
+function headingTop(page, text) {
+    return page.evaluate((text) => {
+        const el = Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,h6')).find((h) => h.textContent.trim() === text)
+        return el.getBoundingClientRect().top
+    }, text)
+}
+
 /** 等脚本跑完（load 之后），用于断言「没有目录」这种否定结论前。 */
 async function settle(page, ms = 300) {
     await page.waitForLoadState('load')
@@ -122,6 +147,30 @@ async function main() {
             { text: '二、方案', children: [{ text: '1. 设计' }, { text: '2. 实现' }] },
             { text: '三、总结' },
         ])
+        await page.close()
+    })
+
+    await t.test('点击跳转：标题停在固定导航栏下方，而不是被它盖住', async () => {
+        const page = await open(browser, 'blog.html')
+        await waitToc(page)
+        const idsBefore = await page.evaluate(() => document.querySelectorAll('[id]').length)
+        await clickItem(page, '调试技巧')
+        await waitScrollIdle(page)
+        const top = await headingTop(page, '调试技巧')
+        t.assert(top >= 56 && top <= 56 + 24, `标题 top=${top}，应在 56px 的顶栏下方附近`)
+        // 不改 hash、不给页面元素加 id
+        t.eq(await page.evaluate(() => location.hash), '')
+        t.eq(await page.evaluate(() => document.querySelectorAll('[id]').length), idsBefore, '页面上的 id 数量不变')
+        await page.close()
+    })
+
+    await t.test('点击跳转：页面顶部时还没吸住的 sticky 导航栏也要扣掉', async () => {
+        const page = await open(browser, 'sticky.html')
+        await waitToc(page)
+        await clickItem(page, '第三节')
+        await waitScrollIdle(page)
+        const top = await headingTop(page, '第三节')
+        t.assert(top >= 50 && top <= 50 + 24, `标题 top=${top}，应在 50px 的吸顶栏下方附近`)
         await page.close()
     })
 

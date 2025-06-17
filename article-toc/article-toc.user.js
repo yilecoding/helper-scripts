@@ -3,7 +3,7 @@
 // @name:zh-CN   文章自动目录
 // @name:en      Article TOC — Floating Table of Contents for Any Long Article
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.06.16.2
+// @version      2025.06.17.3
 // @description  给任意长文章页面生成浮动目录：自动识别正文、按页面实际使用的标题层级生成嵌套目录，点击跳转。
 // @description:zh-CN  给任意长文章页面生成浮动目录：自动识别正文、按页面实际使用的标题层级生成嵌套目录，点击跳转。
 // @description:en  Adds a floating table of contents to any long article: detects the main content, builds a nested outline from the heading levels the page actually uses, and jumps to a section on click.
@@ -38,6 +38,7 @@
         panelTop: 80,           // 默认位置：距视口顶部
         panelRight: 16,         // 默认位置：距视口右侧
         maxTextLength: 80,      // 目录项文字截断长度
+        jumpGap: 8,             // 跳转后标题距顶栏底部的留白
     };
 
     const HOST_ID = 'article-toc-host';
@@ -298,12 +299,92 @@
     })();
 
     // =========================================================================
-    // 跳转
+    // 布局：顶部遮挡 + 滚动容器
     // =========================================================================
 
-    function jumpTo(node) {
-        node.el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }
+    const Layout = (() => {
+        /**
+         * 视口顶部被固定/吸顶元素挡住的高度（像素）。
+         *
+         * 两种来源都要找：
+         *   - 视口最上沿那一排点下面的 fixed/sticky 祖先 —— 当前就挡着的；
+         *   - 浅层 DOM 里 top 很小的 sticky 元素 —— 页面在顶部时它还在横幅下面、
+         *     没「吸」住，等跳转滚下去它才贴到顶上。只看当前视口会漏掉它，
+         *     跳过去标题正好被它盖住。
+         * 叠在一起的多条（公告条 + 导航栏）按首尾相接累加。
+         */
+        function topInset() {
+            const vw = window.innerWidth;
+            const vh = window.innerHeight;
+            const seen = new Set();
+            const bars = [];
+            const consider = (el) => {
+                for (let a = el; a && a !== document.body && a !== document.documentElement; a = a.parentElement) {
+                    if (seen.has(a)) return;
+                    seen.add(a);
+                    if (a.id === HOST_ID) return;
+                    const cs = getComputedStyle(a);
+                    if (cs.position !== 'fixed' && cs.position !== 'sticky') continue;
+                    if (cs.visibility === 'hidden' || Number(cs.opacity) === 0) continue;
+                    const r = a.getBoundingClientRect();
+                    // 窄的是侧边悬浮按钮，太高的是遮罩/整页容器，都不是顶栏
+                    if (r.width < vw * 0.5 || r.height <= 0 || r.height > vh * 0.4) continue;
+                    let top = r.top;
+                    if (cs.position === 'sticky') {
+                        top = parseFloat(cs.top);
+                        if (Number.isNaN(top)) continue;   // top: auto 的 sticky 不会吸顶
+                    }
+                    bars.push({ top, bottom: top + r.height });
+                }
+            };
+            for (const x of [0.1, 0.5, 0.9]) {
+                for (const el of document.elementsFromPoint(vw * x, 2)) consider(el);
+            }
+            const shallow = document.querySelectorAll('body > *, body > * > *, body > * > * > *');
+            for (let i = 0; i < shallow.length && i < 300; i++) consider(shallow[i]);
+
+            bars.sort((a, b) => a.top - b.top);
+            let bottom = 0;
+            for (const b of bars) {
+                if (b.top <= bottom + 4) bottom = Math.max(bottom, b.bottom);
+            }
+            return Math.min(bottom, vh * 0.5);
+        }
+
+        /**
+         * 正文所在的滚动容器。多数页面滚的是 window，
+         * 但不少文档站/后台把正文放在 overflow:auto 的 div 里，window 根本不动。
+         */
+        function scrollerOf(el) {
+            for (let a = el.parentElement; a && a !== document.body && a !== document.documentElement; a = a.parentElement) {
+                const oy = getComputedStyle(a).overflowY;
+                if ((oy === 'auto' || oy === 'scroll' || oy === 'overlay') && a.scrollHeight > a.clientHeight + 1) return a;
+            }
+            return null;
+        }
+
+        /** 「阅读线」：被顶栏挡住的部分以下 + 一点留白。跳转后标题就停在这条线上。 */
+        function readingLine(scroller) {
+            const top = scroller ? Math.max(0, scroller.getBoundingClientRect().top) : 0;
+            return Math.max(topInset(), top) + CONFIG.jumpGap;
+        }
+
+        /**
+         * 跳到某个标题。不用 location.hash / scrollIntoView：
+         *   - 标题多半没有 id，给页面元素加 id 可能和站点自己的 id 撞上；
+         *     改 hash 还会触发 SPA 路由（hash 路由的站直接切页）。
+         *   - scrollIntoView 不知道顶栏有多高，标题会停在导航栏底下。
+         * 所以直接拿着元素引用算出距离，自己滚。
+         */
+        function scrollToEl(el) {
+            const scroller = scrollerOf(el);
+            const delta = el.getBoundingClientRect().top - readingLine(scroller);
+            const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+            (scroller || window).scrollBy({ top: delta, behavior: reduce ? 'auto' : 'smooth' });
+        }
+
+        return { topInset, scrollerOf, readingLine, scrollToEl };
+    })();
 
     // =========================================================================
     // 启动
@@ -318,7 +399,7 @@
             return;
         }
         const tree = buildTree(headings);
-        Panel.render(tree, jumpTo);
+        Panel.render(tree, (node) => Layout.scrollToEl(node.el));
         console.log(TAG, `已生成目录：${headings.length} 个标题，正文容器来自 ${via}`);
     }
 
