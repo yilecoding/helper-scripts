@@ -87,6 +87,23 @@ function headingTop(page, text) {
     }, text)
 }
 
+/** 当前高亮的目录项文字（没有则 null）。 */
+function activeItem(page) {
+    return page.evaluate(() => {
+        const el = document.getElementById('article-toc-host').shadowRoot.querySelector('.item.active')
+        return el ? el.textContent : null
+    })
+}
+
+/** 把某个标题滚到距视口顶部 offset 像素处（瞬间滚动），再等两帧让 rAF 里的计算跑完。 */
+async function scrollHeadingTo(page, text, offset) {
+    await page.evaluate(({ text, offset }) => {
+        const el = Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,h6')).find((h) => h.textContent.trim() === text)
+        window.scrollTo({ top: window.scrollY + el.getBoundingClientRect().top - offset, behavior: 'instant' })
+    }, { text, offset })
+    await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))))
+}
+
 /** 等脚本跑完（load 之后），用于断言「没有目录」这种否定结论前。 */
 async function settle(page, ms = 300) {
     await page.waitForLoadState('load')
@@ -171,6 +188,62 @@ async function main() {
         await waitScrollIdle(page)
         const top = await headingTop(page, '第三节')
         t.assert(top >= 50 && top <= 50 + 24, `标题 top=${top}，应在 50px 的吸顶栏下方附近`)
+        await page.close()
+    })
+
+    await t.test('滚动联动：阅读线（顶栏下方）以上的最后一个标题高亮', async () => {
+        const page = await open(browser, 'blog.html')
+        await waitToc(page)
+        // 标题刚好在顶栏下方 → 它是当前章节
+        await scrollHeadingTo(page, '元数据', 60)
+        t.eq(await activeItem(page), '元数据')
+        // 标题还被顶栏挡着一点、正文已经在读 → 仍算它
+        await scrollHeadingTo(page, '调试技巧', 30)
+        t.eq(await activeItem(page), '调试技巧')
+        // 读到长章节中间，视口里一个标题都没有 → 仍是这一节
+        await scrollHeadingTo(page, '日志', -300)
+        t.eq(await activeItem(page), '日志')
+        // 下一个标题在视口里但还没到阅读线 → 不提前切
+        await scrollHeadingTo(page, '发布', 200)
+        t.eq(await activeItem(page), '日志')
+        await page.close()
+    })
+
+    await t.test('点击跳转后高亮停在被点的那一项，滚动途中不闪', async () => {
+        const page = await open(browser, 'blog.html')
+        await waitToc(page)
+        const seen = []
+        await page.exposeFunction('__recordActive', (t) => seen.push(t))
+        await page.evaluate(() => {
+            const list = document.getElementById('article-toc-host').shadowRoot.querySelector('.list')
+            new MutationObserver(() => {
+                const a = list.querySelector('.item.active')
+                window.__recordActive(a ? a.textContent : null)
+            }).observe(list, { subtree: true, attributes: true, attributeFilter: ['class'] })
+        })
+        await clickItem(page, '日志')
+        await waitScrollIdle(page)
+        await page.waitForTimeout(300)
+        t.eq(await activeItem(page), '日志')
+        t.eq(Array.from(new Set(seen.filter(Boolean))), ['日志'], '途中高亮过的项')
+        await page.close()
+    })
+
+    await t.test('长目录：当前项自动滚进目录列表的可视区，页面本身不被带着滚', async () => {
+        const page = await open(browser, 'long.html')
+        await waitToc(page)
+        await scrollHeadingTo(page, '第 70 节', 0)
+        const y = await page.evaluate(() => window.scrollY)
+        t.eq(await activeItem(page), '第 70 节')
+        const vis = await page.evaluate(() => {
+            const sr = document.getElementById('article-toc-host').shadowRoot
+            const list = sr.querySelector('.list').getBoundingClientRect()
+            const item = sr.querySelector('.item.active').getBoundingClientRect()
+            return { inside: item.top >= list.top && item.bottom <= list.bottom, scrolled: sr.querySelector('.list').scrollTop }
+        })
+        t.assert(vis.scrolled > 0, '目录列表应该滚动过')
+        t.assert(vis.inside, '高亮项应在目录列表可视区内')
+        t.eq(await page.evaluate(() => window.scrollY), y, '页面滚动位置不应被改动')
         await page.close()
     })
 

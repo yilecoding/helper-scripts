@@ -3,7 +3,7 @@
 // @name:zh-CN   文章自动目录
 // @name:en      Article TOC — Floating Table of Contents for Any Long Article
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.06.17.3
+// @version      2025.06.17.4
 // @description  给任意长文章页面生成浮动目录：自动识别正文、按页面实际使用的标题层级生成嵌套目录，点击跳转。
 // @description:zh-CN  给任意长文章页面生成浮动目录：自动识别正文、按页面实际使用的标题层级生成嵌套目录，点击跳转。
 // @description:en  Adds a floating table of contents to any long article: detects the main content, builds a nested outline from the heading levels the page actually uses, and jumps to a section on click.
@@ -220,7 +220,8 @@
             font-weight: 600; user-select: none;
         }
         .head .count { color: #8b949e; font-weight: 400; }
-        .list { overflow: auto; padding: 4px 0; margin: 0; }
+        /* position: relative 让条目的 offsetTop 相对列表计算，见 setActive() */
+        .list { position: relative; overflow: auto; padding: 4px 0; margin: 0; overscroll-behavior: contain; }
         ul { list-style: none; margin: 0; padding: 0; }
         .item {
             display: block; width: 100%; box-sizing: border-box;
@@ -229,10 +230,12 @@
             cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
         }
         .item:hover { background: rgba(0, 0, 0, .05); }
+        .item.active { color: #0969da; border-left-color: #0969da; background: rgba(9, 105, 218, .08); font-weight: 600; }
         @media (prefers-color-scheme: dark) {
             .panel { color: #e6edf3; background: rgba(22, 27, 34, .96); border-color: rgba(255, 255, 255, .15); }
             .head { border-color: rgba(255, 255, 255, .1); }
             .item:hover { background: rgba(255, 255, 255, .08); }
+            .item.active { color: #58a6ff; border-left-color: #58a6ff; background: rgba(88, 166, 255, .12); }
         }
     `;
 
@@ -295,7 +298,29 @@
             };
         }
 
-        return { render, unmount };
+        /**
+         * 高亮当前章节，并把它滚进目录列表的可视区。
+         * 不能用 btn.scrollIntoView()：它会连带滚动所有祖先滚动容器，
+         * 包括页面本身 —— 用户正读着，页面被目录拽着跳。只动列表自己的 scrollTop。
+         */
+        function setActive(index) {
+            if (!shadow) return;
+            const list = shadow.querySelector('.list');
+            const prev = list.querySelector('.item.active');
+            const btn = index >= 0 ? list.querySelector(`.item[data-index="${index}"]`) : null;
+            if (prev === btn) return;
+            if (prev) { prev.classList.remove('active'); prev.removeAttribute('aria-current'); }
+            if (!btn) return;
+            btn.classList.add('active');
+            btn.setAttribute('aria-current', 'true');
+            const top = btn.offsetTop;
+            const bottom = top + btn.offsetHeight;
+            if (top < list.scrollTop || bottom > list.scrollTop + list.clientHeight) {
+                list.scrollTop = top - (list.clientHeight - btn.offsetHeight) / 2;
+            }
+        }
+
+        return { render, unmount, setActive };
     })();
 
     // =========================================================================
@@ -387,6 +412,109 @@
     })();
 
     // =========================================================================
+    // 滚动联动：高亮当前章节
+    // =========================================================================
+
+    /*
+     * 用节流（rAF）的 scroll 计算，不用 IntersectionObserver：
+     *   - 「当前章节」= 阅读线以上的最后一个标题。读到一个长章节中间时，
+     *     视口里一个标题都没有，IO 不会报任何东西，得自己记账推断；
+     *     而直接比较 getBoundingClientRect().top 天然就是对的。
+     *   - 阅读线跟着顶栏高度走（顶栏会收起/展开），IO 的 rootMargin
+     *     建好就固定了，要变只能重建 observer。
+     *   - 成本：每帧最多一次，读 N 个标题的位置；中间没有写 DOM，只触发一次布局。
+     *     几百个标题也在 1ms 级。
+     * scroll 用捕获阶段挂在 document 上：内层容器滚动的 scroll 事件不冒泡，
+     * 但捕获阶段能收到，这样不用先判断滚的是 window 还是哪个 div。
+     */
+    const Spy = (() => {
+        let tree = null;
+        let scroller = null;
+        let raf = 0;
+        let line = 0;
+        // 「已过期」用 -Infinity 表示，不能用 0：performance.now() 从页面导航开始计时，
+        // 脚本跑起来时可能才过了两三百毫秒，0 会被当成「刚算过」，阅读线就一直是 0
+        let lineAt = -Infinity;
+        let locked = false;
+        let lockStart = 0;
+        let lockTimer = 0;
+
+        /** 顶栏高度要读一圈 computed style，缓存 500ms，不必每帧都算。 */
+        function readingLine() {
+            const now = performance.now();
+            if (now - lineAt > 500) {
+                line = Layout.readingLine(scroller);
+                lineAt = now;
+            }
+            return line + 4;   // 跳转后标题正好落在线上，留点浮点误差
+        }
+
+        function compute() {
+            raf = 0;
+            if (!tree || locked) return;
+            const y = readingLine();
+            let index = -1;
+            for (const node of tree.flat) {
+                if (node.el.getBoundingClientRect().top <= y) index = node.index;
+                else break;
+            }
+            Panel.setActive(index);
+        }
+
+        function schedule() {
+            if (!raf) raf = requestAnimationFrame(compute);
+        }
+
+        function release() {
+            locked = false;
+            schedule();
+        }
+
+        /**
+         * 点击跳转期间锁住高亮：平滑滚动途中会依次扫过中间的章节，
+         * 不锁的话高亮会一路闪过去。滚动停下 150ms 后解锁，最多锁 3 秒。
+         */
+        function lockTo(index) {
+            Panel.setActive(index);
+            locked = true;
+            lockStart = performance.now();
+            clearTimeout(lockTimer);
+            lockTimer = setTimeout(release, 1000);
+        }
+
+        function onScroll() {
+            if (locked) {
+                clearTimeout(lockTimer);
+                lockTimer = setTimeout(release, performance.now() - lockStart > 3000 ? 0 : 150);
+                return;
+            }
+            schedule();
+        }
+
+        function onResize() {
+            lineAt = -Infinity;
+            schedule();
+        }
+
+        function start(next) {
+            tree = next;
+            scroller = tree.flat.length ? Layout.scrollerOf(tree.flat[0].el) : null;
+            lineAt = -Infinity;
+            document.addEventListener('scroll', onScroll, { capture: true, passive: true });
+            window.addEventListener('resize', onResize, { passive: true });
+            schedule();
+        }
+
+        function stop() {
+            tree = null;
+            document.removeEventListener('scroll', onScroll, { capture: true });
+            window.removeEventListener('resize', onResize);
+        }
+
+        return { start, stop, lockTo };
+    })();
+
+    // =========================================================================
     // 启动
     // =========================================================================
 
@@ -394,12 +522,17 @@
         const { root, via } = Content.findRoot();
         const headings = Content.collect(root);
         if (headings.length < CONFIG.minHeadings) {
+            Spy.stop();
             Panel.unmount();
             console.log(TAG, `标题只有 ${headings.length} 个，不显示目录`);
             return;
         }
         const tree = buildTree(headings);
-        Panel.render(tree, (node) => Layout.scrollToEl(node.el));
+        Panel.render(tree, (node) => {
+            Spy.lockTo(node.index);
+            Layout.scrollToEl(node.el);
+        });
+        Spy.start(tree);
         console.log(TAG, `已生成目录：${headings.length} 个标题，正文容器来自 ${via}`);
     }
 
