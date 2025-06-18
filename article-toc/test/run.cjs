@@ -115,6 +115,20 @@ function dockState(page) {
     })
 }
 
+/** 进度条：{ shown, ratio }。 */
+function progressState(page) {
+    return page.evaluate(() => {
+        const sr = document.getElementById('article-toc-host').shadowRoot
+        const wrap = sr.querySelector('.progress')
+        const m = /scaleX\(([\d.]+)\)/.exec(sr.querySelector('.progress .bar').style.transform)
+        return { shown: getComputedStyle(wrap).display !== 'none', ratio: m ? Number(m[1]) : 0 }
+    })
+}
+
+async function nextFrames(page) {
+    await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))))
+}
+
 /** 等脚本跑完（load 之后），用于断言「没有目录」这种否定结论前。 */
 async function settle(page, ms = 300) {
     await page.waitForLoadState('load')
@@ -315,6 +329,33 @@ async function main() {
         await waitToc(page)
         const st = await dockState(page)
         t.assert(st.top <= 800 - 40 && st.right <= 1280 - 260 && st.right >= 0, `位置 ${JSON.stringify(st)} 应在视口内`)
+        await page.close()
+    })
+
+    await t.test('阅读进度条：按正文容器算，正文底部进入视口就是 100%，下面的页脚不算', async () => {
+        const page = await open(browser, 'blog.html')
+        await waitToc(page)
+        await nextFrames(page)
+        let p = await progressState(page)
+        t.eq([p.shown, p.ratio], [true, 0], '页面顶部')
+        await scrollHeadingTo(page, '调试技巧', 60)
+        p = await progressState(page)
+        t.assert(p.ratio > 0.3 && p.ratio < 0.9, `读到中间，进度 ${p.ratio}`)
+        // 正文底部刚进入视口：页面还没到底（下面还有页脚），进度已经满了
+        await page.evaluate(() => {
+            const r = document.querySelector('article').getBoundingClientRect()
+            window.scrollTo({ top: window.scrollY + r.bottom - window.innerHeight, behavior: 'instant' })
+        })
+        await nextFrames(page)
+        t.assert(await page.evaluate(() => window.scrollY + innerHeight < document.documentElement.scrollHeight - 50), '页面应该还没到底')
+        t.eq((await progressState(page)).ratio, 1, '正文读完')
+        await page.close()
+    })
+
+    await t.test('进度条可关：设置里关掉后不显示', async () => {
+        const page = await open(browser, 'blog.html', { values: { settings: { progressBar: false } } })
+        await waitToc(page)
+        t.eq((await progressState(page)).shown, false)
         await page.close()
     })
 

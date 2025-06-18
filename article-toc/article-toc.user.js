@@ -3,7 +3,7 @@
 // @name:zh-CN   文章自动目录
 // @name:en      Article TOC — Floating Table of Contents for Any Long Article
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.06.18.5
+// @version      2025.06.18.6
 // @description  给任意长文章页面生成浮动目录：自动识别正文、按页面实际使用的标题层级生成嵌套目录，点击跳转。
 // @description:zh-CN  给任意长文章页面生成浮动目录：自动识别正文、按页面实际使用的标题层级生成嵌套目录，点击跳转。
 // @description:en  Adds a floating table of contents to any long article: detects the main content, builds a nested outline from the heading levels the page actually uses, and jumps to a section on click.
@@ -65,7 +65,16 @@
             GM_setValue(siteKey, { ...site(), ...patch });
         }
 
-        return { site, saveSite };
+        /** 全局设置：和站点版式无关的个人偏好。 */
+        function settings() {
+            return { progressBar: true, ...GM_getValue('settings', {}) };
+        }
+
+        function saveSettings(patch) {
+            GM_setValue('settings', { ...settings(), ...patch });
+        }
+
+        return { site, saveSite, settings, saveSettings };
     })();
 
     // =========================================================================
@@ -258,6 +267,16 @@
         .dock.collapsed .panel { display: none; }
         .dock.collapsed .fab { display: block; }
         .dock.dragging { opacity: .85; }
+        /* 进度条不接收指针事件：既不挡页面顶栏的点击，也不会被 topInset() 当成顶栏 */
+        .progress {
+            position: fixed; z-index: 2147483647; top: 0; left: 0; right: 0; height: 3px;
+            pointer-events: none;
+        }
+        .progress[hidden] { display: none; }
+        .progress .bar {
+            height: 100%; background: #0969da;
+            transform: scaleX(0); transform-origin: 0 50%;
+        }
         /* position: relative 让条目的 offsetTop 相对列表计算，见 setActive() */
         .list { position: relative; overflow: auto; padding: 4px 0; margin: 0; overscroll-behavior: contain; }
         ul { list-style: none; margin: 0; padding: 0; }
@@ -276,6 +295,7 @@
             .head { border-color: rgba(255, 255, 255, .1); }
             .item:hover { background: rgba(255, 255, 255, .08); }
             .item.active { color: #58a6ff; border-left-color: #58a6ff; background: rgba(88, 166, 255, .12); }
+            .progress .bar { background: #58a6ff; }
         }
     `;
 
@@ -293,6 +313,7 @@
             // open 模式只是为了调试和测试能看到内部；样式隔离 open/closed 一样
             shadow = host.attachShadow({ mode: 'open' });
             shadow.innerHTML = `<style>${STYLE}</style>
+                <div class="progress" hidden><div class="bar"></div></div>
                 <div class="dock">
                     <div class="panel">
                         <div class="head">
@@ -304,6 +325,7 @@
                     <div class="fab" role="button" tabindex="0" title="展开目录（可拖动）">☰ 目录</div>
                 </div>`;
             dock = shadow.querySelector('.dock');
+            shadow.querySelector('.progress').hidden = !Store.settings().progressBar;
             const site = Store.site();
             dock.classList.toggle('collapsed', !!site.collapsed);
             place(site.pos);
@@ -451,7 +473,17 @@
             }
         }
 
-        return { render, unmount, setActive };
+        /** 用 transform 而不是 width：每帧都可能更新，transform 不触发布局。 */
+        function setProgress(ratio) {
+            if (!shadow) return;
+            shadow.querySelector('.progress .bar').style.transform = `scaleX(${ratio.toFixed(4)})`;
+        }
+
+        function showProgress(on) {
+            if (shadow) shadow.querySelector('.progress').hidden = !on;
+        }
+
+        return { render, unmount, setActive, setProgress, showProgress };
     })();
 
     // =========================================================================
@@ -560,6 +592,7 @@
      */
     const Spy = (() => {
         let tree = null;
+        let root = null;
         let scroller = null;
         let raf = 0;
         let line = 0;
@@ -582,14 +615,30 @@
 
         function compute() {
             raf = 0;
-            if (!tree || locked) return;
+            if (!tree) return;
             const y = readingLine();
+            // 进度条在跳转途中也要跟着走，只有高亮被锁
+            Panel.setProgress(progress(y));
+            if (locked) return;
             let index = -1;
             for (const node of tree.flat) {
                 if (node.el.getBoundingClientRect().top <= y) index = node.index;
                 else break;
             }
             Panel.setActive(index);
+        }
+
+        /**
+         * 阅读进度按正文算，不按整页 scrollHeight：
+         * 正文下面常挂着几屏评论和推荐，按整页算的话读完正文才走到一半。
+         * 0 = 正文顶部刚到阅读线，1 = 正文底部进入视口底边。
+         */
+        function progress(lineY) {
+            const r = root.getBoundingClientRect();
+            const top = lineY - CONFIG.jumpGap;
+            const span = r.height - (window.innerHeight - top);
+            if (span <= 0) return 1;
+            return Math.min(1, Math.max(0, (top - r.top) / span));
         }
 
         function schedule() {
@@ -617,7 +666,6 @@
             if (locked) {
                 clearTimeout(lockTimer);
                 lockTimer = setTimeout(release, performance.now() - lockStart > 3000 ? 0 : 150);
-                return;
             }
             schedule();
         }
@@ -627,8 +675,9 @@
             schedule();
         }
 
-        function start(next) {
+        function start(next, contentRoot) {
             tree = next;
+            root = contentRoot;
             scroller = tree.flat.length ? Layout.scrollerOf(tree.flat[0].el) : null;
             lineAt = -Infinity;
             document.addEventListener('scroll', onScroll, { capture: true, passive: true });
@@ -663,7 +712,7 @@
             Spy.lockTo(node.index);
             Layout.scrollToEl(node.el);
         });
-        Spy.start(tree);
+        Spy.start(tree, root);
         console.log(TAG, `已生成目录：${headings.length} 个标题，正文容器来自 ${via}`);
     }
 
