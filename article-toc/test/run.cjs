@@ -104,6 +104,17 @@ async function scrollHeadingTo(page, text, offset) {
     await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))))
 }
 
+/** 面板（或折叠后的小按钮）的状态与位置。 */
+function dockState(page) {
+    return page.evaluate(() => {
+        const sr = document.getElementById('article-toc-host').shadowRoot
+        const dock = sr.querySelector('.dock')
+        const shown = (sel) => getComputedStyle(sr.querySelector(sel)).display !== 'none'
+        const r = dock.getBoundingClientRect()
+        return { collapsed: dock.classList.contains('collapsed'), panel: shown('.panel'), fab: shown('.fab'), top: r.top, right: window.innerWidth - r.right }
+    })
+}
+
 /** 等脚本跑完（load 之后），用于断言「没有目录」这种否定结论前。 */
 async function settle(page, ms = 300) {
     await page.waitForLoadState('load')
@@ -244,6 +255,66 @@ async function main() {
         t.assert(vis.scrolled > 0, '目录列表应该滚动过')
         t.assert(vis.inside, '高亮项应在目录列表可视区内')
         t.eq(await page.evaluate(() => window.scrollY), y, '页面滚动位置不应被改动')
+        await page.close()
+    })
+
+    await t.test('折叠状态刷新后保留，按站点存在 GM 里', async () => {
+        const page = await open(browser, 'blog.html')
+        await waitToc(page)
+        t.eq((await dockState(page)).collapsed, false)
+        await page.locator('#article-toc-host .collapse').click()
+        let st = await dockState(page)
+        t.eq([st.collapsed, st.panel, st.fab], [true, false, true], '折叠后只剩小按钮')
+        t.eq(await page.evaluate(() => JSON.parse(localStorage.getItem('__gm:site:blog.example.com')).collapsed), true)
+
+        await page.reload()
+        await waitToc(page)
+        st = await dockState(page)
+        t.eq([st.collapsed, st.panel, st.fab], [true, false, true], '刷新后仍是折叠的')
+
+        await page.locator('#article-toc-host .fab').click()
+        await page.reload()
+        await waitToc(page)
+        t.eq((await dockState(page)).collapsed, false, '展开后刷新仍是展开的')
+        t.eq(h.errors(page).map(String), [])
+        await page.close()
+    })
+
+    await t.test('拖动面板：位置按站点记住，刷新后还在原处；拖动不会误触发折叠按钮的展开', async () => {
+        const page = await open(browser, 'blog.html')
+        await waitToc(page)
+        const before = await dockState(page)
+        t.eq([before.top, before.right], [80, 16], '默认位置')
+        const head = await page.locator('#article-toc-host .head').boundingBox()
+        await page.mouse.move(head.x + 40, head.y + 10)
+        await page.mouse.down()
+        await page.mouse.move(head.x - 160, head.y + 110, { steps: 8 })
+        await page.mouse.up()
+        const after = await dockState(page)
+        t.eq([after.top, after.right], [180, 216], '拖动后的位置')
+
+        await page.reload()
+        await waitToc(page)
+        const reloaded = await dockState(page)
+        t.eq([reloaded.top, reloaded.right], [180, 216], '刷新后的位置')
+
+        // 折叠成小按钮后拖动：只移动，不展开
+        await page.locator('#article-toc-host .collapse').click()
+        const fab = await page.locator('#article-toc-host .fab').boundingBox()
+        await page.mouse.move(fab.x + 10, fab.y + 10)
+        await page.mouse.down()
+        await page.mouse.move(fab.x + 10, fab.y + 210, { steps: 8 })
+        await page.mouse.up()
+        const moved = await dockState(page)
+        t.eq([moved.collapsed, moved.top], [true, 380], '小按钮被拖走、仍折叠')
+        await page.close()
+    })
+
+    await t.test('存下来的位置超出当前窗口时夹回视口内', async () => {
+        const page = await open(browser, 'blog.html', { values: { 'site:blog.example.com': { collapsed: false, pos: { top: 5000, right: 9000 } } } })
+        await waitToc(page)
+        const st = await dockState(page)
+        t.assert(st.top <= 800 - 40 && st.right <= 1280 - 260 && st.right >= 0, `位置 ${JSON.stringify(st)} 应在视口内`)
         await page.close()
     })
 

@@ -3,7 +3,7 @@
 // @name:zh-CN   文章自动目录
 // @name:en      Article TOC — Floating Table of Contents for Any Long Article
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.06.17.4
+// @version      2025.06.18.5
 // @description  给任意长文章页面生成浮动目录：自动识别正文、按页面实际使用的标题层级生成嵌套目录，点击跳转。
 // @description:zh-CN  给任意长文章页面生成浮动目录：自动识别正文、按页面实际使用的标题层级生成嵌套目录，点击跳转。
 // @description:en  Adds a floating table of contents to any long article: detects the main content, builds a nested outline from the heading levels the page actually uses, and jumps to a section on click.
@@ -11,6 +11,8 @@
 // @match        http://*/*
 // @match        https://*/*
 // @noframes
+// @grant        GM_getValue
+// @grant        GM_setValue
 // @license      CC BY-NC-SA
 // @run-at       document-idle
 // @homepageURL  https://github.com/yilecoding/helper-scripts
@@ -43,6 +45,28 @@
 
     const HOST_ID = 'article-toc-host';
     const HEADING_SEL = 'h1, h2, h3, h4, h5, h6';
+
+    // =========================================================================
+    // 存储（GM，按站点）
+    // =========================================================================
+
+    /**
+     * 面板位置、折叠状态按站点（hostname）存：不同站点的版式不同，
+     * 在 A 站拖到左下角躲开它的悬浮按钮，不该影响 B 站。
+     */
+    const Store = (() => {
+        const siteKey = 'site:' + location.hostname;
+
+        function site() {
+            return { collapsed: false, pos: null, ...GM_getValue(siteKey, {}) };
+        }
+
+        function saveSite(patch) {
+            GM_setValue(siteKey, { ...site(), ...patch });
+        }
+
+        return { site, saveSite };
+    })();
 
     // =========================================================================
     // 正文与标题
@@ -204,22 +228,36 @@
 
     const STYLE = `
         :host { all: initial; }
-        .panel {
+        .dock {
             position: fixed; z-index: 2147483646;
-            width: ${CONFIG.panelWidth}px; max-height: 70vh;
-            display: flex; flex-direction: column;
-            box-sizing: border-box;
             font: 13px/1.5 system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
-            color: #1f2328; background: rgba(255, 255, 255, .96);
+            color: #1f2328;
+        }
+        .panel, .fab {
+            box-sizing: border-box;
+            background: rgba(255, 255, 255, .96);
             border: 1px solid rgba(0, 0, 0, .12); border-radius: 8px;
             box-shadow: 0 6px 24px rgba(0, 0, 0, .12);
         }
+        .panel { width: ${CONFIG.panelWidth}px; max-height: 70vh; display: flex; flex-direction: column; }
         .head {
             display: flex; align-items: center; gap: 6px;
-            padding: 6px 10px; border-bottom: 1px solid rgba(0, 0, 0, .08);
-            font-weight: 600; user-select: none;
+            padding: 6px 6px 6px 10px; border-bottom: 1px solid rgba(0, 0, 0, .08);
+            font-weight: 600; user-select: none; cursor: move; touch-action: none;
         }
-        .head .count { color: #8b949e; font-weight: 400; }
+        .head .count { color: #8b949e; font-weight: 400; flex: 1; }
+        .head button {
+            border: 0; background: none; color: inherit; font: inherit; cursor: pointer;
+            width: 22px; height: 22px; border-radius: 4px; padding: 0; line-height: 22px;
+        }
+        .head button:hover { background: rgba(0, 0, 0, .08); }
+        .fab {
+            display: none; padding: 6px 10px; color: inherit; font: inherit; font-weight: 600;
+            cursor: pointer; user-select: none; touch-action: none;
+        }
+        .dock.collapsed .panel { display: none; }
+        .dock.collapsed .fab { display: block; }
+        .dock.dragging { opacity: .85; }
         /* position: relative 让条目的 offsetTop 相对列表计算，见 setActive() */
         .list { position: relative; overflow: auto; padding: 4px 0; margin: 0; overscroll-behavior: contain; }
         ul { list-style: none; margin: 0; padding: 0; }
@@ -232,7 +270,9 @@
         .item:hover { background: rgba(0, 0, 0, .05); }
         .item.active { color: #0969da; border-left-color: #0969da; background: rgba(9, 105, 218, .08); font-weight: 600; }
         @media (prefers-color-scheme: dark) {
-            .panel { color: #e6edf3; background: rgba(22, 27, 34, .96); border-color: rgba(255, 255, 255, .15); }
+            .dock { color: #e6edf3; }
+            .panel, .fab { background: rgba(22, 27, 34, .96); border-color: rgba(255, 255, 255, .15); }
+            .head button:hover { background: rgba(255, 255, 255, .1); }
             .head { border-color: rgba(255, 255, 255, .1); }
             .item:hover { background: rgba(255, 255, 255, .08); }
             .item.active { color: #58a6ff; border-left-color: #58a6ff; background: rgba(88, 166, 255, .12); }
@@ -242,6 +282,7 @@
     const Panel = (() => {
         let host = null;
         let shadow = null;
+        let dock = null;
 
         function mount() {
             if (host && host.isConnected) return;
@@ -252,18 +293,100 @@
             // open 模式只是为了调试和测试能看到内部；样式隔离 open/closed 一样
             shadow = host.attachShadow({ mode: 'open' });
             shadow.innerHTML = `<style>${STYLE}</style>
-                <div class="panel" part="panel">
-                    <div class="head"><span>目录</span><span class="count"></span></div>
-                    <div class="list"></div>
+                <div class="dock">
+                    <div class="panel">
+                        <div class="head">
+                            <span>目录</span><span class="count"></span>
+                            <button type="button" class="collapse" title="折叠目录">−</button>
+                        </div>
+                        <div class="list"></div>
+                    </div>
+                    <div class="fab" role="button" tabindex="0" title="展开目录（可拖动）">☰ 目录</div>
                 </div>`;
-            const panel = shadow.querySelector('.panel');
-            panel.style.top = CONFIG.panelTop + 'px';
-            panel.style.right = CONFIG.panelRight + 'px';
+            dock = shadow.querySelector('.dock');
+            const site = Store.site();
+            dock.classList.toggle('collapsed', !!site.collapsed);
+            place(site.pos);
+
+            shadow.querySelector('.collapse').addEventListener('click', () => setCollapsed(true));
+            const fab = shadow.querySelector('.fab');
+            fab.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setCollapsed(false); }
+            });
+            draggable(shadow.querySelector('.head'), null);
+            draggable(fab, () => setCollapsed(false));
+            window.addEventListener('resize', onResize, { passive: true });
+        }
+
+        function onResize() {
+            if (dock) place(currentPos());
+        }
+
+        function currentPos() {
+            return { top: parseFloat(dock.style.top), right: parseFloat(dock.style.right) };
+        }
+
+        /**
+         * 位置存「距右边、距顶部」而不是 left/top：面板本来就靠右，
+         * 换个窗口宽度（或者 Retina 外接屏来回切）它应该还贴着右边，
+         * 存 left 的话窗口变窄就跑出屏幕、变宽就漂到中间。
+         * 每次落位都夹到视口内，防止存下来的位置在小窗口里看不见、也拖不回来。
+         */
+        function place(pos) {
+            const p = pos || { top: CONFIG.panelTop, right: CONFIG.panelRight };
+            const rect = dock.getBoundingClientRect();
+            const w = rect.width || CONFIG.panelWidth;
+            const maxRight = Math.max(0, window.innerWidth - w);
+            const maxTop = Math.max(0, window.innerHeight - 40);
+            dock.style.right = Math.round(Math.min(Math.max(0, p.right), maxRight)) + 'px';
+            dock.style.top = Math.round(Math.min(Math.max(0, p.top), maxTop)) + 'px';
+        }
+
+        /**
+         * 拖动。按下后移动超过 4px 才算拖动，否则当成点击（onTap）——
+         * 折叠后的小按钮既要能点开、又要能拖走，两件事靠这个阈值区分。
+         * 用 pointer capture：拖快了指针离开元素也不会丢事件。
+         */
+        function draggable(handle, onTap) {
+            handle.addEventListener('pointerdown', (e) => {
+                if (e.button !== 0 || e.target.closest('button')) return;
+                const start = { x: e.clientX, y: e.clientY, ...currentPos() };
+                let moved = false;
+                handle.setPointerCapture(e.pointerId);
+                const move = (ev) => {
+                    const dx = ev.clientX - start.x;
+                    const dy = ev.clientY - start.y;
+                    if (!moved && Math.hypot(dx, dy) < 4) return;
+                    moved = true;
+                    dock.classList.add('dragging');
+                    place({ top: start.top + dy, right: start.right - dx });
+                };
+                const up = () => {
+                    handle.removeEventListener('pointermove', move);
+                    handle.removeEventListener('pointerup', up);
+                    handle.removeEventListener('pointercancel', up);
+                    dock.classList.remove('dragging');
+                    if (moved) Store.saveSite({ pos: currentPos() });
+                    else if (onTap) onTap();
+                };
+                handle.addEventListener('pointermove', move);
+                handle.addEventListener('pointerup', up);
+                handle.addEventListener('pointercancel', up);
+            });
+        }
+
+        function setCollapsed(collapsed) {
+            dock.classList.toggle('collapsed', collapsed);
+            Store.saveSite({ collapsed });
+            // 宽度变了（面板 ↔ 小按钮），重新夹一次，免得展开后右边出界
+            place(currentPos());
+            if (!collapsed) reveal();
         }
 
         function unmount() {
             if (host) host.remove();
-            host = shadow = null;
+            window.removeEventListener('resize', onResize);
+            host = shadow = dock = null;
         }
 
         function renderList(nodes) {
@@ -313,6 +436,14 @@
             if (!btn) return;
             btn.classList.add('active');
             btn.setAttribute('aria-current', 'true');
+            reveal();
+        }
+
+        /** 折叠时列表 display:none，量不出尺寸；所以展开时要再调一次。 */
+        function reveal() {
+            const list = shadow.querySelector('.list');
+            const btn = list.querySelector('.item.active');
+            if (!btn || !list.clientHeight) return;
             const top = btn.offsetTop;
             const bottom = top + btn.offsetHeight;
             if (top < list.scrollTop || bottom > list.scrollTop + list.clientHeight) {
