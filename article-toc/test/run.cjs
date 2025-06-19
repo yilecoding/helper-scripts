@@ -129,6 +129,26 @@ async function nextFrames(page) {
     await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))))
 }
 
+/** 目录项文字列表（没有目录时为 null）。 */
+function itemTexts(page) {
+    return page.evaluate(() => {
+        const host = document.getElementById('article-toc-host')
+        return host ? Array.from(host.shadowRoot.querySelectorAll('.item')).map((b) => b.textContent) : null
+    })
+}
+
+/** 轮询直到目录变成期望的样子（重建有防抖，不能立刻断言）。 */
+async function waitItems(page, expected, timeout = 3000) {
+    const end = Date.now() + timeout
+    let got
+    while (Date.now() < end) {
+        got = await itemTexts(page)
+        if (JSON.stringify(got) === JSON.stringify(expected)) return
+        await page.waitForTimeout(50)
+    }
+    t.eq(got, expected, '目录没有更新到期望的样子')
+}
+
 /** 等脚本跑完（load 之后），用于断言「没有目录」这种否定结论前。 */
 async function settle(page, ms = 300) {
     await page.waitForLoadState('load')
@@ -356,6 +376,44 @@ async function main() {
         const page = await open(browser, 'blog.html', { values: { settings: { progressBar: false } } })
         await waitToc(page)
         t.eq((await progressState(page)).shown, false)
+        await page.close()
+    })
+
+    await t.test('SPA：pushState 换页后目录更新，后退（popstate）再换回来', async () => {
+        const page = await open(browser, 'docs/a', { fallback: 'spa.html' })
+        await waitToc(page)
+        t.eq(await itemTexts(page), ['A 第一节', 'A 第二节', 'A 第三节'])
+        await page.evaluate(() => window.go('/docs/b'))
+        await waitItems(page, ['B 概览', 'B 安装', 'B 配置', 'B 常见问题'])
+        await page.goBack()
+        await waitItems(page, ['A 第一节', 'A 第二节', 'A 第三节'])
+        t.eq(h.errors(page).map(String), [])
+        await page.close()
+    })
+
+    await t.test('SPA：内容晚于路由到达、标题变少时收起目录、复用元素只改文字', async () => {
+        const page = await open(browser, 'docs/a', { fallback: 'spa.html' })
+        await waitToc(page)
+        await page.evaluate(() => window.goLater('/docs/b'))
+        await waitItems(page, ['B 概览', 'B 安装', 'B 配置', 'B 常见问题'])
+        await page.evaluate(() => window.go('/docs/short'))
+        await waitItems(page, null)
+        await page.evaluate(() => window.go('/docs/a'))
+        await waitItems(page, ['A 第一节', 'A 第二节', 'A 第三节'])
+        await page.evaluate(() => window.retitle())
+        await waitItems(page, ['改名 1', '改名 2', '改名 3'])
+        await page.close()
+    })
+
+    await t.test('SPA：只改 hash 的 replaceState（滚动监听库常这么干）不触发重建', async () => {
+        const page = await open(browser, 'docs/a', { fallback: 'spa.html' })
+        await waitToc(page)
+        await page.evaluate(() => {
+            window.__list = document.getElementById('article-toc-host').shadowRoot.querySelector('.list > ul')
+            for (let i = 0; i < 5; i++) history.replaceState(null, '', '#sec' + i)
+        })
+        await page.waitForTimeout(800)
+        t.eq(await page.evaluate(() => window.__list === document.getElementById('article-toc-host').shadowRoot.querySelector('.list > ul')), true, '目录列表没有被重绘')
         await page.close()
     })
 

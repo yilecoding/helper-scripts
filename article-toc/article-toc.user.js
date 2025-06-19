@@ -3,7 +3,7 @@
 // @name:zh-CN   文章自动目录
 // @name:en      Article TOC — Floating Table of Contents for Any Long Article
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.06.18.6
+// @version      2025.06.19.7
 // @description  给任意长文章页面生成浮动目录：自动识别正文、按页面实际使用的标题层级生成嵌套目录，点击跳转。
 // @description:zh-CN  给任意长文章页面生成浮动目录：自动识别正文、按页面实际使用的标题层级生成嵌套目录，点击跳转。
 // @description:en  Adds a floating table of contents to any long article: detects the main content, builds a nested outline from the heading levels the page actually uses, and jumps to a section on click.
@@ -13,6 +13,7 @@
 // @noframes
 // @grant        GM_getValue
 // @grant        GM_setValue
+// @grant        unsafeWindow
 // @license      CC BY-NC-SA
 // @run-at       document-idle
 // @homepageURL  https://github.com/yilecoding/helper-scripts
@@ -41,6 +42,8 @@
         panelRight: 16,         // 默认位置：距视口右侧
         maxTextLength: 80,      // 目录项文字截断长度
         jumpGap: 8,             // 跳转后标题距顶栏底部的留白
+        rebuildDebounce: 400,   // DOM / 路由变化后等这么久再重建目录
+        rebuildMaxWait: 2000,   // 持续变化时最多拖这么久也要重建一次
     };
 
     const HOST_ID = 'article-toc-host';
@@ -698,31 +701,143 @@
     // 启动
     // =========================================================================
 
-    function build() {
+    let current = null;   // { root, tree }
+
+    /** 标题序列没变（同一批元素、同样的文字）就不重绘，免得目录列表的滚动位置被重置。 */
+    function sameHeadings(a, b) {
+        if (!a || a.length !== b.length) return false;
+        return a.every((h, i) => h.el === b[i].el && h.text === b[i].text && h.rawLevel === b[i].rawLevel);
+    }
+
+    function build(reason) {
         const { root, via } = Content.findRoot();
         const headings = Content.collect(root);
         if (headings.length < CONFIG.minHeadings) {
+            if (current) console.log(TAG, `标题只剩 ${headings.length} 个，收起目录（${reason}）`);
+            current = null;
             Spy.stop();
             Panel.unmount();
-            console.log(TAG, `标题只有 ${headings.length} 个，不显示目录`);
             return;
         }
+        if (current && current.root === root && sameHeadings(current.tree.flat, headings)) return;
         const tree = buildTree(headings);
+        current = { root, tree };
         Panel.render(tree, (node) => {
             Spy.lockTo(node.index);
             Layout.scrollToEl(node.el);
         });
         Spy.start(tree, root);
-        console.log(TAG, `已生成目录：${headings.length} 个标题，正文容器来自 ${via}`);
+        console.log(TAG, `已生成目录：${headings.length} 个标题，正文容器来自 ${via}（${reason}）`);
     }
+
+    // =========================================================================
+    // SPA：路由变化 / 正文大变化 → 防抖重建
+    // =========================================================================
+
+    const Watcher = (() => {
+        const ROUTE_EVENT = 'article-toc:route';
+        let timer = 0;
+        let firstAt = 0;
+        let lastRoute = routeKey();
+
+        /**
+         * 只看 path + query，不看 hash：文档站的滚动监听库会边滚边
+         * replaceState('#当前小节')，把 hash 也算进来的话滚一下就重建一次。
+         */
+        function routeKey() {
+            return location.pathname + location.search;
+        }
+
+        /** 防抖 + 最长等待：页面持续在变（直播文字、轮播）时不至于永远等不到重建。 */
+        function request(reason) {
+            const now = performance.now();
+            if (!timer) firstAt = now;
+            clearTimeout(timer);
+            const wait = Math.max(0, Math.min(CONFIG.rebuildDebounce, firstAt + CONFIG.rebuildMaxWait - now));
+            timer = setTimeout(() => {
+                timer = 0;
+                try {
+                    build(reason);
+                } catch (e) {
+                    console.error(TAG, '重建目录失败', e);
+                }
+            }, wait);
+        }
+
+        function checkRoute() {
+            const key = routeKey();
+            if (key === lastRoute) return false;
+            lastRoute = key;
+            request('路由变化');
+            return true;
+        }
+
+        /**
+         * 包一层 pushState/replaceState，调用后发一个 DOM 事件。
+         * 改的是页面的 history（unsafeWindow）：沙箱里的 window.history 和页面的
+         * 不一定是同一个 JS 对象，改了沙箱那份，页面路由调的照样是原版。
+         * 事件走 DOM，不管脚本跑在哪个 world 都收得到。
+         * 这一层在某些环境下会失效（隔离 world 下改不动页面对象），
+         * 所以下面 MutationObserver 里还会再比一次 URL 兜底。
+         */
+        function hookHistory() {
+            try {
+                const target = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
+                const hist = target.history;
+                for (const name of ['pushState', 'replaceState']) {
+                    const orig = hist[name];
+                    if (typeof orig !== 'function' || orig.__articleToc) continue;
+                    const wrapped = function (...args) {
+                        const ret = orig.apply(this, args);
+                        window.dispatchEvent(new Event(ROUTE_EVENT));
+                        return ret;
+                    };
+                    wrapped.__articleToc = true;
+                    hist[name] = wrapped;
+                }
+            } catch (e) {
+                console.warn(TAG, 'history 挂钩失败，只靠 DOM 变化兜底', e);
+            }
+            window.addEventListener(ROUTE_EVENT, checkRoute);
+            window.addEventListener('popstate', checkRoute);
+        }
+
+        /** 这个节点的增删/改动会不会影响目录。 */
+        function touchesHeadings(node) {
+            if (node.nodeType !== 1) return false;
+            return node.matches(HEADING_SEL) || !!node.querySelector(HEADING_SEL);
+        }
+
+        function onMutations(records) {
+            if (checkRoute()) return;
+            if (current && !current.root.isConnected) return request('正文容器被替换');
+            for (const r of records) {
+                // 框架复用 <h2> 只换文字：变化发生在标题内部
+                const el = r.target.nodeType === 1 ? r.target : r.target.parentElement;
+                if (el && el.closest(HEADING_SEL)) return request('标题文字变化');
+                for (const n of r.addedNodes) if (touchesHeadings(n)) return request('标题增加');
+                for (const n of r.removedNodes) if (touchesHeadings(n)) return request('标题移除');
+            }
+        }
+
+        function start() {
+            hookHistory();
+            // 面板挂在 <html> 下、内容在 shadow DOM 里，观察 body 看不到自己的变化，不会自激
+            new MutationObserver(onMutations).observe(document.body, { childList: true, subtree: true, characterData: true });
+        }
+
+        return { start };
+    })();
 
     function boot() {
         if (!document.body || document.getElementById(HOST_ID)) return;
         try {
-            build();
+            build('页面加载');
         } catch (e) {
             console.error(TAG, '启动失败', e);
         }
+        // 首屏没有目录也要监听：SPA 的正文常常在 load 之后才渲染出来
+        Watcher.start();
     }
 
     if (document.readyState === 'loading') {
