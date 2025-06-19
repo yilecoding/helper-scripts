@@ -3,16 +3,18 @@
 // @name:zh-CN   文章自动目录
 // @name:en      Article TOC — Floating Table of Contents for Any Long Article
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.06.19.7
-// @description  给任意长文章页面生成浮动目录：自动识别正文、按页面实际使用的标题层级生成嵌套目录，点击跳转。
-// @description:zh-CN  给任意长文章页面生成浮动目录：自动识别正文、按页面实际使用的标题层级生成嵌套目录，点击跳转。
-// @description:en  Adds a floating table of contents to any long article: detects the main content, builds a nested outline from the heading levels the page actually uses, and jumps to a section on click.
+// @version      2025.06.19.8
+// @description  给任意长文章页面生成浮动目录：自动识别正文（排除侧栏、评论区），按页面实际使用的标题层级生成嵌套目录；滚动时高亮当前章节，点击平滑跳转并避开顶部固定导航栏；顶部阅读进度条；可折叠、可拖动，按站点记住；支持 SPA 换页自动更新。可选识别「整段加粗」的伪标题。
+// @description:zh-CN  给任意长文章页面生成浮动目录：自动识别正文（排除侧栏、评论区），按页面实际使用的标题层级生成嵌套目录；滚动时高亮当前章节，点击平滑跳转并避开顶部固定导航栏；顶部阅读进度条；可折叠、可拖动，按站点记住；支持 SPA 换页自动更新。可选识别「整段加粗」的伪标题。
+// @description:en  Adds a floating table of contents to any long article: detects the main content (skipping sidebars and comments), builds a nested outline from the heading levels the page actually uses, highlights the section you are reading, smooth-scrolls to a section on click without hiding it under a fixed header, shows a reading progress bar, can be collapsed and dragged (remembered per site), and follows SPA route changes. Optional detection of bold-paragraph pseudo headings.
 // @author       壹樂（V：ita1125）
 // @match        http://*/*
 // @match        https://*/*
 // @noframes
 // @grant        GM_getValue
 // @grant        GM_setValue
+// @grant        GM_registerMenuCommand
+// @grant        GM_unregisterMenuCommand
 // @grant        unsafeWindow
 // @license      CC BY-NC-SA
 // @run-at       document-idle
@@ -42,6 +44,7 @@
         panelRight: 16,         // 默认位置：距视口右侧
         maxTextLength: 80,      // 目录项文字截断长度
         jumpGap: 8,             // 跳转后标题距顶栏底部的留白
+        pseudoMaxLength: 40,    // 伪标题（整段加粗）最长字数，再长就是强调句了
         rebuildDebounce: 400,   // DOM / 路由变化后等这么久再重建目录
         rebuildMaxWait: 2000,   // 持续变化时最多拖这么久也要重建一次
     };
@@ -61,7 +64,7 @@
         const siteKey = 'site:' + location.hostname;
 
         function site() {
-            return { collapsed: false, pos: null, ...GM_getValue(siteKey, {}) };
+            return { collapsed: false, pos: null, hidden: false, pseudo: false, ...GM_getValue(siteKey, {}) };
         }
 
         function saveSite(patch) {
@@ -156,14 +159,46 @@
             return text.replace(/\s+/g, ' ').replace(/^[#¶§\s]+|[#¶§\s]+$/g, '').trim();
         }
 
+        let pseudo = false;
+
+        /**
+         * 伪标题：整段只有一个 <strong>/<b> 的 <p>。有些站点（公众号、
+         * 富文本编辑器出来的文章）小标题全是这么写的，一个 h 标签都没有。
+         * 默认关：普通文章里整段加粗多半是强调句，不是标题，误判比漏判更烦人。
+         * 判定从严：段落里不能有加粗以外的文字、不能以句号类标点结尾、不能太长，
+         * 引用块和列表里的不算。
+         */
+        function isPseudoHeading(p) {
+            if (p.children.length !== 1) return false;
+            const strong = p.firstElementChild;
+            if (strong.tagName !== 'STRONG' && strong.tagName !== 'B') return false;
+            const text = (p.textContent || '').replace(/\s+/g, ' ').trim();
+            if (text !== (strong.textContent || '').replace(/\s+/g, ' ').trim()) return false;
+            if (!text || text.length > CONFIG.pseudoMaxLength) return false;
+            if (/[。！？；…!?;]$/.test(text)) return false;
+            return !p.closest('blockquote, li, td, th');
+        }
+
+        /** 伪标题当成比 h6 还低一级（7），归一化时自然排在真标题下面。 */
         function collect(root) {
             const out = [];
-            for (const el of root.querySelectorAll(HEADING_SEL)) {
+            for (const el of root.querySelectorAll(pseudo ? HEADING_SEL + ', p' : HEADING_SEL)) {
+                const isP = el.tagName === 'P';
+                if (isP && !isPseudoHeading(el)) continue;
                 if (isExcluded(el, root) || !isVisible(el)) continue;
                 const text = headingText(el);
-                if (text) out.push({ el, rawLevel: Number(el.tagName[1]), text });
+                if (text) out.push({ el, rawLevel: isP ? 7 : Number(el.tagName[1]), text });
             }
             return out;
+        }
+
+        function setPseudo(on) {
+            pseudo = !!on;
+        }
+
+        /** Watcher 判断一次 DOM 变化是否「碰到了标题」用的选择器。 */
+        function watchSelector() {
+            return pseudo ? HEADING_SEL + ', p > strong, p > b' : HEADING_SEL;
         }
 
         /**
@@ -206,7 +241,7 @@
             return { root: inferRoot(), via: '标题密度推断' };
         }
 
-        return { findRoot, collect };
+        return { findRoot, collect, setPseudo, watchSelector };
     })();
 
     /**
@@ -270,6 +305,7 @@
         .dock.collapsed .panel { display: none; }
         .dock.collapsed .fab { display: block; }
         .dock.dragging { opacity: .85; }
+        .dock[hidden] { display: none; }
         /* 进度条不接收指针事件：既不挡页面顶栏的点击，也不会被 topInset() 当成顶栏 */
         .progress {
             position: fixed; z-index: 2147483647; top: 0; left: 0; right: 0; height: 3px;
@@ -331,6 +367,7 @@
             shadow.querySelector('.progress').hidden = !Store.settings().progressBar;
             const site = Store.site();
             dock.classList.toggle('collapsed', !!site.collapsed);
+            dock.hidden = !!site.hidden;
             place(site.pos);
 
             shadow.querySelector('.collapse').addEventListener('click', () => setCollapsed(true));
@@ -486,7 +523,11 @@
             if (shadow) shadow.querySelector('.progress').hidden = !on;
         }
 
-        return { render, unmount, setActive, setProgress, showProgress };
+        function setHidden(hidden) {
+            if (dock) dock.hidden = hidden;
+        }
+
+        return { render, unmount, setActive, setProgress, showProgress, setHidden };
     })();
 
     // =========================================================================
@@ -710,6 +751,7 @@
     }
 
     function build(reason) {
+        Content.setPseudo(Store.site().pseudo);
         const { root, via } = Content.findRoot();
         const headings = Content.collect(root);
         if (headings.length < CONFIG.minHeadings) {
@@ -803,20 +845,21 @@
         }
 
         /** 这个节点的增删/改动会不会影响目录。 */
-        function touchesHeadings(node) {
+        function touchesHeadings(node, sel) {
             if (node.nodeType !== 1) return false;
-            return node.matches(HEADING_SEL) || !!node.querySelector(HEADING_SEL);
+            return node.matches(sel) || !!node.querySelector(sel);
         }
 
         function onMutations(records) {
             if (checkRoute()) return;
             if (current && !current.root.isConnected) return request('正文容器被替换');
+            const sel = Content.watchSelector();
             for (const r of records) {
                 // 框架复用 <h2> 只换文字：变化发生在标题内部
                 const el = r.target.nodeType === 1 ? r.target : r.target.parentElement;
-                if (el && el.closest(HEADING_SEL)) return request('标题文字变化');
-                for (const n of r.addedNodes) if (touchesHeadings(n)) return request('标题增加');
-                for (const n of r.removedNodes) if (touchesHeadings(n)) return request('标题移除');
+                if (el && el.closest(sel)) return request('标题文字变化');
+                for (const n of r.addedNodes) if (touchesHeadings(n, sel)) return request('标题增加');
+                for (const n of r.removedNodes) if (touchesHeadings(n, sel)) return request('标题移除');
             }
         }
 
@@ -829,6 +872,56 @@
         return { start };
     })();
 
+    // =========================================================================
+    // 菜单
+    // =========================================================================
+
+    /**
+     * 菜单文字带当前状态（「隐藏目录」/「显示目录」），切换后注销重注册。
+     * 没有 GM_unregisterMenuCommand 的管理器上重注册会越点越多，
+     * 那种情况退化成固定文字、只注册一次。
+     */
+    const Menu = (() => {
+        const canUnregister = typeof GM_unregisterMenuCommand === 'function';
+        let ids = [];
+
+        function toggleHidden() {
+            const hidden = !Store.site().hidden;
+            Store.saveSite({ hidden });
+            Panel.setHidden(hidden);
+            refresh();
+        }
+
+        function toggleProgress() {
+            const on = !Store.settings().progressBar;
+            Store.saveSettings({ progressBar: on });
+            Panel.showProgress(on);
+            refresh();
+        }
+
+        function togglePseudo() {
+            Store.saveSite({ pseudo: !Store.site().pseudo });
+            build('切换伪标题识别');
+            refresh();
+        }
+
+        function refresh() {
+            if (typeof GM_registerMenuCommand !== 'function') return;
+            if (ids.length && !canUnregister) return;
+            ids.forEach((id) => GM_unregisterMenuCommand(id));
+            const site = Store.site();
+            const settings = Store.settings();
+            const label = (on, a, b, fixed) => (canUnregister ? (on ? a : b) : fixed);
+            ids = [
+                GM_registerMenuCommand(label(site.hidden, '显示目录（本站）', '隐藏目录（本站）', '显示/隐藏目录（本站）'), toggleHidden),
+                GM_registerMenuCommand(label(settings.progressBar, '关闭阅读进度条', '开启阅读进度条', '开关阅读进度条'), toggleProgress),
+                GM_registerMenuCommand(label(site.pseudo, '关闭伪标题识别（本站）', '开启伪标题识别（本站）', '开关伪标题识别（本站）'), togglePseudo),
+            ];
+        }
+
+        return { refresh };
+    })();
+
     function boot() {
         if (!document.body || document.getElementById(HOST_ID)) return;
         try {
@@ -838,6 +931,7 @@
         }
         // 首屏没有目录也要监听：SPA 的正文常常在 load 之后才渲染出来
         Watcher.start();
+        Menu.refresh();
     }
 
     if (document.readyState === 'loading') {

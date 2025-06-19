@@ -417,6 +417,55 @@ async function main() {
         await page.close()
     })
 
+    await t.test('菜单：隐藏/显示目录（按站点记住），文字随状态变化', async () => {
+        const page = await open(browser, 'blog.html')
+        await waitToc(page)
+        t.eq((await h.gm(page)).menu, ['隐藏目录（本站）', '关闭阅读进度条', '开启伪标题识别（本站）'])
+        await h.menu(page, '隐藏目录')
+        const dockHidden = () => page.evaluate(() => getComputedStyle(
+            document.getElementById('article-toc-host').shadowRoot.querySelector('.dock')).display === 'none')
+        t.eq(await dockHidden(), true, '隐藏后面板不显示')
+        t.eq((await h.gm(page)).menu[0], '显示目录（本站）')
+        await page.reload()
+        await waitToc(page)
+        t.eq(await dockHidden(), true, '刷新后仍隐藏')
+        await h.menu(page, '显示目录')
+        t.eq(await dockHidden(), false, '重新显示')
+        await page.close()
+    })
+
+    await t.test('菜单：开关阅读进度条（全局设置）', async () => {
+        const page = await open(browser, 'blog.html')
+        await waitToc(page)
+        t.eq((await progressState(page)).shown, true)
+        await h.menu(page, '关闭阅读进度条')
+        t.eq((await progressState(page)).shown, false)
+        t.eq(await page.evaluate(() => JSON.parse(localStorage.getItem('__gm:settings')).progressBar), false)
+        t.eq((await h.gm(page)).menu[1], '开启阅读进度条')
+        await h.menu(page, '开启阅读进度条')
+        t.eq((await progressState(page)).shown, true)
+        await page.close()
+    })
+
+    await t.test('伪标题识别：默认关；菜单打开后整段加粗的小标题进目录，强调句/引用不算', async () => {
+        const page = await open(browser, 'pseudo.html')
+        await settle(page)
+        t.eq(await hasToc(page), false, '只有两个真标题，默认不显示')
+        await h.menu(page, '开启伪标题识别')
+        await waitToc(page)
+        t.eq(await readTree(page), [
+            { text: '一、背景', children: [{ text: '1. 现状' }, { text: '2. 问题' }] },
+            { text: '二、方案', children: [{ text: '1. 设计' }] },
+        ])
+        await page.reload()
+        await waitToc(page)
+        t.eq((await itemTexts(page)).length, 5, '按站点记住，刷新后仍开着')
+        await h.menu(page, '关闭伪标题识别')
+        await waitItems(page, null)
+        t.eq(h.errors(page).map(String), [])
+        await page.close()
+    })
+
     await t.test('少于 3 个标题不显示目录', async () => {
         const page = await open(browser, 'few.html')
         await settle(page)
