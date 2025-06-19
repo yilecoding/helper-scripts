@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>结尾几节很短 + 标题在 main 的 header 里</title>
+<style>
+    body { margin: 0; font: 16px/1.7 sans-serif; }
+    .long { height: 1200px; }
+    .short { height: 60px; }
+</style>
+</head>
+<body>
+<main>
+    <!-- 很多主题把文章标题放在 <main><header> 里，而不是 <article><header> -->
+    <header class="post-header"><h1>文章标题</h1></header>
+    <h2>第一节</h2><p class="long"></p>
+    <h2>第二节</h2><p class="long"></p>
+    <h2>第三节</h2><p class="short"></p>
+    <h2>第四节</h2><p class="short"></p>
+    <h2>第五节</h2><p class="short"></p>
+</main>
+</body>
+</html>

@@ -466,6 +466,44 @@ async function main() {
         await page.close()
     })
 
+    await t.test('边界：<main><header> 里的文章标题不被当成站点头排除', async () => {
+        const page = await open(browser, 'bottom.html')
+        await waitToc(page)
+        t.eq((await itemTexts(page))[0], '文章标题')
+        await page.close()
+    })
+
+    await t.test('边界：结尾几节太短、滚不到阅读线 —— 点哪节高亮哪节，滚到底高亮最后一节', async () => {
+        const page = await open(browser, 'bottom.html')
+        await waitToc(page)
+        await clickItem(page, '第四节')
+        await waitScrollIdle(page)
+        await page.waitForTimeout(400)   // 等跳转锁释放，看重新计算后的结果
+        t.eq(await activeItem(page), '第四节', '点了第四节')
+        await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'instant' }))
+        await nextFrames(page)
+        await page.evaluate(() => window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'instant' }))
+        await nextFrames(page)
+        t.eq(await activeItem(page), '第五节', '滚到底')
+        await page.close()
+    })
+
+    await t.test('边界：正文在内层滚动容器里（window 不滚）—— 跳转、高亮、进度都对', async () => {
+        const page = await open(browser, 'inner.html')
+        await waitToc(page)
+        await clickItem(page, '第四节')
+        await page.waitForFunction(() => {
+            const el = Array.from(document.querySelectorAll('h2')).find((h) => h.textContent === '第四节')
+            return Math.abs(el.getBoundingClientRect().top - 58) < 3
+        }, null, { timeout: 3000 })
+        await page.waitForTimeout(400)
+        t.eq(await page.evaluate(() => window.scrollY), 0, 'window 没动')
+        t.eq(await activeItem(page), '第四节')
+        const p = (await progressState(page)).ratio
+        t.assert(p > 0.5 && p < 1, `进度 ${p}`)
+        await page.close()
+    })
+
     await t.test('少于 3 个标题不显示目录', async () => {
         const page = await open(browser, 'few.html')
         await settle(page)

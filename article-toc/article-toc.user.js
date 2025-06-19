@@ -3,7 +3,7 @@
 // @name:zh-CN   文章自动目录
 // @name:en      Article TOC — Floating Table of Contents for Any Long Article
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.06.19.8
+// @version      2025.06.19.9
 // @description  给任意长文章页面生成浮动目录：自动识别正文（排除侧栏、评论区），按页面实际使用的标题层级生成嵌套目录；滚动时高亮当前章节，点击平滑跳转并避开顶部固定导航栏；顶部阅读进度条；可折叠、可拖动，按站点记住；支持 SPA 换页自动更新。可选识别「整段加粗」的伪标题。
 // @description:zh-CN  给任意长文章页面生成浮动目录：自动识别正文（排除侧栏、评论区），按页面实际使用的标题层级生成嵌套目录；滚动时高亮当前章节，点击平滑跳转并避开顶部固定导航栏；顶部阅读进度条；可折叠、可拖动，按站点记住；支持 SPA 换页自动更新。可选识别「整段加粗」的伪标题。
 // @description:en  Adds a floating table of contents to any long article: detects the main content (skipping sidebars and comments), builds a nested outline from the heading levels the page actually uses, highlights the section you are reading, smooth-scrolls to a section on click without hiding it under a fixed header, shows a reading progress bar, can be collapsed and dragged (remembered per site), and follows SPA route changes. Optional detection of bold-paragraph pseudo headings.
@@ -129,8 +129,9 @@
         function isExcluded(el, root) {
             for (let a = el.parentElement; a && a !== root; a = a.parentElement) {
                 if (a.matches(EXCLUDE_SEL)) return true;
-                // <header> 只排除站点头；<article><header><h1>标题</h1></header> 是正文的一部分
-                if (a.tagName === 'HEADER' && !a.closest('article')) return true;
+                // <header> 只排除站点头。文章自己的 header 不能排除：
+                // 既有 <article><header><h1>，也有不少主题写成 <main><header class="post-header"><h1>
+                if (a.tagName === 'HEADER' && !a.closest('article, main, [role="main"]')) return true;
                 if (EXCLUDE_NAME.test(nameOf(a))) return true;
             }
             return false;
@@ -646,6 +647,7 @@
         let locked = false;
         let lockStart = 0;
         let lockTimer = 0;
+        let pinned = -1;     // 最近一次点击的项，见 compute() 里「滚到底」的处理
 
         /** 顶栏高度要读一圈 computed style，缓存 500ms，不必每帧都算。 */
         function readingLine() {
@@ -669,7 +671,32 @@
                 if (node.el.getBoundingClientRect().top <= y) index = node.index;
                 else break;
             }
+            /*
+             * 滚到底了：结尾几节如果很短，标题永远到不了阅读线，按上面的规则
+             * 它们一辈子不会高亮 —— 点了「第四节」，跳转一停高亮又退回上一节。
+             * 所以到底时改成：刚点过的那节还在视口里就高亮它，否则高亮视口里最后一个标题。
+             */
+            if (atBottom()) {
+                const bottom = scroller ? scroller.getBoundingClientRect().bottom : window.innerHeight;
+                const inView = (n) => {
+                    const top = n.el.getBoundingClientRect().top;
+                    return top >= 0 && top < bottom;
+                };
+                if (pinned >= 0 && tree.flat[pinned] && inView(tree.flat[pinned])) {
+                    index = pinned;
+                } else {
+                    for (const node of tree.flat) if (node.index > index && inView(node)) index = node.index;
+                }
+            } else {
+                pinned = -1;
+            }
             Panel.setActive(index);
+        }
+
+        function atBottom() {
+            const el = scroller || document.scrollingElement || document.documentElement;
+            // 整页一屏就放得下（根本滚不动）不算「到底」，否则一打开就高亮最后一节
+            return el.scrollHeight > el.clientHeight + 2 && el.scrollTop + el.clientHeight >= el.scrollHeight - 2;
         }
 
         /**
@@ -699,6 +726,7 @@
          * 不锁的话高亮会一路闪过去。滚动停下 150ms 后解锁，最多锁 3 秒。
          */
         function lockTo(index) {
+            pinned = index;
             Panel.setActive(index);
             locked = true;
             lockStart = performance.now();
