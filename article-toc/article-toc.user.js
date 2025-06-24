@@ -3,7 +3,7 @@
 // @name:zh-CN   文章自动目录
 // @name:en      Article TOC — Floating Table of Contents for Any Long Article
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.06.19.9
+// @version      2025.06.24.10
 // @description  给任意长文章页面生成浮动目录：自动识别正文（排除侧栏、评论区），按页面实际使用的标题层级生成嵌套目录；滚动时高亮当前章节，点击平滑跳转并避开顶部固定导航栏；顶部阅读进度条；可折叠、可拖动，按站点记住；支持 SPA 换页自动更新。可选识别「整段加粗」的伪标题。
 // @description:zh-CN  给任意长文章页面生成浮动目录：自动识别正文（排除侧栏、评论区），按页面实际使用的标题层级生成嵌套目录；滚动时高亮当前章节，点击平滑跳转并避开顶部固定导航栏；顶部阅读进度条；可折叠、可拖动，按站点记住；支持 SPA 换页自动更新。可选识别「整段加粗」的伪标题。
 // @description:en  Adds a floating table of contents to any long article: detects the main content (skipping sidebars and comments), builds a nested outline from the heading levels the page actually uses, highlights the section you are reading, smooth-scrolls to a section on click without hiding it under a fixed header, shows a reading progress bar, can be collapsed and dragged (remembered per site), and follows SPA route changes. Optional detection of bold-paragraph pseudo headings.
@@ -381,8 +381,13 @@
             window.addEventListener('resize', onResize, { passive: true });
         }
 
+        /**
+         * 窗口缩放时从「存下来的位置」重新落位，而不是从当前位置：
+         * 窗口缩小时面板被夹到边上，放大回来应该回到原处，
+         * 用当前位置的话每缩一次就永久往里挪一点。
+         */
         function onResize() {
-            if (dock) place(currentPos());
+            if (dock) place(Store.site().pos);
         }
 
         function currentPos() {
@@ -394,15 +399,20 @@
          * 换个窗口宽度（或者 Retina 外接屏来回切）它应该还贴着右边，
          * 存 left 的话窗口变窄就跑出屏幕、变宽就漂到中间。
          * 每次落位都夹到视口内，防止存下来的位置在小窗口里看不见、也拖不回来。
+         * 面板的最大高度跟着 top 走：拖到屏幕下半部分时，固定的 70vh 会让列表底部
+         * 伸出视口，最后几项既看不见也滚不到。展开状态下 top 留够至少一截列表的高度。
          */
         function place(pos) {
             const p = pos || { top: CONFIG.panelTop, right: CONFIG.panelRight };
-            const rect = dock.getBoundingClientRect();
-            const w = rect.width || CONFIG.panelWidth;
+            const vh = window.innerHeight;
+            const collapsed = dock.classList.contains('collapsed');
+            const w = dock.getBoundingClientRect().width || CONFIG.panelWidth;
             const maxRight = Math.max(0, window.innerWidth - w);
-            const maxTop = Math.max(0, window.innerHeight - 40);
+            const maxTop = Math.max(0, vh - (collapsed ? 40 : 160));
+            const top = Math.round(Math.min(Math.max(0, p.top), maxTop));
             dock.style.right = Math.round(Math.min(Math.max(0, p.right), maxRight)) + 'px';
-            dock.style.top = Math.round(Math.min(Math.max(0, p.top), maxTop)) + 'px';
+            dock.style.top = top + 'px';
+            dock.querySelector('.panel').style.maxHeight = Math.round(Math.min(vh * 0.7, vh - top - 16)) + 'px';
         }
 
         /**
@@ -441,7 +451,7 @@
         function setCollapsed(collapsed) {
             dock.classList.toggle('collapsed', collapsed);
             Store.saveSite({ collapsed });
-            // 宽度变了（面板 ↔ 小按钮），重新夹一次，免得展开后右边出界
+            // 尺寸变了（面板 ↔ 小按钮），重新夹一次，免得展开后出界
             place(currentPos());
             if (!collapsed) reveal();
         }

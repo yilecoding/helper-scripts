@@ -504,6 +504,31 @@ async function main() {
         await page.close()
     })
 
+    await t.test('边界：面板拖到屏幕下方时列表不伸出视口；窗口缩小再放大，面板回到原处', async () => {
+        const page = await open(browser, 'long.html')
+        await waitToc(page)
+        const head = await page.locator('#article-toc-host .head').boundingBox()
+        await page.mouse.move(head.x + 40, head.y + 10)
+        await page.mouse.down()
+        await page.mouse.move(head.x - 860, head.y + 610, { steps: 10 })
+        await page.mouse.up()
+        const panel = () => page.evaluate(() => {
+            const r = document.getElementById('article-toc-host').shadowRoot.querySelector('.panel').getBoundingClientRect()
+            return { bottom: r.bottom, right: window.innerWidth - r.right }
+        })
+        const dragged = await panel()
+        t.assert(dragged.bottom <= 800, `面板底部 ${dragged.bottom} 不应超出 800 的视口`)
+        t.eq(dragged.right, 16 + 900)
+
+        await page.setViewportSize({ width: 800, height: 800 })
+        await page.waitForTimeout(100)
+        t.eq((await panel()).right, 800 - 260, '窄窗口里被夹到左边缘')
+        await page.setViewportSize({ width: 1280, height: 800 })
+        await page.waitForTimeout(100)
+        t.eq((await panel()).right, 916, '放大回来回到拖动时的位置')
+        await page.close()
+    })
+
     await t.test('少于 3 个标题不显示目录', async () => {
         const page = await open(browser, 'few.html')
         await settle(page)
