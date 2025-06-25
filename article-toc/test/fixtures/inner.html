@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>正文在 overflow:auto 的容器里滚动</title>
+<style>
+    html, body { margin: 0; height: 100%; overflow: hidden; font: 16px/1.7 sans-serif; }
+    .top { position: fixed; top: 0; left: 0; right: 0; height: 50px; background: #333; color: #fff; }
+    .scroll { position: absolute; top: 50px; bottom: 0; left: 0; right: 0; overflow: auto; }
+    .filler { height: 700px; }
+</style>
+</head>
+<body>
+<div class="top">后台系统</div>
+<div class="scroll">
+    <article>
+        <h2>第一节</h2><p class="filler"></p>
+        <h2>第二节</h2><p class="filler"></p>
+        <h2>第三节</h2><p class="filler"></p>
+        <h2>第四节</h2><p class="filler"></p>
+        <h2>第五节</h2><p class="filler"></p>
+    </article>
+</div>
+</body>
+</html>

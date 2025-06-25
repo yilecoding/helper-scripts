@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>很长的目录</title>
+<style>body { margin: 0; } .filler { height: 300px; }</style>
+</head>
+<body>
+<article id="doc"></article>
+<script>
+    // 80 节，目录列表一定放不下，用来测「当前项自动滚进目录可视区」
+    const doc = document.getElementById('doc')
+    for (let i = 1; i <= 80; i++) {
+        doc.insertAdjacentHTML('beforeend', `<h2>第 ${i} 节</h2><p class="filler"></p>`)
+    }
+</script>
+</body>
+</html>

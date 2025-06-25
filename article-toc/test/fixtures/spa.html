@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>SPA 文档站</title>
+<style>body { margin: 0; } .filler { height: 400px; }</style>
+</head>
+<body>
+<div id="app">
+    <nav><a href="/docs/a">A</a> <a href="/docs/b">B</a></nav>
+    <div id="view"></div>
+</div>
+<script>
+    // 极简前端路由：pushState 换路径，整块重渲染 #view；popstate 时按路径重渲染
+    const PAGES = {
+        '/docs/a': ['A 第一节', 'A 第二节', 'A 第三节'],
+        '/docs/b': ['B 概览', 'B 安装', 'B 配置', 'B 常见问题'],
+        '/docs/short': ['只有一节'],
+    }
+    const view = document.getElementById('view')
+    function render() {
+        const list = PAGES[location.pathname] || PAGES['/docs/a']
+        view.innerHTML = '<article>' + list.map((t) => `<h2>${t}</h2><p class="filler"></p>`).join('') + '</article>'
+    }
+    window.go = (path) => { history.pushState({}, '', path); render() }
+    // 模拟「复用 <h2> 元素、只换文字」的框架更新
+    window.retitle = () => document.querySelectorAll('#view h2').forEach((h, i) => { h.firstChild.data = `改名 ${i + 1}` })
+    // 模拟异步加载：路由先变，内容过一会儿才到
+    window.goLater = (path) => { history.pushState({}, '', path); view.innerHTML = '<p>加载中…</p>'; setTimeout(render, 300) }
+    window.addEventListener('popstate', render)
+    render()
+</script>
+</body>
+</html>
