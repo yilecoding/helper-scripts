@@ -104,6 +104,71 @@ function keywordIn(href, param) {
         await page.close()
     })
 
+    /*
+     * 每个内置引擎的往返：百度结果页上取到它的链接 → 打开那个链接（模拟页）
+     * → 在那一页上解析出的关键词再拼回百度链接 → 必须和原词一致。
+     * 一圈下来覆盖了「它的 URL 构造」和「它的关键词解析」两头。
+     */
+    const NASTY = [
+        '中文 关键词',
+        'a&b=c',
+        'C# 入门',
+        'C++ 模板',
+        '100% #tag ?x=1',
+        '$& $1 $$ 美元',
+        'a+b c/d',
+    ]
+
+    await t.test('每个内置引擎的关键词解析与 URL 构造（特殊字符往返）', async () => {
+        const page = await open(browser, 'about:blank')
+        const injected = new Set()
+        for (const kw of NASTY) {
+            await page.goto('https://www.baidu.com/s?wd=' + encodeURIComponent(kw))
+            const links = await bar(page)
+            t.assert(links, `百度页上没有切换栏：${kw}`)
+            for (const l of links) {
+                if (l.id === 'xhs') continue
+                await page.goto(l.href)
+                const there = await bar(page)
+                t.assert(there, `${l.name} 的结果页上没有切换栏（${l.href}）`)
+                injected.add(l.id)
+                const back = there.find((x) => x.id === 'baidu').href
+                t.eq(keywordIn(back, 'wd'), kw, `${l.name} 往返`)
+            }
+        }
+        t.eq(injected.size, 13, '应当有 13 个引擎可注入')
+        await page.close()
+    })
+
+    await t.test('URL 构造：特殊字符按 encodeURIComponent 编码', async () => {
+        const page = await open(browser, 'https://www.bing.com/search?q=' + encodeURIComponent('C++ & C#'))
+        const byId = Object.fromEntries((await bar(page)).map((l) => [l.id, l.href]))
+        t.eq(byId.baidu, 'https://www.baidu.com/s?wd=C%2B%2B%20%26%20C%23')
+        t.eq(byId.douyin, 'https://www.douyin.com/search/C%2B%2B%20%26%20C%23')
+        t.eq(byId.github, 'https://github.com/search?q=C%2B%2B%20%26%20C%23&type=repositories')
+        t.eq(byId.xhs, 'https://www.xiaohongshu.com/search_result?keyword=C%2B%2B%20%26%20C%23&source=web_search_result_notes')
+        await page.close()
+    })
+
+    await t.test('抖音：关键词在路径里，路径中的 + 是加号', async () => {
+        const page = await open(browser, 'https://www.douyin.com/search/C++%20%E6%95%99%E7%A8%8B?type=general')
+        const links = await bar(page)
+        t.eq(keywordIn(links.find((l) => l.id === 'baidu').href, 'wd'), 'C++ 教程')
+        await page.close()
+    })
+
+    await t.test('分组：网页 / 技术 / 视频社区', async () => {
+        const page = await open(browser, 'https://www.baidu.com/s?wd=x')
+        const groups = await page.evaluate(() =>
+            Array.from(document.getElementById('search-switcher').shadowRoot.querySelectorAll('.group')).map((g) => ({
+                label: g.querySelector('.label').textContent,
+                n: g.querySelectorAll('a').length,
+            })),
+        )
+        t.eq(groups, [{ label: '网页', n: 7 }, { label: '技术', n: 2 }, { label: '视频社区', n: 5 }])
+        await page.close()
+    })
+
     await close()
     t.done()
 })()
