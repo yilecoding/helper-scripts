@@ -3,7 +3,7 @@
 // @name:zh-CN   搜索引擎一键切换
 // @name:en      Search Engine Switcher
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.06.26.2
+// @version      2025.06.27.3
 // @description  在搜索结果页放一条引擎切换栏，带着同一个关键词一键跳到别的引擎：百度 / Google / Bing / DuckDuckGo / 搜狗 / 360 / Yandex，GitHub / Stack Overflow，知乎 / B站 / 抖音 / 微信 / 小红书。
 // @description:zh-CN  在搜索结果页放一条引擎切换栏，带着同一个关键词一键跳到别的引擎：百度 / Google / Bing / DuckDuckGo / 搜狗 / 360 / Yandex，GitHub / Stack Overflow，知乎 / B站 / 抖音 / 微信 / 小红书。
 // @description:en  Adds an engine switcher bar to search result pages: jump with the same query to Baidu / Google / Bing / DuckDuckGo / Sogou / 360 / Yandex, GitHub / Stack Overflow, Zhihu / Bilibili / Douyin / WeChat (Sogou) / Xiaohongshu.
@@ -59,6 +59,7 @@
     // =========================================================================
 
     const CONFIG = {
+        layout: 'side',        // 'side' 贴左侧竖排 | 'top' 顶部横条
         openInNewTab: false,   // true = 切换时总是开新标签（不按 Ctrl 也开）
     };
 
@@ -192,19 +193,44 @@
     const CSS = `
         :host { all: initial; }
         .bar {
-            position: fixed; z-index: 2147483000; left: 0; top: 50%; transform: translateY(-50%);
-            display: flex; flex-direction: column; gap: 2px; padding: 6px 4px;
+            --bg: #fff; --fg: #333; --muted: #999; --line: #e5e5e5; --hover: #f0f2f5;
+            --accent: #2468f2; --accent-fg: #fff;
+            position: fixed; z-index: 2147483000;
+            display: flex; gap: 2px; padding: 6px 4px;
             font: 13px/1.4 system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
-            background: #fff; border: 1px solid #ddd; border-left: 0; border-radius: 0 8px 8px 0;
+            color: var(--fg); background: var(--bg); border: 1px solid var(--line);
             box-shadow: 0 2px 10px rgba(0, 0, 0, .12);
+            opacity: .92; transition: opacity .15s;
         }
-        .group + .group { margin-top: 4px; padding-top: 4px; border-top: 1px solid #eee; }
-        .label { padding: 0 10px; font-size: 11px; color: #999; }
+        .bar:hover { opacity: 1; }
+        .bar.dark {
+            --bg: #26282c; --fg: #e3e3e3; --muted: #8a8d93; --line: #3c3f44; --hover: #34373c;
+            --accent: #8ab4f8; --accent-fg: #1a1b1e;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, .5);
+        }
+
+        .side {
+            left: 0; top: 50%; transform: translateY(-50%); flex-direction: column;
+            border-left: 0; border-radius: 0 8px 8px 0; max-height: 90vh; overflow-y: auto;
+        }
+        .side .group + .group { margin-top: 4px; padding-top: 4px; border-top: 1px solid var(--line); }
+        .side .label { padding: 0 10px; }
+
+        .top {
+            top: 0; left: 50%; transform: translateX(-50%); flex-direction: row; align-items: center;
+            border-top: 0; border-radius: 0 0 8px 8px; padding: 3px 6px; max-width: 96vw; overflow-x: auto;
+        }
+        .top .group { display: flex; align-items: center; gap: 2px; }
+        .top .group + .group { margin-left: 4px; padding-left: 6px; border-left: 1px solid var(--line); }
+        .top .label { padding: 0 4px 0 0; }
+
+        .label { font-size: 11px; color: var(--muted); user-select: none; white-space: nowrap; }
         a {
             display: block; padding: 3px 10px; border-radius: 5px;
-            color: #333; text-decoration: none; white-space: nowrap;
+            color: var(--fg); text-decoration: none; white-space: nowrap;
         }
-        a:hover { background: #f0f2f5; }
+        a:hover { background: var(--hover); }
+        a[aria-current="page"] { background: var(--accent); color: var(--accent-fg); font-weight: 600; }
     `;
 
     /** 按 group 分组，组的顺序 = 该组第一次出现的位置。 */
@@ -216,6 +242,23 @@
             map.get(g).push(e);
         }
         return map;
+    }
+
+    /**
+     * 页面是不是深色。看页面自己的背景色，不只看系统偏好：
+     * Google / Bing 的深色模式是站内开关，和 prefers-color-scheme 无关；
+     * 反过来系统是深色、站点照样白底的情况也很常见。
+     * body 透明就看 <html>，都读不出来（透明 / 颜色写法不认识）才退回系统偏好。
+     */
+    function pageIsDark() {
+        for (const el of [document.body, document.documentElement]) {
+            if (!el) continue;
+            const m = getComputedStyle(el).backgroundColor.match(/^rgba?\(([\d.]+),\s*([\d.]+),\s*([\d.]+)(?:,\s*([\d.]+))?\)$/);
+            if (!m || (m[4] !== undefined && Number(m[4]) === 0)) continue;
+            const lum = (0.299 * m[1] + 0.587 * m[2] + 0.114 * m[3]) / 255;
+            return lum < 0.5;
+        }
+        return window.matchMedia('(prefers-color-scheme: dark)').matches;
     }
 
     const Bar = (() => {
@@ -230,13 +273,14 @@
             document.documentElement.appendChild(host);
         }
 
-        function render(keyword) {
+        function render(keyword, current) {
             if (!host) mount();
             root.textContent = '';
             const style = document.createElement('style');
             style.textContent = CSS;
             const bar = document.createElement('nav');
-            bar.className = 'bar';
+            bar.className = `bar ${CONFIG.layout === 'top' ? 'top' : 'side'}${pageIsDark() ? ' dark' : ''}`;
+            bar.setAttribute('aria-label', '切换搜索引擎');
             for (const [group, engines] of groupBy(ENGINES)) {
                 const sec = document.createElement('div');
                 sec.className = 'group';
@@ -252,6 +296,7 @@
                     // 关键词会出现在 Referer 里带给下一家，没必要
                     a.rel = 'noreferrer';
                     if (CONFIG.openInNewTab) a.target = '_blank';
+                    if (current && e.id === current.id) a.setAttribute('aria-current', 'page');
                     sec.appendChild(a);
                 }
                 bar.appendChild(sec);
@@ -271,7 +316,7 @@
         if (!engine) return;
         const keyword = keywordFromUrl(engine, location);
         if (!keyword) return;
-        Bar.render(keyword);
+        Bar.render(keyword, engine);
         console.log(TAG, `当前 ${engine.name}，关键词「${keyword}」`);
     }
 

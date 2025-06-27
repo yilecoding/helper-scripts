@@ -10,6 +10,7 @@
 'use strict'
 
 const fs = require('fs')
+const os = require('os')
 const path = require('path')
 const h = require('../../tools/userscript-harness.cjs')
 
@@ -30,10 +31,12 @@ function fixtureFor(hostname) {
  * opts.value   搜索框里预填的值
  * opts.html    直接指定页面 HTML（覆盖 fixtures）
  * opts.values  GM 存储初始值
+ * opts.script  换一份脚本（改了 CONFIG 的副本）
  */
 async function open(browser, url, opts = {}) {
     const page = await browser.newPage()
-    await page.route('**/*', (route) => {
+    // 挂在 context 上而不是 page 上：Ctrl+点击开出来的新标签也要被拦住
+    await page.context().route('**/*', (route) => {
         const req = route.request()
         if (req.resourceType() !== 'document') return route.abort()
         const u = new URL(req.url())
@@ -43,7 +46,7 @@ async function open(browser, url, opts = {}) {
             body: html.replace('{{value}}', escapeHtml(opts.value || '')),
         })
     })
-    await h.install(page, SCRIPT, { values: opts.values })
+    await h.install(page, opts.script || SCRIPT, { values: opts.values })
     await page.goto(url)
     return page
 }
@@ -57,6 +60,7 @@ function bar(page) {
             id: a.dataset.engine,
             name: a.textContent,
             href: a.getAttribute('href'),
+            current: a.getAttribute('aria-current') === 'page',
         }))
     })
 }
@@ -64,6 +68,24 @@ function bar(page) {
 /** 从切换栏里某个引擎的链接上，按该引擎的参数名把关键词解回来。 */
 function keywordIn(href, param) {
     return new URL(href).searchParams.get(param)
+}
+
+/** 改了 CONFIG 某几项的脚本副本，写到系统临时目录（不进仓库）。 */
+function scriptWith(config) {
+    let src = fs.readFileSync(SCRIPT, 'utf8')
+    for (const [k, v] of Object.entries(config)) {
+        const re = new RegExp(`(\\n\\s+${k}: )[^,\\n]+,`)
+        if (!re.test(src)) throw new Error(`CONFIG 里没有 ${k}`)
+        src = src.replace(re, (_, head) => `${head}${JSON.stringify(v)},`)
+    }
+    const file = path.join(os.tmpdir(), `search-switcher-${process.pid}-${Object.keys(config).join('-')}.user.js`)
+    fs.writeFileSync(file, src)
+    return file
+}
+
+function shadowEval(page, fn, arg) {
+    return page.evaluate(([src, arg]) => new Function('root', 'arg', `return (${src})(root, arg)`)(
+        document.getElementById('search-switcher').shadowRoot, arg), [fn.toString(), arg])
 }
 
 ;(async () => {
@@ -166,6 +188,67 @@ function keywordIn(href, param) {
             })),
         )
         t.eq(groups, [{ label: '网页', n: 7 }, { label: '技术', n: 2 }, { label: '视频社区', n: 5 }])
+        await page.close()
+    })
+
+    await t.test('当前引擎高亮，且只高亮它一个', async () => {
+        const page = await open(browser, 'https://cn.bing.com/search?q=hello')
+        const cur = (await bar(page)).filter((l) => l.current).map((l) => l.id)
+        t.eq(cur, ['bing'])
+        const bg = await shadowEval(page, (root) => getComputedStyle(root.querySelector('a[aria-current]')).backgroundColor)
+        t.eq(bg, 'rgb(36, 104, 242)', '高亮色')
+        await page.close()
+    })
+
+    await t.test('亮 / 暗色：按页面背景色判断', async () => {
+        const light = await open(browser, 'https://www.google.com/search?q=x')
+        t.eq(await shadowEval(light, (root) => root.querySelector('.bar').classList.contains('dark')), false)
+        await light.close()
+        const dark = await open(browser, 'https://www.google.com/search?q=x', {
+            html: '<!doctype html><html><body style="background:#202124;color:#e8eaed"><textarea name="q">x</textarea></body></html>',
+        })
+        t.eq(await shadowEval(dark, (root) => root.querySelector('.bar').classList.contains('dark')), true)
+        await dark.close()
+    })
+
+    await t.test('默认贴左侧竖排；CONFIG.layout = top 时是顶部横条', async () => {
+        const side = await open(browser, 'https://www.baidu.com/s?wd=x')
+        const r1 = await shadowEval(side, (root) => {
+            const b = root.querySelector('.bar').getBoundingClientRect()
+            return { left: b.left, tall: b.height > b.width }
+        })
+        t.eq(r1, { left: 0, tall: true })
+        await side.close()
+        const top = await open(browser, 'https://www.baidu.com/s?wd=x', { script: scriptWith({ layout: 'top' }) })
+        const r2 = await shadowEval(top, (root) => {
+            const b = root.querySelector('.bar').getBoundingClientRect()
+            return { top: b.top, wide: b.width > b.height }
+        })
+        t.eq(r2, { top: 0, wide: true })
+        await top.close()
+    })
+
+    await t.test('链接是真正的 <a href>：Ctrl+点击开新标签，原页不动', async () => {
+        /*
+         * 只断言「开了新页 + 新页请求的地址对」，不等新页加载完：
+         * Playwright 1.62 里跨站的新标签被 route.fulfill 接管后永远停在 about:blank
+         * （同站的、或 route.continue 的都正常），和脚本无关。
+         */
+        const page = await open(browser, 'https://www.baidu.com/s?wd=' + encodeURIComponent('新标签'))
+        const popup = page.context().waitForEvent('page')
+        const req = page.context().waitForEvent('request', (r) => r.url().startsWith('https://www.google.com/'))
+        await page.locator('#search-switcher a[data-engine="google"]').click({ modifiers: ['Control'] })
+        await popup
+        t.eq(new URL((await req).url()).searchParams.get('q'), '新标签')
+        t.assert(page.url().startsWith('https://www.baidu.com/s?'), '原页被跳走了')
+        await page.close()
+    })
+
+    await t.test('普通点击在当前页跳转', async () => {
+        const page = await open(browser, 'https://www.baidu.com/s?wd=abc')
+        await Promise.all([page.waitForURL('https://www.so.com/**'), page.locator('#search-switcher a[data-engine="so360"]').click()])
+        t.eq(new URL(page.url()).searchParams.get('q'), 'abc')
+        t.eq((await bar(page)).find((l) => l.current).id, 'so360', '跳过去之后高亮跟着变')
         await page.close()
     })
 
