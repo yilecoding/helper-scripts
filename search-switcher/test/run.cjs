@@ -32,6 +32,7 @@ function fixtureFor(hostname) {
  * opts.html    直接指定页面 HTML（覆盖 fixtures）
  * opts.values  GM 存储初始值
  * opts.script  换一份脚本（改了 CONFIG 的副本）
+ * opts.init    额外的 init script（在用户脚本之前跑，用来改造页面环境）
  */
 async function open(browser, url, opts = {}) {
     const page = await browser.newPage()
@@ -47,6 +48,7 @@ async function open(browser, url, opts = {}) {
         })
     })
     await h.install(page, opts.script || SCRIPT, { values: opts.values })
+    if (opts.init) await page.addInitScript(opts.init)
     await page.goto(url)
     return page
 }
@@ -249,6 +251,63 @@ function shadowEval(page, fn, arg) {
         await Promise.all([page.waitForURL('https://www.so.com/**'), page.locator('#search-switcher a[data-engine="so360"]').click()])
         t.eq(new URL(page.url()).searchParams.get('q'), 'abc')
         t.eq((await bar(page)).find((l) => l.current).id, 'so360', '跳过去之后高亮跟着变')
+        await page.close()
+    })
+
+    /** 切换栏是否可见（host 被 display:none 收起时 bar() 仍能读到链接）。 */
+    const visible = (page) => page.evaluate(() => {
+        const host = document.getElementById('search-switcher')
+        return !!host && host.getClientRects().length > 0 &&
+            host.shadowRoot.querySelector('.bar').getBoundingClientRect().width > 0
+    })
+    const linkKw = async (page, id, param) => keywordIn((await bar(page)).find((l) => l.id === id).href, param)
+
+    await t.test('pushState 换关键词后链接更新（不刷新页面）', async () => {
+        const page = await open(browser, 'https://www.baidu.com/s?wd=first')
+        await page.evaluate(() => history.pushState({}, '', '/s?wd=' + encodeURIComponent('第二个 词&x')))
+        await page.waitForFunction(() => document.getElementById('search-switcher').shadowRoot
+            .querySelector('a[data-engine="google"]').href.includes('x'))
+        t.eq(await linkKw(page, 'google', 'q'), '第二个 词&x')
+        t.eq(await linkKw(page, 'bilibili', 'keyword'), '第二个 词&x')
+        await page.evaluate(() => history.replaceState({}, '', '/s?wd=third'))
+        await page.waitForTimeout(50)
+        t.eq(await linkKw(page, 'google', 'q'), 'third', 'replaceState 也要跟上')
+        t.eq(h.errors(page).length, 0)
+        await page.close()
+    })
+
+    await t.test('只改 hash 换关键词（/s?wd=旧#wd=新）', async () => {
+        const page = await open(browser, 'https://www.baidu.com/s?wd=old')
+        await page.evaluate(() => { location.hash = 'wd=' + encodeURIComponent('新 词') })
+        await page.waitForTimeout(50)
+        t.eq(await linkKw(page, 'bing', 'q'), '新 词')
+        await page.evaluate(() => { location.hash = 'top' })
+        await page.waitForTimeout(50)
+        t.eq(await linkKw(page, 'bing', 'q'), 'old', '普通锚点不当参数，回落到 search')
+        await page.close()
+    })
+
+    await t.test('SPA 离开结果页时收起，后退回来再出现', async () => {
+        const page = await open(browser, 'https://github.com/search?q=playwright&type=repositories')
+        t.eq(await visible(page), true)
+        await page.evaluate(() => history.pushState({}, '', '/microsoft/playwright'))
+        await page.waitForTimeout(50)
+        t.eq(await visible(page), false, '仓库页上不该还挂着切换栏')
+        await page.goBack()
+        await page.waitForTimeout(50)
+        t.eq(await visible(page), true, '后退回结果页应当重新出现')
+        t.eq(await linkKw(page, 'so', 'q'), 'playwright')
+        await page.close()
+    })
+
+    await t.test('没有 Navigation API 时靠轮询兜底', async () => {
+        const page = await open(browser, 'https://www.google.com/search?q=a', {
+            init: () => Object.defineProperty(window, 'navigation', { value: undefined, configurable: true }),
+        })
+        t.eq(await page.evaluate(() => window.navigation), undefined)
+        await page.evaluate(() => history.pushState({}, '', '/search?q=polled'))
+        await page.waitForFunction(() => document.getElementById('search-switcher').shadowRoot
+            .querySelector('a[data-engine="baidu"]').href.endsWith('polled'), null, { timeout: 3000 })
         await page.close()
     })
 

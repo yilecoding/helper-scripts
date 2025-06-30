@@ -3,7 +3,7 @@
 // @name:zh-CN   搜索引擎一键切换
 // @name:en      Search Engine Switcher
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.06.27.3
+// @version      2025.06.30.4
 // @description  在搜索结果页放一条引擎切换栏，带着同一个关键词一键跳到别的引擎：百度 / Google / Bing / DuckDuckGo / 搜狗 / 360 / Yandex，GitHub / Stack Overflow，知乎 / B站 / 抖音 / 微信 / 小红书。
 // @description:zh-CN  在搜索结果页放一条引擎切换栏，带着同一个关键词一键跳到别的引擎：百度 / Google / Bing / DuckDuckGo / 搜狗 / 360 / Yandex，GitHub / Stack Overflow，知乎 / B站 / 抖音 / 微信 / 小红书。
 // @description:en  Adds an engine switcher bar to search result pages: jump with the same query to Baidu / Google / Bing / DuckDuckGo / Sogou / 360 / Yandex, GitHub / Stack Overflow, Zhihu / Bilibili / Douyin / WeChat (Sogou) / Xiaohongshu.
@@ -61,6 +61,7 @@
     const CONFIG = {
         layout: 'side',        // 'side' 贴左侧竖排 | 'top' 顶部横条
         openInNewTab: false,   // true = 切换时总是开新标签（不按 Ctrl 也开）
+        pollInterval: 1000,    // 地址轮询间隔（毫秒），事件漏掉时的兜底
     };
 
     // =========================================================================
@@ -158,11 +159,19 @@
         return ENGINES.find((e) => e.hosts && e.hosts.test(loc.hostname) && e.path.test(loc.pathname)) || null;
     }
 
+    /**
+     * hash 优先于 search：不刷新页面换关键词时，有的站只改 hash（/s?wd=旧#wd=新），
+     * 这时 search 里留着的是上一个词。hash 里没有 = 的（#top、#ip=…以外的锚点）不当参数读。
+     */
     function keywordFromUrl(engine, loc) {
-        const q = new URLSearchParams(loc.search);
-        for (const name of engine.params) {
-            const v = (q.get(name) || '').trim();
-            if (v) return v;
+        const sources = [];
+        if (loc.hash.includes('=')) sources.push(new URLSearchParams(loc.hash.slice(1)));
+        sources.push(new URLSearchParams(loc.search));
+        for (const q of sources) {
+            for (const name of engine.params) {
+                const v = (q.get(name) || '').trim();
+                if (v) return v;
+            }
         }
         if (engine.pathKey) {
             const m = loc.pathname.match(engine.pathKey);
@@ -269,12 +278,16 @@
             host = document.createElement('div');
             host.id = 'search-switcher';
             root = host.attachShadow({ mode: 'open' });
-            // 挂在 <html> 下而不是 <body>：结果页是 SPA 时 body 内容会被整块重渲染
-            document.documentElement.appendChild(host);
         }
 
         function render(keyword, current) {
             if (!host) mount();
+            // 挂在 <html> 下而不是 <body>：结果页是 SPA 时 body 内容会被整块重渲染。
+            // 每次都检查一遍，万一还是被页面摘掉了就挂回去
+            if (!host.isConnected) document.documentElement.appendChild(host);
+            // 不能用 host.hidden：shadow 里的 :host { all: initial } 是作者样式，
+            // 优先级高过 UA 的 [hidden] { display: none }，hidden 属性会失效
+            host.style.removeProperty('display');
             root.textContent = '';
             const style = document.createElement('style');
             style.textContent = CSS;
@@ -304,20 +317,63 @@
             root.append(style, bar);
         }
 
-        return { render };
+        function hide() {
+            if (host) host.style.setProperty('display', 'none', 'important');
+        }
+
+        return { render, hide };
     })();
 
     // =========================================================================
     // 启动
     // =========================================================================
 
-    function boot() {
+    /** 按当前地址刷新切换栏：换了关键词就更新链接，离开结果页就收起。 */
+    let shown = '';
+    function update() {
         const engine = engineOf(location);
-        if (!engine) return;
-        const keyword = keywordFromUrl(engine, location);
-        if (!keyword) return;
+        const keyword = engine ? keywordFromUrl(engine, location) : '';
+        if (!keyword) {
+            if (shown) console.log(TAG, '离开结果页，收起切换栏');
+            shown = '';
+            Bar.hide();
+            return;
+        }
+        const sig = engine.id + '\n' + keyword;
+        if (sig === shown) return;
+        shown = sig;
         Bar.render(keyword, engine);
         console.log(TAG, `当前 ${engine.name}，关键词「${keyword}」`);
+    }
+
+    /*
+     * 地址变化监听。百度 / Google / Bing / GitHub 换关键词都可能不刷新页面（pushState / hash）。
+     *
+     * 不去改写 history.pushState：Tampermonkey 给有 @grant 的脚本用的是隔离的 JS 环境，
+     * 在那里替换 pushState 拦不到页面自己的调用（DOM 共享，JS 对象不共享）。
+     * 事件则是两边都收得到的：
+     *   Navigation API 的 currententrychange   pushState / replaceState / hash 都会触发（Chromium 系）
+     *   popstate / hashchange                 前进后退、改 hash
+     * 再加一个低频轮询兜底（没有 Navigation API 的浏览器靠它；只比一次字符串，开销可忽略）。
+     */
+    function watchUrl(onChange) {
+        let last = location.href;
+        const check = () => {
+            if (location.href === last) return;
+            last = location.href;
+            onChange();
+        };
+        if (window.navigation && typeof window.navigation.addEventListener === 'function') {
+            window.navigation.addEventListener('currententrychange', check);
+        }
+        window.addEventListener('popstate', check);
+        window.addEventListener('hashchange', check);
+        setInterval(check, CONFIG.pollInterval);
+    }
+
+    function boot() {
+        update();
+        watchUrl(update);
     }
 
     try {
