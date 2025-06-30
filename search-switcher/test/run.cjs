@@ -311,6 +311,39 @@ function shadowEval(page, fn, arg) {
         await page.close()
     })
 
+    await t.test('URL 是 GBK 编码（解出 �）时退到搜索框', async () => {
+        const page = await open(browser, 'https://www.baidu.com/s?wd=%C4%E3%BA%C3', { value: '你好' })
+        t.eq(await linkKw(page, 'google', 'q'), '你好')
+        await page.close()
+    })
+
+    await t.test('URL 里没有关键词时退到搜索框（input / textarea）', async () => {
+        const p1 = await open(browser, 'https://www.baidu.com/s?ie=utf-8&tn=x', { value: ' 来自 输入框 ' })
+        t.eq(await linkKw(p1, 'bing', 'q'), '来自 输入框')
+        await p1.close()
+        const p2 = await open(browser, 'https://www.google.com/search?q=', { value: 'textarea & 词' })
+        t.eq(await linkKw(p2, 'baidu', 'wd'), 'textarea & 词')
+        await p2.close()
+    })
+
+    await t.test('搜索框晚渲染（SPA）也能等到', async () => {
+        const page = await open(browser, 'https://www.baidu.com/s?tn=late', {
+            html: `<!doctype html><html><body><script>
+                setTimeout(() => { const i = document.createElement('input'); i.id = 'kw'; i.value = '晚到的词'; document.body.appendChild(i) }, 800)
+            </script></body></html>`,
+        })
+        t.eq(await bar(page), null)
+        await page.waitForFunction(() => document.getElementById('search-switcher'), null, { timeout: 3000 })
+        t.eq(await linkKw(page, 'google', 'q'), '晚到的词')
+        await page.close()
+    })
+
+    await t.test('URL 里有词时以 URL 为准，不读搜索框', async () => {
+        const page = await open(browser, 'https://www.baidu.com/s?wd=url', { value: '框里改了没提交' })
+        t.eq(await linkKw(page, 'google', 'q'), 'url')
+        await page.close()
+    })
+
     await close()
     t.done()
 })()

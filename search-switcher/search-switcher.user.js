@@ -3,7 +3,7 @@
 // @name:zh-CN   搜索引擎一键切换
 // @name:en      Search Engine Switcher
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.06.30.4
+// @version      2025.06.30.5
 // @description  在搜索结果页放一条引擎切换栏，带着同一个关键词一键跳到别的引擎：百度 / Google / Bing / DuckDuckGo / 搜狗 / 360 / Yandex，GitHub / Stack Overflow，知乎 / B站 / 抖音 / 微信 / 小红书。
 // @description:zh-CN  在搜索结果页放一条引擎切换栏，带着同一个关键词一键跳到别的引擎：百度 / Google / Bing / DuckDuckGo / 搜狗 / 360 / Yandex，GitHub / Stack Overflow，知乎 / B站 / 抖音 / 微信 / 小红书。
 // @description:en  Adds an engine switcher bar to search result pages: jump with the same query to Baidu / Google / Bing / DuckDuckGo / Sogou / 360 / Yandex, GitHub / Stack Overflow, Zhihu / Bilibili / Douyin / WeChat (Sogou) / Xiaohongshu.
@@ -170,7 +170,9 @@
         for (const q of sources) {
             for (const name of engine.params) {
                 const v = (q.get(name) || '').trim();
-                if (v) return v;
+                // 含 U+FFFD 说明原文不是 UTF-8（老链接里的 GBK 编码，如 wd=%C4%E3%BA%C3）：
+                // URLSearchParams 不报错，静默解成一串 �，拿去搜就是乱码。当没取到，交给搜索框兜底
+                if (v && !v.includes('\uFFFD')) return v;
             }
         }
         if (engine.pathKey) {
@@ -184,6 +186,17 @@
             }
         }
         return '';
+    }
+
+    /** URL 里取不到时，读结果页搜索框里的词（页面自己把 GBK 解对了、或者是 POST 来的）。 */
+    function keywordFromInput(engine) {
+        if (!engine.input) return '';
+        const el = document.querySelector(engine.input);
+        return el && typeof el.value === 'string' ? el.value.trim() : '';
+    }
+
+    function currentKeyword(engine) {
+        return keywordFromUrl(engine, location) || keywordFromInput(engine);
     }
 
     /**
@@ -332,7 +345,7 @@
     let shown = '';
     function update() {
         const engine = engineOf(location);
-        const keyword = engine ? keywordFromUrl(engine, location) : '';
+        const keyword = engine ? currentKeyword(engine) : '';
         if (!keyword) {
             if (shown) console.log(TAG, '离开结果页，收起切换栏');
             shown = '';
@@ -374,6 +387,12 @@
     function boot() {
         update();
         watchUrl(update);
+        /*
+         * 关键词只能从搜索框取、而搜索框是 SPA 晚一步渲染的，第一次 update 会扑空。
+         * 地址不变就不会再触发 update，所以补几次延迟重试。
+         * 不放进轮询里每秒读：那样首页上边打字切换栏边冒出来。
+         */
+        for (const ms of [500, 1500, 3000]) setTimeout(() => { if (!shown) update(); }, ms);
     }
 
     try {
