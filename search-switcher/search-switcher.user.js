@@ -3,7 +3,7 @@
 // @name:zh-CN   搜索引擎一键切换
 // @name:en      Search Engine Switcher
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.06.30.5
+// @version      2025.07.01.6
 // @description  在搜索结果页放一条引擎切换栏，带着同一个关键词一键跳到别的引擎：百度 / Google / Bing / DuckDuckGo / 搜狗 / 360 / Yandex，GitHub / Stack Overflow，知乎 / B站 / 抖音 / 微信 / 小红书。
 // @description:zh-CN  在搜索结果页放一条引擎切换栏，带着同一个关键词一键跳到别的引擎：百度 / Google / Bing / DuckDuckGo / 搜狗 / 360 / Yandex，GitHub / Stack Overflow，知乎 / B站 / 抖音 / 微信 / 小红书。
 // @description:en  Adds an engine switcher bar to search result pages: jump with the same query to Baidu / Google / Bing / DuckDuckGo / Sogou / 360 / Yandex, GitHub / Stack Overflow, Zhihu / Bilibili / Douyin / WeChat (Sogou) / Xiaohongshu.
@@ -62,6 +62,7 @@
         layout: 'side',        // 'side' 贴左侧竖排 | 'top' 顶部横条
         openInNewTab: false,   // true = 切换时总是开新标签（不按 Ctrl 也开）
         pollInterval: 1000,    // 地址轮询间隔（毫秒），事件漏掉时的兜底
+        hotkeys: true,         // Alt+1…9 / Alt+0 切到第 1…9 / 10 个引擎（输入框里不响应）
     };
 
     // =========================================================================
@@ -307,6 +308,7 @@
             const bar = document.createElement('nav');
             bar.className = `bar ${CONFIG.layout === 'top' ? 'top' : 'side'}${pageIsDark() ? ' dark' : ''}`;
             bar.setAttribute('aria-label', '切换搜索引擎');
+            let n = 0;
             for (const [group, engines] of groupBy(ENGINES)) {
                 const sec = document.createElement('div');
                 sec.className = 'group';
@@ -323,6 +325,8 @@
                     a.rel = 'noreferrer';
                     if (CONFIG.openInNewTab) a.target = '_blank';
                     if (current && e.id === current.id) a.setAttribute('aria-current', 'page');
+                    n++;
+                    if (CONFIG.hotkeys && n <= 10) a.title = `Alt+${n % 10}`;
                     sec.appendChild(a);
                 }
                 bar.appendChild(sec);
@@ -334,7 +338,13 @@
             if (host) host.style.setProperty('display', 'none', 'important');
         }
 
-        return { render, hide };
+        /** 第 n 个链接（显示顺序，从 1 数）。栏收起时没有。 */
+        function link(n) {
+            if (!host || host.style.display === 'none') return null;
+            return root.querySelectorAll('a[data-engine]')[n - 1] || null;
+        }
+
+        return { render, hide, link };
     })();
 
     // =========================================================================
@@ -384,9 +394,47 @@
         setInterval(check, CONFIG.pollInterval);
     }
 
+    // =========================================================================
+    // 快捷键
+    // =========================================================================
+
+    /** 正在往里打字的元素：Alt+数字在这些地方要留给输入（输入法、特殊字符）。 */
+    function isTyping(el) {
+        if (!el || el.nodeType !== 1) return false;
+        if (el.isContentEditable) return true;
+        const tag = el.tagName;
+        if (tag === 'TEXTAREA' || tag === 'SELECT') return true;
+        if (tag !== 'INPUT') return false;
+        return !/^(button|submit|reset|checkbox|radio|range|color|file|image)$/i.test(el.type);
+    }
+
+    function onKeydown(e) {
+        if (!e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || e.isComposing) return;
+        /*
+         * 用 e.code 不用 e.key：macOS 上 Option+1 的 key 是「¡」，Option+2 是「™」……
+         * 只有物理键位 Digit1 / Numpad1 是稳定的。
+         */
+        const m = /^(?:Digit|Numpad)(\d)$/.exec(e.code);
+        if (!m) return;
+        /*
+         * 焦点在 shadow DOM 里时 e.target 被重定向成宿主元素（不是 input），
+         * 要看 composedPath()[0] 才是真正获得焦点的那个元素。
+         */
+        const origin = (e.composedPath && e.composedPath()[0]) || e.target;
+        if (isTyping(origin) || isTyping(document.activeElement)) return;
+        const a = Bar.link(Number(m[1]) || 10);
+        if (!a) return;
+        e.preventDefault();
+        e.stopPropagation();
+        // 走 <a> 自己的 click：target / rel 等原生行为都保留
+        a.click();
+    }
+
     function boot() {
         update();
         watchUrl(update);
+        // 捕获阶段注册：结果页自己的快捷键处理常在冒泡阶段 stopPropagation
+        if (CONFIG.hotkeys) window.addEventListener('keydown', onKeydown, true);
         /*
          * 关键词只能从搜索框取、而搜索框是 SPA 晚一步渲染的，第一次 update 会扑空。
          * 地址不变就不会再触发 update，所以补几次延迟重试。

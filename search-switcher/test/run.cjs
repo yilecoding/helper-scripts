@@ -344,6 +344,45 @@ function shadowEval(page, fn, arg) {
         await page.close()
     })
 
+    await t.test('Alt+数字切换引擎（按显示顺序，Alt+0 是第 10 个）', async () => {
+        const page = await open(browser, 'https://www.baidu.com/s?wd=' + encodeURIComponent('快捷 键'))
+        const links = await bar(page)
+        t.eq(links[1].id, 'google')
+        t.eq(await shadowEval(page, (root) => root.querySelector('a[data-engine="google"]').title), 'Alt+2')
+        await Promise.all([page.waitForURL('https://www.google.com/**'), page.keyboard.press('Alt+2')])
+        t.eq(new URL(page.url()).searchParams.get('q'), '快捷 键')
+        await Promise.all([page.waitForURL('https://www.zhihu.com/**'), page.keyboard.press('Alt+0')])
+        t.eq(links[9].id, 'zhihu')
+        t.eq(new URL(page.url()).searchParams.get('q'), '快捷 键')
+        await page.close()
+    })
+
+    await t.test('输入框 / textarea / contenteditable 聚焦时 Alt+数字不触发', async () => {
+        const page = await open(browser, 'https://www.baidu.com/s?wd=stay', {
+            html: '<!doctype html><html><body><input id="kw" value="stay"><textarea id="ta"></textarea><div id="ce" contenteditable="true">x</div><button id="btn">b</button></body></html>',
+        })
+        for (const sel of ['#kw', '#ta', '#ce']) {
+            await page.focus(sel)
+            await page.keyboard.press('Alt+2')
+            await page.waitForTimeout(200)
+            t.assert(page.url().startsWith('https://www.baidu.com/s?wd=stay'), `${sel} 里按 Alt+2 跳走了`)
+        }
+        // 焦点在按钮上不算打字，应该照常触发
+        await page.focus('#btn')
+        await Promise.all([page.waitForURL('https://www.google.com/**'), page.keyboard.press('Alt+2')])
+        await page.close()
+    })
+
+    await t.test('不带 Alt、或 Ctrl+Alt（AltGr）时不触发', async () => {
+        const page = await open(browser, 'https://www.baidu.com/s?wd=stay')
+        for (const k of ['2', 'Control+Alt+2', 'Alt+Shift+2']) {
+            await page.keyboard.press(k)
+            await page.waitForTimeout(150)
+            t.assert(page.url().startsWith('https://www.baidu.com/'), `${k} 不该触发`)
+        }
+        await page.close()
+    })
+
     await close()
     t.done()
 })()
