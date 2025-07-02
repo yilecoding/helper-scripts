@@ -3,7 +3,7 @@
 // @name:zh-CN   搜索引擎一键切换
 // @name:en      Search Engine Switcher
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.07.01.6
+// @version      2025.07.02.7
 // @description  在搜索结果页放一条引擎切换栏，带着同一个关键词一键跳到别的引擎：百度 / Google / Bing / DuckDuckGo / 搜狗 / 360 / Yandex，GitHub / Stack Overflow，知乎 / B站 / 抖音 / 微信 / 小红书。
 // @description:zh-CN  在搜索结果页放一条引擎切换栏，带着同一个关键词一键跳到别的引擎：百度 / Google / Bing / DuckDuckGo / 搜狗 / 360 / Yandex，GitHub / Stack Overflow，知乎 / B站 / 抖音 / 微信 / 小红书。
 // @description:en  Adds an engine switcher bar to search result pages: jump with the same query to Baidu / Google / Bing / DuckDuckGo / Sogou / 360 / Yandex, GitHub / Stack Overflow, Zhihu / Bilibili / Douyin / WeChat (Sogou) / Xiaohongshu.
@@ -36,7 +36,10 @@
 // @match        https://search.bilibili.com/*
 // @match        https://www.douyin.com/search/*
 // @match        https://weixin.sogou.com/weixin*
-// @grant        none
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_deleteValue
+// @grant        GM_registerMenuCommand
 // @license      CC BY-NC-SA
 // @run-at       document-end
 // @homepageURL  https://github.com/yilecoding/helper-scripts
@@ -79,7 +82,7 @@
      *   group   分组，切换栏按分组首次出现的顺序排
      * 没有 hosts 的引擎只作跳转目标，不在它的页面上注入（见小红书）。
      */
-    const ENGINES = [
+    const BUILTIN = [
         {
             id: 'baidu', name: '百度', group: '网页', url: 'https://www.baidu.com/s?wd=%s',
             // m.baidu.com 用的是 word 不是 wd
@@ -157,7 +160,7 @@
     // =========================================================================
 
     function engineOf(loc) {
-        return ENGINES.find((e) => e.hosts && e.hosts.test(loc.hostname) && e.path.test(loc.pathname)) || null;
+        return BUILTIN.find((e) => e.hosts && e.hosts.test(loc.hostname) && e.path.test(loc.pathname)) || null;
     }
 
     /**
@@ -208,6 +211,101 @@
         const enc = encodeURIComponent(keyword);
         return template.replace(/%s/g, () => enc);
     }
+
+    // =========================================================================
+    // 自定义引擎列表（存 GM，菜单里编辑）
+    // =========================================================================
+
+    /*
+     * 存的是用户编辑后的完整列表：[{ id?, name, url, group? }]。
+     *   带内置 id 的项 = 那个内置引擎，可改名 / 改模板 / 改分组 / 调顺序，结果页识别规则仍用内置的
+     *   不带 id 的项   = 自定义引擎，只作跳转目标（脚本只在 @match 的站点上运行，管不到它的页面）
+     *   删掉一项       = 不显示它
+     * 不存「和默认的差异」：差异格式没法表达调顺序，用户也看不懂。
+     */
+    const STORE_KEY = 'engines';
+    const BUILTIN_BY_ID = new Map(BUILTIN.map((e) => [e.id, e]));
+    const EDITABLE_KEYS = ['id', 'name', 'url', 'group'];
+
+    /** 给编辑框看的形状：只留可编辑的字段。 */
+    function toEditable(list) {
+        return list.map((e) => {
+            const o = {};
+            for (const k of EDITABLE_KEYS) if (e[k] !== undefined) o[k] = e[k];
+            return o;
+        });
+    }
+
+    /**
+     * 校验并规范化。返回 { list } 或 { error }（中文，指出第几项）。
+     * url 必须是 http(s)：这个值会原样进 <a href>，javascript: 在这里放过去就是一个点了会执行的链接。
+     */
+    function validateEngines(data) {
+        if (!Array.isArray(data)) return { error: '最外层必须是数组 [ … ]' };
+        if (!data.length) return { error: '至少要保留一个引擎（想恢复默认请点「恢复默认」）' };
+        if (data.length > 50) return { error: '最多 50 个引擎' };
+        const ids = new Set();
+        const list = [];
+        for (let i = 0; i < data.length; i++) {
+            const item = data[i];
+            const at = `第 ${i + 1} 项`;
+            if (!item || typeof item !== 'object' || Array.isArray(item)) return { error: `${at}：必须是 { … } 对象` };
+            const unknown = Object.keys(item).filter((k) => !EDITABLE_KEYS.includes(k));
+            if (unknown.length) return { error: `${at}：不认识的字段 ${unknown.join(', ')}（可用：${EDITABLE_KEYS.join(', ')}）` };
+            const name = typeof item.name === 'string' ? item.name.trim() : '';
+            if (!name) return { error: `${at}：缺少 name` };
+            if (name.length > 20) return { error: `${at}：name 太长（最多 20 字）` };
+            const url = typeof item.url === 'string' ? item.url.trim() : '';
+            if (!/^https?:\/\//i.test(url)) return { error: `${at}（${name}）：url 必须以 http:// 或 https:// 开头` };
+            if (!url.includes('%s')) return { error: `${at}（${name}）：url 里要有 %s 表示关键词的位置` };
+            try {
+                new URL(url.replace(/%s/g, 'test'));
+            } catch (e) {
+                return { error: `${at}（${name}）：url 不是合法地址` };
+            }
+            if (item.group !== undefined && (typeof item.group !== 'string' || !item.group.trim() || item.group.length > 10)) {
+                return { error: `${at}（${name}）：group 要是 1～10 字的文字` };
+            }
+            if (item.id !== undefined && (typeof item.id !== 'string' || !/^[\w-]{1,32}$/.test(item.id))) {
+                return { error: `${at}（${name}）：id 只能是字母数字下划线横线` };
+            }
+            if (item.id !== undefined && ids.has(item.id)) return { error: `${at}（${name}）：id「${item.id}」重复了` };
+            if (item.id !== undefined) ids.add(item.id);
+            list.push({ id: item.id, name, url, group: item.group === undefined ? undefined : item.group.trim() });
+        }
+        // 自定义项补一个不撞车的 id（切换栏的 data-engine / 高亮要用）
+        let n = 0;
+        for (const e of list) {
+            if (e.id !== undefined) continue;
+            do n++; while (ids.has(`custom-${n}`));
+            e.id = `custom-${n}`;
+            ids.add(e.id);
+        }
+        return { list };
+    }
+
+    /** 规范化后的列表 → 引擎对象：内置 id 继承识别规则，名称 / 模板 / 分组用用户的。 */
+    function resolveEngines(list) {
+        return list.map((e) => {
+            const base = BUILTIN_BY_ID.get(e.id);
+            if (base) return { ...base, name: e.name, url: e.url, group: e.group || base.group };
+            return { id: e.id, name: e.name, url: e.url, group: e.group || '自定义' };
+        });
+    }
+
+    function loadEngines() {
+        const saved = GM_getValue(STORE_KEY, null);
+        if (saved === null) return BUILTIN;
+        const r = validateEngines(saved);
+        if (r.error) {
+            // 存储被改坏（或者老版本存的格式）：不让整条栏消失，回落默认
+            console.warn(TAG, '已保存的引擎列表无效，使用默认：', r.error);
+            return BUILTIN;
+        }
+        return resolveEngines(r.list);
+    }
+
+    let engines = loadEngines();
 
     // =========================================================================
     // 切换栏
@@ -309,14 +407,14 @@
             bar.className = `bar ${CONFIG.layout === 'top' ? 'top' : 'side'}${pageIsDark() ? ' dark' : ''}`;
             bar.setAttribute('aria-label', '切换搜索引擎');
             let n = 0;
-            for (const [group, engines] of groupBy(ENGINES)) {
+            for (const [group, items] of groupBy(engines)) {
                 const sec = document.createElement('div');
                 sec.className = 'group';
                 const label = document.createElement('div');
                 label.className = 'label';
                 label.textContent = group;
                 sec.appendChild(label);
-                for (const e of engines) {
+                for (const e of items) {
                     const a = document.createElement('a');
                     a.dataset.engine = e.id;
                     a.textContent = e.name;
@@ -348,6 +446,173 @@
     })();
 
     // =========================================================================
+    // 编辑浮层
+    // =========================================================================
+
+    const EDITOR_CSS = `
+        :host { all: initial; }
+        .mask {
+            --bg: #fff; --fg: #222; --muted: #777; --line: #d9d9d9; --field: #fafafa;
+            --accent: #2468f2; --accent-fg: #fff; --danger: #d93025;
+            position: fixed; inset: 0; z-index: 2147483001; display: flex; align-items: center; justify-content: center;
+            background: rgba(0, 0, 0, .35);
+            font: 13px/1.5 system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+        }
+        .mask.dark {
+            --bg: #26282c; --fg: #e3e3e3; --muted: #9a9da3; --line: #44474d; --field: #1e1f22;
+            --accent: #8ab4f8; --accent-fg: #1a1b1e; --danger: #f28b82;
+        }
+        .dialog {
+            width: min(720px, 94vw); max-height: 90vh; display: flex; flex-direction: column; gap: 8px;
+            padding: 16px; border-radius: 10px; background: var(--bg); color: var(--fg);
+            box-shadow: 0 10px 40px rgba(0, 0, 0, .3); box-sizing: border-box;
+        }
+        h2 { margin: 0; font-size: 16px; }
+        .hint { margin: 0; color: var(--muted); }
+        code { font-family: ui-monospace, Consolas, monospace; }
+        textarea {
+            flex: 1; min-height: 320px; resize: vertical; box-sizing: border-box; padding: 8px;
+            font: 12px/1.5 ui-monospace, Consolas, "Courier New", monospace;
+            color: var(--fg); background: var(--field); border: 1px solid var(--line); border-radius: 6px;
+        }
+        .err { min-height: 1.5em; color: var(--danger); white-space: pre-wrap; }
+        .btns { display: flex; gap: 8px; }
+        .spacer { flex: 1; }
+        button {
+            padding: 5px 14px; border-radius: 6px; border: 1px solid var(--line); cursor: pointer;
+            background: transparent; color: var(--fg); font: inherit;
+        }
+        button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
+    `;
+
+    const Editor = (() => {
+        let host = null;
+        let textarea = null;
+        let err = null;
+
+        function close() {
+            if (host) host.remove();
+            host = null;
+        }
+
+        function fill(list) {
+            textarea.value = JSON.stringify(toEditable(list), null, 2);
+            err.textContent = '';
+        }
+
+        function save() {
+            let data;
+            try {
+                data = JSON.parse(textarea.value);
+            } catch (e) {
+                err.textContent = 'JSON 格式错误：' + e.message;
+                return false;
+            }
+            const r = validateEngines(data);
+            if (r.error) {
+                err.textContent = r.error;
+                return false;
+            }
+            GM_setValue(STORE_KEY, r.list);
+            engines = resolveEngines(r.list);
+            refresh();
+            console.log(TAG, `已保存 ${r.list.length} 个引擎`);
+            close();
+            return true;
+        }
+
+        function open() {
+            if (host) return;
+            host = document.createElement('div');
+            host.id = 'search-switcher-editor';
+            const root = host.attachShadow({ mode: 'open' });
+            const style = document.createElement('style');
+            style.textContent = EDITOR_CSS;
+
+            const mask = document.createElement('div');
+            mask.className = 'mask' + (pageIsDark() ? ' dark' : '');
+            const dialog = document.createElement('div');
+            dialog.className = 'dialog';
+            dialog.setAttribute('role', 'dialog');
+            dialog.setAttribute('aria-label', '编辑引擎列表');
+
+            const h2 = document.createElement('h2');
+            h2.textContent = '编辑引擎列表';
+            const hint = document.createElement('p');
+            hint.className = 'hint';
+            // 不用 innerHTML：Google 等站点开了 Trusted Types，给 innerHTML 赋字符串会直接抛错。
+            // 反引号里的是 <code>，其余是普通文字
+            const HINT = '每项 `name` 名称、`url` 搜索地址（`%s` 代表关键词）、`group` 分组。'
+                + '带 `id` 的是内置引擎；删掉一项就不再显示；顺序即显示顺序。';
+            HINT.split('`').forEach((part, i) => {
+                if (i % 2) {
+                    const c = document.createElement('code');
+                    c.textContent = part;
+                    hint.appendChild(c);
+                } else {
+                    hint.appendChild(document.createTextNode(part));
+                }
+            });
+            textarea = document.createElement('textarea');
+            textarea.spellcheck = false;
+            err = document.createElement('div');
+            err.className = 'err';
+            err.setAttribute('role', 'alert');
+
+            const btns = document.createElement('div');
+            btns.className = 'btns';
+            const mk = (text, act, cls) => {
+                const b = document.createElement('button');
+                b.type = 'button';
+                b.textContent = text;
+                b.dataset.act = act;
+                if (cls) b.className = cls;
+                return b;
+            };
+            const spacer = document.createElement('span');
+            spacer.className = 'spacer';
+            btns.append(mk('恢复默认', 'reset'), spacer, mk('取消', 'cancel'), mk('保存', 'save', 'primary'));
+            btns.addEventListener('click', (e) => {
+                const act = e.target.dataset && e.target.dataset.act;
+                if (act === 'save') save();
+                else if (act === 'cancel') close();
+                else if (act === 'reset') {
+                    resetEngines();
+                    fill(engines);
+                }
+            });
+
+            dialog.append(h2, hint, textarea, err, btns);
+            mask.appendChild(dialog);
+            mask.addEventListener('mousedown', (e) => { if (e.target === mask) close(); });
+            /*
+             * 键盘事件不许冒出 shadow DOM。冒出去之后 target 被重定向成宿主 div，
+             * 页面的全局快捷键（Google / GitHub 的「/」聚焦搜索框之类）认不出这是在打字，
+             * 往 url 里敲一个 / 焦点就被抢走了。
+             */
+            for (const type of ['keydown', 'keypress', 'keyup']) {
+                dialog.addEventListener(type, (e) => {
+                    e.stopPropagation();
+                    if (type === 'keydown' && e.key === 'Escape') close();
+                });
+            }
+            root.append(style, mask);
+            document.documentElement.appendChild(host);
+            fill(engines);
+            textarea.focus();
+        }
+
+        return { open, close, save };
+    })();
+
+    function resetEngines() {
+        GM_deleteValue(STORE_KEY);
+        engines = BUILTIN;
+        refresh();
+        console.log(TAG, '已恢复默认引擎列表');
+    }
+
+    // =========================================================================
     // 启动
     // =========================================================================
 
@@ -367,6 +632,12 @@
         shown = sig;
         Bar.render(keyword, engine);
         console.log(TAG, `当前 ${engine.name}，关键词「${keyword}」`);
+    }
+
+    /** 引擎列表变了：强制重画（update 在关键词没变时会跳过）。 */
+    function refresh() {
+        shown = '';
+        update();
     }
 
     /*
@@ -431,6 +702,10 @@
     }
 
     function boot() {
+        GM_registerMenuCommand('编辑引擎列表', () => Editor.open());
+        GM_registerMenuCommand('恢复默认引擎', () => {
+            if (window.confirm('恢复默认引擎列表？自定义的引擎会被清掉。')) resetEngines();
+        });
         update();
         watchUrl(update);
         // 捕获阶段注册：结果页自己的快捷键处理常在冒泡阶段 stopPropagation

@@ -383,6 +383,145 @@ function shadowEval(page, fn, arg) {
         await page.close()
     })
 
+    const editor = {
+        textarea: (page) => page.locator('#search-switcher-editor textarea'),
+        error: (page) => page.locator('#search-switcher-editor .err').textContent(),
+        isOpen: (page) => page.evaluate(() => !!document.getElementById('search-switcher-editor')),
+        click: (page, act) => page.locator(`#search-switcher-editor button[data-act="${act}"]`).click(),
+    }
+    const stored = (page) => page.evaluate(() => {
+        const raw = localStorage.getItem('__gm:engines')
+        return raw === null ? null : JSON.parse(raw)
+    })
+
+    await t.test('菜单：编辑引擎列表 / 恢复默认引擎', async () => {
+        const page = await open(browser, 'https://www.baidu.com/s?wd=x')
+        const gm = await h.gm(page)
+        t.eq(gm.menu, ['编辑引擎列表', '恢复默认引擎'])
+        await h.menu(page, '编辑引擎列表')
+        const list = JSON.parse(await editor.textarea(page).inputValue())
+        t.eq(list.length, 14)
+        t.eq(list[0], { id: 'baidu', name: '百度', url: 'https://www.baidu.com/s?wd=%s', group: '网页' })
+        await editor.click(page, 'cancel')
+        t.eq(await editor.isOpen(page), false)
+        await page.close()
+    })
+
+    const CUSTOM = [
+        { id: 'google', name: '谷歌', url: 'https://www.google.com.hk/search?q=%s', group: '网页' },
+        { id: 'baidu', name: '百度', url: 'https://www.baidu.com/s?wd=%s' },
+        { name: 'YouTube', url: 'https://www.youtube.com/results?search_query=%s', group: '视频' },
+        { name: 'MDN', url: 'https://developer.mozilla.org/zh-CN/search?q=%s' },
+    ]
+
+    await t.test('自定义引擎：保存后立即生效，刷新后仍在', async () => {
+        const page = await open(browser, 'https://www.baidu.com/s?wd=' + encodeURIComponent('a&b c'))
+        await h.menu(page, '编辑引擎列表')
+        await editor.textarea(page).fill(JSON.stringify(CUSTOM, null, 2))
+        await editor.click(page, 'save')
+        t.eq(await editor.isOpen(page), false, '保存成功应当关闭浮层')
+        const check = async () => {
+            const links = await bar(page)
+            t.eq(links.map((l) => l.name), ['谷歌', '百度', 'YouTube', 'MDN'])
+            t.eq(links.map((l) => l.id), ['google', 'baidu', 'custom-1', 'custom-2'])
+            t.eq(links[0].href, 'https://www.google.com.hk/search?q=a%26b%20c')
+            t.eq(keywordIn(links[2].href, 'search_query'), 'a&b c')
+            t.eq(links.find((l) => l.current).id, 'baidu', '内置引擎改了名/模板，识别规则还在')
+            const groups = await shadowEval(page, (root) => Array.from(root.querySelectorAll('.label')).map((l) => l.textContent))
+            t.eq(groups, ['网页', '视频', '自定义'], '分组按首次出现排序；没写 group 的自定义项归「自定义」')
+        }
+        await check()
+        await page.reload()
+        await check()
+        t.eq((await stored(page)).length, 4)
+        t.eq(h.errors(page).length, 0)
+        await page.close()
+    })
+
+    await t.test('非法输入被拒绝：浮层不关、存储不变、给出原因', async () => {
+        const page = await open(browser, 'https://www.baidu.com/s?wd=x')
+        await h.menu(page, '编辑引擎列表')
+        const cases = [
+            ['[{"name": "坏", "url": "https://x.com/?q=%s",}]', /JSON 格式错误/],
+            ['{"name": "x"}', /最外层必须是数组/],
+            ['[]', /至少要保留一个引擎/],
+            ['[{"url": "https://x.com/?q=%s"}]', /第 1 项：缺少 name/],
+            ['[{"name": "a", "url": "https://a.com/?q=%s"}, {"name": "b", "url": "https://b.com/"}]', /第 2 项（b）：url 里要有 %s/],
+            ['[{"name": "xss", "url": "javascript:alert(1)//%s"}]', /http:\/\/ 或 https:\/\//],
+            ['[{"name": "a", "url": "https://a.com/?q=%s", "grp": "网页"}]', /不认识的字段 grp/],
+            ['[{"id": "baidu", "name": "a", "url": "https://a.com/?q=%s"}, {"id": "baidu", "name": "b", "url": "https://b.com/?q=%s"}]', /id「baidu」重复/],
+        ]
+        for (const [text, re] of cases) {
+            await editor.textarea(page).fill(text)
+            await editor.click(page, 'save')
+            const msg = await editor.error(page)
+            t.assert(re.test(msg), `输入 ${text}\n      期望错误 ${re}，实际「${msg}」`)
+            t.eq(await editor.isOpen(page), true)
+        }
+        t.eq(await stored(page), null, '非法输入不该写进存储')
+        t.eq((await bar(page)).length, 14)
+        await page.close()
+    })
+
+    await t.test('恢复默认：清掉存储，刷新后也是默认', async () => {
+        /*
+         * 不用 install 的 opts.values 预置：harness 在每次导航时都会把「缺失的」初始值补回去，
+         * 删掉之后一刷新又回来了，测不了「删除后刷新」。改成直接写存储再刷新。
+         */
+        const page = await open(browser, 'https://www.baidu.com/s?wd=x')
+        await page.evaluate((v) => localStorage.setItem('__gm:engines', JSON.stringify(v)), CUSTOM)
+        await page.reload()
+        t.eq((await bar(page)).length, 4, '预置的自定义列表应当生效')
+        await h.menu(page, '编辑引擎列表')
+        await editor.click(page, 'reset')
+        t.eq(JSON.parse(await editor.textarea(page).inputValue()).length, 14, '编辑框也跟着回到默认')
+        t.eq((await bar(page)).length, 14)
+        t.eq(await stored(page), null)
+        await editor.click(page, 'cancel')
+        await page.reload()
+        t.eq((await bar(page)).length, 14)
+        await page.close()
+    })
+
+    await t.test('菜单「恢复默认引擎」要先确认', async () => {
+        const page = await open(browser, 'https://www.baidu.com/s?wd=x', { values: { engines: CUSTOM } })
+        page.once('dialog', (d) => d.dismiss())
+        await h.menu(page, '恢复默认引擎')
+        t.eq((await bar(page)).length, 4, '取消确认不该清')
+        page.once('dialog', (d) => d.accept())
+        await h.menu(page, '恢复默认引擎')
+        t.eq((await bar(page)).length, 14)
+        await page.close()
+    })
+
+    await t.test('存储被改坏时回落默认，不让切换栏消失', async () => {
+        const page = await open(browser, 'https://www.baidu.com/s?wd=x', { values: { engines: [{ name: 1 }] } })
+        t.eq((await bar(page)).length, 14)
+        await page.close()
+    })
+
+    await t.test('编辑框里打字不被页面的全局快捷键抢走（如按 / 聚焦搜索框）', async () => {
+        const page = await open(browser, 'https://www.google.com/search?q=x', {
+            html: `<!doctype html><html><body><textarea name="q">x</textarea><script>
+                document.addEventListener('keydown', (e) => {
+                    const t = e.target
+                    if (e.key === '/' && t.tagName !== 'INPUT' && t.tagName !== 'TEXTAREA') {
+                        e.preventDefault(); document.querySelector('textarea[name=q]').focus()
+                    }
+                })
+            </script></body></html>`,
+        })
+        await h.menu(page, '编辑引擎列表')
+        await editor.textarea(page).fill('')
+        await page.keyboard.type('[{"name":"a","url":"https://a.com/s?q=%s"}]')
+        t.eq(await editor.textarea(page).inputValue(), '[{"name":"a","url":"https://a.com/s?q=%s"}]')
+        await page.keyboard.press('Alt+1')
+        t.eq(page.url(), 'https://www.google.com/search?q=x', '编辑框里按 Alt+数字也不该跳')
+        await page.keyboard.press('Escape')
+        t.eq(await editor.isOpen(page), false, 'Esc 关闭')
+        await page.close()
+    })
+
     await close()
     t.done()
 })()
