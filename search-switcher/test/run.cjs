@@ -397,7 +397,7 @@ function shadowEval(page, fn, arg) {
     await t.test('菜单：编辑引擎列表 / 恢复默认引擎', async () => {
         const page = await open(browser, 'https://www.baidu.com/s?wd=x')
         const gm = await h.gm(page)
-        t.eq(gm.menu, ['编辑引擎列表', '恢复默认引擎'])
+        t.eq(gm.menu, ['编辑引擎列表', '恢复默认引擎', '切换布局（侧边竖排 / 顶部横条）'])
         await h.menu(page, '编辑引擎列表')
         const list = JSON.parse(await editor.textarea(page).inputValue())
         t.eq(list.length, 14)
@@ -433,7 +433,8 @@ function shadowEval(page, fn, arg) {
         await check()
         await page.reload()
         await check()
-        t.eq((await stored(page)).length, 4)
+        t.eq((await stored(page)).list.length, 4)
+        t.eq((await stored(page)).known.length, 14, '保存时记下当时认识的内置 id')
         t.eq(h.errors(page).length, 0)
         await page.close()
     })
@@ -469,9 +470,9 @@ function shadowEval(page, fn, arg) {
          * 删掉之后一刷新又回来了，测不了「删除后刷新」。改成直接写存储再刷新。
          */
         const page = await open(browser, 'https://www.baidu.com/s?wd=x')
-        await page.evaluate((v) => localStorage.setItem('__gm:engines', JSON.stringify(v)), CUSTOM)
+        await page.evaluate((v) => localStorage.setItem('__gm:engines', JSON.stringify(v)), { list: CUSTOM, known: [] })
         await page.reload()
-        t.eq((await bar(page)).length, 4, '预置的自定义列表应当生效')
+        t.eq((await bar(page)).length, 4 + 12, '预置的自定义列表生效（known 为空 = 其余 12 个内置都算新来的，追加在后）')
         await h.menu(page, '编辑引擎列表')
         await editor.click(page, 'reset')
         t.eq(JSON.parse(await editor.textarea(page).inputValue()).length, 14, '编辑框也跟着回到默认')
@@ -483,8 +484,9 @@ function shadowEval(page, fn, arg) {
         await page.close()
     })
 
-    await t.test('菜单「恢复默认引擎」要先确认', async () => {
+    await t.test('菜单「恢复默认引擎」要先确认（顺带：老版本存的裸数组照样能读）', async () => {
         const page = await open(browser, 'https://www.baidu.com/s?wd=x', { values: { engines: CUSTOM } })
+        t.eq((await bar(page)).length, 4)
         page.once('dialog', (d) => d.dismiss())
         await h.menu(page, '恢复默认引擎')
         t.eq((await bar(page)).length, 4, '取消确认不该清')
@@ -519,6 +521,65 @@ function shadowEval(page, fn, arg) {
         t.eq(page.url(), 'https://www.google.com/search?q=x', '编辑框里按 Alt+数字也不该跳')
         await page.keyboard.press('Escape')
         t.eq(await editor.isOpen(page), false, 'Esc 关闭')
+        await page.close()
+    })
+
+    await t.test('隐藏内置引擎：不显示、编辑框里还在、快捷键序号跳过它', async () => {
+        const page = await open(browser, 'https://www.baidu.com/s?wd=x')
+        await h.menu(page, '编辑引擎列表')
+        const list = JSON.parse(await editor.textarea(page).inputValue())
+        list.find((e) => e.id === 'google').hidden = true
+        list.find((e) => e.id === 'yandex').hidden = true
+        await editor.textarea(page).fill(JSON.stringify(list))
+        await editor.click(page, 'save')
+        const ids = (await bar(page)).map((l) => l.id)
+        t.eq(ids.length, 12)
+        t.assert(!ids.includes('google') && !ids.includes('yandex'), '隐藏的还在显示')
+        t.eq(await shadowEval(page, (root) => root.querySelector('a[data-engine="bing"]').title), 'Alt+2', 'google 隐藏后 bing 排第 2')
+        await page.reload()
+        t.eq((await bar(page)).length, 12)
+        await h.menu(page, '编辑引擎列表')
+        const again = JSON.parse(await editor.textarea(page).inputValue())
+        t.eq(again.length, 14)
+        t.eq(again.find((e) => e.id === 'google'), { id: 'google', name: 'Google', url: 'https://www.google.com/search?q=%s', group: '网页', hidden: true })
+        t.eq('hidden' in again.find((e) => e.id === 'bing'), false, '没隐藏的不写 hidden 字段')
+        await editor.textarea(page).fill(JSON.stringify(again.map((e) => ({ ...e, hidden: true }))))
+        await editor.click(page, 'save')
+        t.assert(/不能全部隐藏/.test(await editor.error(page)))
+        await editor.textarea(page).fill('[{"name":"a","url":"https://a.com/?q=%s","hidden":"yes"}]')
+        await editor.click(page, 'save')
+        t.assert(/hidden 只能是 true 或 false/.test(await editor.error(page)))
+        await page.close()
+    })
+
+    await t.test('删掉的内置引擎不会回来；新版本新增的内置引擎自动追加', async () => {
+        const all = (await (async () => {
+            const p = await open(browser, 'https://www.baidu.com/s?wd=x')
+            await h.menu(p, '编辑引擎列表')
+            const v = JSON.parse(await editor.textarea(p).inputValue())
+            await p.close()
+            return v
+        })())
+        // 模拟：用户在「还没有抖音」的旧版本里保存过，并且删掉了 Yandex
+        const list = all.filter((e) => e.id !== 'douyin' && e.id !== 'yandex')
+        const known = all.map((e) => e.id).filter((id) => id !== 'douyin')
+        const page = await open(browser, 'https://www.baidu.com/s?wd=x', { values: { engines: { list, known } } })
+        const ids = (await bar(page)).map((l) => l.id)
+        t.eq(ids.includes('yandex'), false, '用户删掉的 Yandex 回来了')
+        t.eq(ids[ids.length - 1], 'douyin', '新增的抖音应当追加在末尾')
+        await page.close()
+    })
+
+    await t.test('菜单切换布局，刷新后保持', async () => {
+        const page = await open(browser, 'https://www.baidu.com/s?wd=x')
+        const cls = () => shadowEval(page, (root) => root.querySelector('.bar').className)
+        t.assert(/\bside\b/.test(await cls()))
+        await h.menu(page, '切换布局')
+        t.assert(/\btop\b/.test(await cls()), '切换后应当是顶部横条')
+        await page.reload()
+        t.assert(/\btop\b/.test(await cls()), '刷新后应当保持')
+        await h.menu(page, '切换布局')
+        t.assert(/\bside\b/.test(await cls()))
         await page.close()
     })
 

@@ -3,7 +3,7 @@
 // @name:zh-CN   搜索引擎一键切换
 // @name:en      Search Engine Switcher
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.07.02.7
+// @version      2025.07.03.8
 // @description  在搜索结果页放一条引擎切换栏，带着同一个关键词一键跳到别的引擎：百度 / Google / Bing / DuckDuckGo / 搜狗 / 360 / Yandex，GitHub / Stack Overflow，知乎 / B站 / 抖音 / 微信 / 小红书。
 // @description:zh-CN  在搜索结果页放一条引擎切换栏，带着同一个关键词一键跳到别的引擎：百度 / Google / Bing / DuckDuckGo / 搜狗 / 360 / Yandex，GitHub / Stack Overflow，知乎 / B站 / 抖音 / 微信 / 小红书。
 // @description:en  Adds an engine switcher bar to search result pages: jump with the same query to Baidu / Google / Bing / DuckDuckGo / Sogou / 360 / Yandex, GitHub / Stack Overflow, Zhihu / Bilibili / Douyin / WeChat (Sogou) / Xiaohongshu.
@@ -62,7 +62,7 @@
     // =========================================================================
 
     const CONFIG = {
-        layout: 'side',        // 'side' 贴左侧竖排 | 'top' 顶部横条
+        layout: 'side',        // 'side' 贴左侧竖排 | 'top' 顶部横条。菜单里切换会存进 GM，优先于这里
         openInNewTab: false,   // true = 切换时总是开新标签（不按 Ctrl 也开）
         pollInterval: 1000,    // 地址轮询间隔（毫秒），事件漏掉时的兜底
         hotkeys: true,         // Alt+1…9 / Alt+0 切到第 1…9 / 10 个引擎（输入框里不响应）
@@ -217,21 +217,25 @@
     // =========================================================================
 
     /*
-     * 存的是用户编辑后的完整列表：[{ id?, name, url, group? }]。
+     * 存的是用户编辑后的完整列表 + 保存时认识的内置 id：{ list: [{ id?, name, url, group?, hidden? }], known: [id…] }
      *   带内置 id 的项 = 那个内置引擎，可改名 / 改模板 / 改分组 / 调顺序，结果页识别规则仍用内置的
      *   不带 id 的项   = 自定义引擎，只作跳转目标（脚本只在 @match 的站点上运行，管不到它的页面）
-     *   删掉一项       = 不显示它
+     *   hidden: true  = 留在列表里但不显示（想再用改回 false 即可，不用重抄地址）
+     *   删掉一项       = 也不显示，而且不会再自己回来
      * 不存「和默认的差异」：差异格式没法表达调顺序，用户也看不懂。
+     *
+     * known 的用处：脚本以后新增的内置引擎不在用户存过的 list 里，
+     * 光看 list 分不清「用户删掉的」和「那时还没有的」。不在 known 里的才是新来的，追加到末尾。
      */
     const STORE_KEY = 'engines';
     const BUILTIN_BY_ID = new Map(BUILTIN.map((e) => [e.id, e]));
-    const EDITABLE_KEYS = ['id', 'name', 'url', 'group'];
+    const EDITABLE_KEYS = ['id', 'name', 'url', 'group', 'hidden'];
 
     /** 给编辑框看的形状：只留可编辑的字段。 */
     function toEditable(list) {
         return list.map((e) => {
             const o = {};
-            for (const k of EDITABLE_KEYS) if (e[k] !== undefined) o[k] = e[k];
+            for (const k of EDITABLE_KEYS) if (e[k] !== undefined && e[k] !== false) o[k] = e[k];
             return o;
         });
     }
@@ -271,8 +275,16 @@
             }
             if (item.id !== undefined && ids.has(item.id)) return { error: `${at}（${name}）：id「${item.id}」重复了` };
             if (item.id !== undefined) ids.add(item.id);
-            list.push({ id: item.id, name, url, group: item.group === undefined ? undefined : item.group.trim() });
+            if (item.hidden !== undefined && typeof item.hidden !== 'boolean') {
+                return { error: `${at}（${name}）：hidden 只能是 true 或 false（不带引号）` };
+            }
+            list.push({
+                id: item.id, name, url,
+                group: item.group === undefined ? undefined : item.group.trim(),
+                hidden: item.hidden === true || undefined,
+            });
         }
+        if (list.every((e) => e.hidden)) return { error: '不能全部隐藏，至少留一个显示的' };
         // 自定义项补一个不撞车的 id（切换栏的 data-engine / 高亮要用）
         let n = 0;
         for (const e of list) {
@@ -288,21 +300,32 @@
     function resolveEngines(list) {
         return list.map((e) => {
             const base = BUILTIN_BY_ID.get(e.id);
-            if (base) return { ...base, name: e.name, url: e.url, group: e.group || base.group };
-            return { id: e.id, name: e.name, url: e.url, group: e.group || '自定义' };
+            const hidden = !!e.hidden;
+            if (base) return { ...base, name: e.name, url: e.url, group: e.group || base.group, hidden };
+            return { id: e.id, name: e.name, url: e.url, group: e.group || '自定义', hidden };
         });
     }
 
+    function saveEngines(list) {
+        GM_setValue(STORE_KEY, { list, known: BUILTIN.map((e) => e.id) });
+    }
+
     function loadEngines() {
-        const saved = GM_getValue(STORE_KEY, null);
+        let saved = GM_getValue(STORE_KEY, null);
         if (saved === null) return BUILTIN;
-        const r = validateEngines(saved);
+        // 2025.07.02.7 存的是裸数组，那时的内置引擎和现在一样
+        if (Array.isArray(saved)) saved = { list: saved, known: BUILTIN.map((e) => e.id) };
+        const r = validateEngines(saved && saved.list);
         if (r.error) {
-            // 存储被改坏（或者老版本存的格式）：不让整条栏消失，回落默认
+            // 存储被改坏：不让整条栏消失，回落默认
             console.warn(TAG, '已保存的引擎列表无效，使用默认：', r.error);
             return BUILTIN;
         }
-        return resolveEngines(r.list);
+        const known = new Set(Array.isArray(saved.known) ? saved.known : []);
+        const have = new Set(r.list.map((e) => e.id));
+        const added = BUILTIN.filter((e) => !have.has(e.id) && !known.has(e.id));
+        if (added.length) console.log(TAG, '新增的内置引擎：', added.map((e) => e.name).join('、'));
+        return resolveEngines(r.list).concat(added);
     }
 
     let engines = loadEngines();
@@ -354,6 +377,14 @@
         a[aria-current="page"] { background: var(--accent); color: var(--accent-fg); font-weight: 600; }
     `;
 
+    /**
+     * 布局。菜单切换的结果存 GM：直接改脚本里的 CONFIG 会在自动更新时被覆盖掉。
+     */
+    function layout() {
+        const v = GM_getValue('layout', CONFIG.layout);
+        return v === 'top' ? 'top' : 'side';
+    }
+
     /** 按 group 分组，组的顺序 = 该组第一次出现的位置。 */
     function groupBy(engines) {
         const map = new Map();
@@ -404,10 +435,10 @@
             const style = document.createElement('style');
             style.textContent = CSS;
             const bar = document.createElement('nav');
-            bar.className = `bar ${CONFIG.layout === 'top' ? 'top' : 'side'}${pageIsDark() ? ' dark' : ''}`;
+            bar.className = `bar ${layout()}${pageIsDark() ? ' dark' : ''}`;
             bar.setAttribute('aria-label', '切换搜索引擎');
             let n = 0;
-            for (const [group, items] of groupBy(engines)) {
+            for (const [group, items] of groupBy(engines.filter((e) => !e.hidden))) {
                 const sec = document.createElement('div');
                 sec.className = 'group';
                 const label = document.createElement('div');
@@ -513,7 +544,7 @@
                 err.textContent = r.error;
                 return false;
             }
-            GM_setValue(STORE_KEY, r.list);
+            saveEngines(r.list);
             engines = resolveEngines(r.list);
             refresh();
             console.log(TAG, `已保存 ${r.list.length} 个引擎`);
@@ -543,7 +574,7 @@
             // 不用 innerHTML：Google 等站点开了 Trusted Types，给 innerHTML 赋字符串会直接抛错。
             // 反引号里的是 <code>，其余是普通文字
             const HINT = '每项 `name` 名称、`url` 搜索地址（`%s` 代表关键词）、`group` 分组。'
-                + '带 `id` 的是内置引擎；删掉一项就不再显示；顺序即显示顺序。';
+                + '带 `id` 的是内置引擎；不用的加 `"hidden": true` 隐藏（删掉也行，但以后想加回来得重抄地址）；顺序即显示顺序。';
             HINT.split('`').forEach((part, i) => {
                 if (i % 2) {
                     const c = document.createElement('code');
@@ -705,6 +736,10 @@
         GM_registerMenuCommand('编辑引擎列表', () => Editor.open());
         GM_registerMenuCommand('恢复默认引擎', () => {
             if (window.confirm('恢复默认引擎列表？自定义的引擎会被清掉。')) resetEngines();
+        });
+        GM_registerMenuCommand('切换布局（侧边竖排 / 顶部横条）', () => {
+            GM_setValue('layout', layout() === 'top' ? 'side' : 'top');
+            refresh();
         });
         update();
         watchUrl(update);
