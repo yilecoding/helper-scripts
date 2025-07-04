@@ -33,6 +33,7 @@ function fixtureFor(hostname) {
  * opts.values  GM 存储初始值
  * opts.script  换一份脚本（改了 CONFIG 的副本）
  * opts.init    额外的 init script（在用户脚本之前跑，用来改造页面环境）
+ * opts.headers 文档响应头（测 CSP 之类）
  */
 async function open(browser, url, opts = {}) {
     const page = await browser.newPage()
@@ -44,6 +45,7 @@ async function open(browser, url, opts = {}) {
         const html = opts.html || fs.readFileSync(path.join(FIXTURES, fixtureFor(u.hostname)), 'utf8')
         return route.fulfill({
             contentType: 'text/html; charset=utf-8',
+            headers: opts.headers,
             body: html.replace('{{value}}', escapeHtml(opts.value || '')),
         })
     })
@@ -580,6 +582,53 @@ function shadowEval(page, fn, arg) {
         t.assert(/\btop\b/.test(await cls()), '刷新后应当保持')
         await h.menu(page, '切换布局')
         t.assert(/\bside\b/.test(await cls()))
+        await page.close()
+    })
+
+    await t.test('边界：严格 CSP（style-src 不许内联）下切换栏照样有样式', async () => {
+        const page = await open(browser, 'https://www.baidu.com/s?wd=csp', {
+            headers: { 'content-security-policy': "style-src 'self'" },
+        })
+        const pos = await shadowEval(page, (root) => getComputedStyle(root.querySelector('.bar')).position)
+        t.eq(pos, 'fixed')
+        await page.close()
+    })
+
+    await t.test('边界：搜索框里有孤立代理项（\\uD800）不抛错', async () => {
+        const page = await open(browser, 'https://www.baidu.com/s?tn=x', {
+            html: '<!doctype html><html><body><input id="kw"><script>document.getElementById("kw").value = "ab\\uD800cd"</script></body></html>',
+        })
+        t.eq(h.errors(page).map(String), [])
+        const links = await bar(page)
+        t.assert(links, '切换栏没出现')
+        t.eq(keywordIn(links.find((l) => l.id === 'google').href, 'q'), 'ab\uFFFDcd')
+        await page.close()
+    })
+
+    await t.test('边界：切换栏被页面摘掉后自己挂回来', async () => {
+        const page = await open(browser, 'https://www.baidu.com/s?wd=x')
+        await page.evaluate(() => document.getElementById('search-switcher').remove())
+        await page.waitForFunction(() => document.getElementById('search-switcher'), null, { timeout: 3000 })
+        t.eq((await bar(page)).length, 14)
+        await page.close()
+    })
+
+    await t.test('边界：结果页嵌在 iframe 里时不在 iframe 里再挂一条', async () => {
+        const page = await open(browser, 'https://www.baidu.com/s?wd=outer', {
+            html: '<!doctype html><html><body><input id="kw"><iframe src="https://www.baidu.com/s?wd=inner"></iframe></body></html>',
+        })
+        await page.waitForTimeout(300)
+        const frame = page.frames().find((f) => f !== page.mainFrame())
+        t.assert(frame, 'iframe 没加载')
+        t.eq(await frame.evaluate(() => !!document.getElementById('search-switcher')), false)
+        t.eq(await linkKw(page, 'google', 'q'), 'outer')
+        await page.close()
+    })
+
+    await t.test('边界：打印时不出现在纸上', async () => {
+        const page = await open(browser, 'https://www.baidu.com/s?wd=x')
+        await page.emulateMedia({ media: 'print' })
+        t.eq(await shadowEval(page, (root) => getComputedStyle(root.querySelector('.bar')).display), 'none')
         await page.close()
     })
 

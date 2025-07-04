@@ -3,7 +3,7 @@
 // @name:zh-CN   搜索引擎一键切换
 // @name:en      Search Engine Switcher
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.07.03.8
+// @version      2025.07.04.9
 // @description  在搜索结果页放一条引擎切换栏，带着同一个关键词一键跳到别的引擎：百度 / Google / Bing / DuckDuckGo / 搜狗 / 360 / Yandex，GitHub / Stack Overflow，知乎 / B站 / 抖音 / 微信 / 小红书。
 // @description:zh-CN  在搜索结果页放一条引擎切换栏，带着同一个关键词一键跳到别的引擎：百度 / Google / Bing / DuckDuckGo / 搜狗 / 360 / Yandex，GitHub / Stack Overflow，知乎 / B站 / 抖音 / 微信 / 小红书。
 // @description:en  Adds an engine switcher bar to search result pages: jump with the same query to Baidu / Google / Bing / DuckDuckGo / Sogou / 360 / Yandex, GitHub / Stack Overflow, Zhihu / Bilibili / Douyin / WeChat (Sogou) / Xiaohongshu.
@@ -42,6 +42,7 @@
 // @grant        GM_registerMenuCommand
 // @license      CC BY-NC-SA
 // @run-at       document-end
+// @noframes
 // @homepageURL  https://github.com/yilecoding/helper-scripts
 // @supportURL   https://github.com/yilecoding/helper-scripts/issues
 // @updateURL    https://raw.githubusercontent.com/yilecoding/helper-scripts/main/search-switcher/search-switcher.user.js
@@ -204,11 +205,20 @@
     }
 
     /**
+     * 孤立的 UTF-16 代理项（从搜索框里读到的半个 emoji 之类）会让 encodeURIComponent
+     * 抛 URIError，整条栏渲染到一半就断了。换成 U+FFFD。
+     */
+    function wellFormed(str) {
+        if (typeof str.toWellFormed === 'function') return str.toWellFormed();
+        return str.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '\uFFFD');
+    }
+
+    /**
      * 填模板。replace 必须传函数：传字符串的话关键词里的 $& / $' / $1
      * 会被当成替换模式展开（encodeURIComponent 不转义 $）。
      */
     function buildUrl(template, keyword) {
-        const enc = encodeURIComponent(keyword);
+        const enc = encodeURIComponent(wellFormed(keyword));
         return template.replace(/%s/g, () => enc);
     }
 
@@ -375,7 +385,28 @@
         }
         a:hover { background: var(--hover); }
         a[aria-current="page"] { background: var(--accent); color: var(--accent-fg); font-weight: 600; }
+        @media print { .bar { display: none; } }
     `;
+
+    /**
+     * 往 shadow root 里加样式。优先用 constructable stylesheet（adoptedStyleSheets）：
+     * 结果页的 CSP 若是 style-src 不带 'unsafe-inline'，<style> 会被整块拦掉，
+     * 切换栏退化成页面左上角一串裸链接；而 CSSOM 构造的样式表不受 style-src 管。
+     * 不支持（老浏览器 / 跨 realm 赋值失败）时退回 <style>。
+     */
+    function applyStyle(root, css) {
+        try {
+            const sheet = new CSSStyleSheet();
+            sheet.replaceSync(css);
+            root.adoptedStyleSheets = [sheet];
+            return;
+        } catch (e) {
+            // 落到下面
+        }
+        const style = document.createElement('style');
+        style.textContent = css;
+        root.appendChild(style);
+    }
 
     /**
      * 布局。菜单切换的结果存 GM：直接改脚本里的 CONFIG 会在自动更新时被覆盖掉。
@@ -432,8 +463,7 @@
             // 优先级高过 UA 的 [hidden] { display: none }，hidden 属性会失效
             host.style.removeProperty('display');
             root.textContent = '';
-            const style = document.createElement('style');
-            style.textContent = CSS;
+            applyStyle(root, CSS);
             const bar = document.createElement('nav');
             bar.className = `bar ${layout()}${pageIsDark() ? ' dark' : ''}`;
             bar.setAttribute('aria-label', '切换搜索引擎');
@@ -460,7 +490,12 @@
                 }
                 bar.appendChild(sec);
             }
-            root.append(style, bar);
+            root.appendChild(bar);
+        }
+
+        /** 被页面摘掉了就挂回去（有的站会清理 <html> 下不认识的节点）。 */
+        function ensureMounted() {
+            if (host && !host.isConnected) document.documentElement.appendChild(host);
         }
 
         function hide() {
@@ -473,7 +508,7 @@
             return root.querySelectorAll('a[data-engine]')[n - 1] || null;
         }
 
-        return { render, hide, link };
+        return { render, hide, link, ensureMounted };
     })();
 
     // =========================================================================
@@ -557,8 +592,7 @@
             host = document.createElement('div');
             host.id = 'search-switcher-editor';
             const root = host.attachShadow({ mode: 'open' });
-            const style = document.createElement('style');
-            style.textContent = EDITOR_CSS;
+            applyStyle(root, EDITOR_CSS);
 
             const mask = document.createElement('div');
             mask.className = 'mask' + (pageIsDark() ? ' dark' : '');
@@ -627,7 +661,7 @@
                     if (type === 'keydown' && e.key === 'Escape') close();
                 });
             }
-            root.append(style, mask);
+            root.appendChild(mask);
             document.documentElement.appendChild(host);
             fill(engines);
             textarea.focus();
@@ -693,7 +727,10 @@
         }
         window.addEventListener('popstate', check);
         window.addEventListener('hashchange', check);
-        setInterval(check, CONFIG.pollInterval);
+        setInterval(() => {
+            check();
+            if (shown) Bar.ensureMounted();
+        }, CONFIG.pollInterval);
     }
 
     // =========================================================================
@@ -733,6 +770,8 @@
     }
 
     function boot() {
+        // @noframes 的保险：不认这个元数据的管理器里，结果页里嵌的同站 iframe 也会再挂一条
+        if (window.top !== window.self) return;
         GM_registerMenuCommand('编辑引擎列表', () => Editor.open());
         GM_registerMenuCommand('恢复默认引擎', () => {
             if (window.confirm('恢复默认引擎列表？自定义的引擎会被清掉。')) resetEngines();
