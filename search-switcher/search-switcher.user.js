@@ -3,7 +3,7 @@
 // @name:zh-CN   搜索引擎一键切换
 // @name:en      Search Engine Switcher
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.07.04.9
+// @version      2025.07.04.10
 // @description  在搜索结果页放一条引擎切换栏，带着同一个关键词一键跳到别的引擎：百度 / Google / Bing / DuckDuckGo / 搜狗 / 360 / Yandex，GitHub / Stack Overflow，知乎 / B站 / 抖音 / 微信 / 小红书。
 // @description:zh-CN  在搜索结果页放一条引擎切换栏，带着同一个关键词一键跳到别的引擎：百度 / Google / Bing / DuckDuckGo / 搜狗 / 360 / Yandex，GitHub / Stack Overflow，知乎 / B站 / 抖音 / 微信 / 小红书。
 // @description:en  Adds an engine switcher bar to search result pages: jump with the same query to Baidu / Google / Bing / DuckDuckGo / Sogou / 360 / Yandex, GitHub / Stack Overflow, Zhihu / Bilibili / Douyin / WeChat (Sogou) / Xiaohongshu.
@@ -166,7 +166,8 @@
 
     /**
      * hash 优先于 search：不刷新页面换关键词时，有的站只改 hash（/s?wd=旧#wd=新），
-     * 这时 search 里留着的是上一个词。hash 里没有 = 的（#top、#ip=…以外的锚点）不当参数读。
+     * 这时 search 里留着的是上一个词。hash 里没有 = 的（#top 这种普通锚点）不当参数读；
+     * 有 = 但没有本引擎参数名的（Google 图片查看器的 #imgrc=…）读不到值，自然落回 search。
      */
     function keywordFromUrl(engine, loc) {
         const sources = [];
