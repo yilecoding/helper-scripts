@@ -17,6 +17,13 @@ const t = h.createRunner('form-saver')
 
 let browser
 
+const DEBOUNCE = 1100 // 脚本防抖 800ms + 余量
+
+/** 读模拟 GM 存储里某个站点的草稿桶。 */
+function bucket(page, origin) {
+    return page.evaluate(k => JSON.parse(localStorage.getItem('__gm:fs:d:' + k) || 'null'), origin)
+}
+
 /** 新页面：装脚本，把 origin 下的所有路径都用 fixture 应答；pages 可按 pathname 指定不同 fixture。 */
 async function openPage(origin, fixture, opts = {}) {
     const page = await browser.newPage()
@@ -69,6 +76,49 @@ async function main() {
         })
         await page.waitForTimeout(100)
         t.assert(page.__logs.some(l => l.includes('本站已停用')), page.__logs.join('\n'))
+        await page.close()
+    })
+
+    console.log('保存')
+    await t.test('输入后防抖保存，键 = 表单 + name/id/结构路径', async () => {
+        const page = await openPage('https://desk.test', 'fields.html', { path: '/ticket/new' })
+        await page.fill('[name=subject]', '打印机坏了')
+        await page.fill('#contact', '分机 1234')
+        await page.fill('.noname', '三楼')
+        await page.fill('[name=note]', '备注')
+        await page.selectOption('[name=priority]', 'high')
+        await page.selectOption('[name=tags]', ['a', 'c'])
+        await page.check('[value=feature]')
+        await page.check('[name=urgent]')
+        await page.locator('[name="cc[]"]').nth(1).fill('boss@x.test')
+        t.eq(await bucket(page, 'https://desk.test'), null, '防抖期间不应落盘')
+        await page.waitForTimeout(DEBOUNCE)
+        const d = (await bucket(page, 'https://desk.test'))['https://desk.test/ticket/new']
+        t.eq(d.title, '工单')
+        const v = Object.fromEntries(Object.entries(d.fields).map(([k, f]) => [k, f.v]))
+        t.eq(v, {
+            'form#ticket [name=subject]': '打印机坏了',
+            'form#ticket #contact': '分机 1234',
+            'form#ticket @div:1>span:1>input:1': '三楼',
+            'form:1 [name=note]': '备注',
+            'form#ticket [name=priority]': 'high',
+            'form#ticket [name=tags]': ['a', 'c'],
+            'form#ticket [name=kind]': 'feature',
+            'form#ticket [name=urgent]': true,
+            'form#ticket [name=cc[]]:1': 'boss@x.test',
+        })
+        await page.close()
+    })
+    await t.test('改回空/默认值就从草稿里删掉，整页都空了删页面', async () => {
+        const page = await openPage('https://desk.test', 'fields.html')
+        await page.fill('[name=subject]', 'x')
+        await page.selectOption('[name=priority]', 'low')
+        await page.waitForTimeout(DEBOUNCE)
+        t.eq(Object.keys((await bucket(page, 'https://desk.test'))['https://desk.test/'].fields).length, 2)
+        await page.fill('[name=subject]', '')
+        await page.selectOption('[name=priority]', 'mid')
+        await page.waitForTimeout(DEBOUNCE)
+        t.eq(await bucket(page, 'https://desk.test'), null)
         await page.close()
     })
 

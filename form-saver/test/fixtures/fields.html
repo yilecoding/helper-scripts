@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>工单</title></head>
+<body>
+<form id="ticket">
+    <input name="subject">
+    <input id="contact">
+    <div><span><input class="noname"></span></div>
+    <select name="priority">
+        <option value="low">低</option>
+        <option value="mid" selected>中</option>
+        <option value="high">高</option>
+    </select>
+    <select name="tags" multiple>
+        <option value="a">A</option><option value="b">B</option><option value="c">C</option>
+    </select>
+    <label><input type="radio" name="kind" value="bug" checked> bug</label>
+    <label><input type="radio" name="kind" value="feature"> feature</label>
+    <label><input type="checkbox" name="urgent"> 紧急</label>
+    <input name="cc[]"><input name="cc[]">
+    <input type="submit" value="提交">
+</form>
+<form>
+    <textarea name="note"></textarea>
+</form>
+</body>
+</html>
