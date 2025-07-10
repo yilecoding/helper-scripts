@@ -122,6 +122,49 @@ async function main() {
         await page.close()
     })
 
+    console.log('隐私')
+    await t.test('password/hidden/file/cc-*/验证码/卡号 都不存，只存普通字段', async () => {
+        const page = await openPage('https://shop.test', 'privacy.html')
+        await page.fill('[name=username]', 'alice') // 登录表单整个不存
+        await page.fill('[name=pw]', 'hunter2')
+        await page.fill('[name=comment]', '请包装好')
+        await page.fill('[name=passenger]', '张三')
+        await page.click('#toggle') // 「显示密码」：type 变成 text 之后再输入
+        await page.fill('#show-pw', 'secret-visible')
+        await page.evaluate(() => {
+            const h = document.querySelector('[name=token]')
+            h.value = 'csrf'
+            h.dispatchEvent(new Event('input', { bubbles: true }))
+        })
+        await page.setInputFiles('[name=avatar]', { name: 'a.txt', mimeType: 'text/plain', buffer: Buffer.from('x') })
+        await page.fill('[name=ccn]', '4111111111111111')
+        await page.fill('[name=exp]', '12/30')
+        await page.fill('[name=code]', '123456')
+        await page.fill('[name=newpass]', 'n3w')
+        await page.fill('[name=captcha]', 'abcd')
+        await page.fill('[name=v]', '654321')
+        await page.fill('[name=bank]', '6222020200112233')
+        await page.fill('[name=memo]', '4111 1111 1111 1111') // 值像卡号（过 Luhn）
+        await page.waitForTimeout(DEBOUNCE)
+        const d = (await bucket(page, 'https://shop.test'))['https://shop.test/']
+        t.eq(Object.keys(d.fields).sort(), ['form#checkout [name=comment]', 'form#checkout [name=passenger]'])
+        const raw = await page.evaluate(() => JSON.stringify(localStorage))
+        for (const secret of ['hunter2', 'alice', 'secret-visible', 'csrf', '4111', '12/30', '123456', 'n3w', 'abcd', '654321', '6222']) {
+            t.assert(!raw.includes(secret), '存储里出现了 ' + secret)
+        }
+        await page.close()
+    })
+    await t.test('普通字段后来被填成卡号：已存的旧值也删掉', async () => {
+        const page = await openPage('https://shop.test', 'privacy.html')
+        await page.fill('[name=memo]', '周末送')
+        await page.waitForTimeout(DEBOUNCE)
+        t.assert((await bucket(page, 'https://shop.test'))['https://shop.test/'].fields['form#checkout [name=memo]'])
+        await page.fill('[name=memo]', '4111-1111-1111-1111')
+        await page.waitForTimeout(DEBOUNCE)
+        t.eq(await bucket(page, 'https://shop.test'), null)
+        await page.close()
+    })
+
     await env.close()
     t.done()
 }

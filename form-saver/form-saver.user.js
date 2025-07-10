@@ -3,7 +3,7 @@
 // @name:zh-CN   表单草稿自动保存|评论/工单/帖子写到一半不怕丢
 // @name:en      Form Saver — auto-save drafts of what you type, restore after crash/close
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.07.10.2
+// @version      2025.07.10.3
 // @description  在任意网页自动保存输入框/文本框/下拉框/富文本的草稿，误关标签、页面崩溃、提交失败跳走后回来，角落提示一键恢复。不保存密码、卡号、验证码等敏感字段；草稿 7 天过期。
 // @description:zh-CN  在任意网页自动保存输入框/文本框/下拉框/富文本的草稿，误关标签、页面崩溃、提交失败跳走后回来，角落提示一键恢复。不保存密码、卡号、验证码等敏感字段；草稿 7 天过期。
 // @description:en  Auto-saves drafts of inputs, textareas, selects and contenteditable editors on any page. Closed the tab, the page crashed or a submit failed? Come back and restore with one click. Never stores passwords, card numbers or one-time codes; drafts expire after 7 days.
@@ -213,12 +213,77 @@
         return txt.trim().replace(/\s+/g, ' ').slice(0, 40);
     }
 
+    // =========================================================================
+    // 隐私：哪些字段绝不落盘
+    // =========================================================================
+
+    const SECRET_TYPES = new Set(['password', 'hidden', 'file']);
+    const SECRET_AUTOCOMPLETE = new Set(['one-time-code', 'new-password', 'current-password']);
+    /**
+     * 按 name/id/autocomplete/placeholder/aria-label/label 文本判断「疑似敏感」。
+     * 宁可错杀：漏存一个字段只是少恢复一点，存下一个验证码/卡号就是泄露。
+     * pass 不单独匹配（passenger、passport 不是密码）；pin/otp/ssn 要求左侧不是字母（spinner、footprint 不算）。
+     */
+    const SECRET_HINT = new RegExp([
+        'passw', 'passwd', 'passcode', 'passphrase', 'pwd', '(^|[^a-z])pin([^a-z]|$)',
+        'cvv', 'cvc', 'csc', 'security.?code', 'card.?(num|no)', 'cc.?(num|no)', 'credit.?card', 'expir',
+        '(^|[^a-z])otp', 'one.?time', 'totp', '2fa', 'mfa', 'captcha', 'verif\\w*.?code', 'sms.?code', 'auth.?code',
+        '(^|[^a-z])ssn([^a-z]|$)',
+        '验证码', '校验码', '动态码', '密码', '口令', '卡号', '信用卡', '银行卡', '安全码', '有效期', '身份证',
+    ].join('|'), 'i');
+
+    /**
+     * 「显示密码」按钮会把 type=password 改成 text —— 那一刻起按 type 就认不出来了。
+     * 所以见过一次 password 的输入框和它所在的表单，永久记作敏感（登录/注册表单整个不存）。
+     */
+    const seenSecret = new WeakSet();
+
+    function rememberPasswords(root) {
+        for (const el of root.querySelectorAll('input[type="password"]')) {
+            seenSecret.add(el);
+            if (el.form) seenSecret.add(el.form);
+        }
+    }
+
+    function hintText(el) {
+        return [
+            el.name, el.id, el.getAttribute('autocomplete'), el.getAttribute('placeholder'), el.getAttribute('aria-label'),
+            el.labels && el.labels[0] && el.labels[0].textContent,
+        ].filter(Boolean).join(' ');
+    }
+
+    function isSecretField(el) {
+        if (seenSecret.has(el) || (el.form && seenSecret.has(el.form))) return true;
+        if (el.tagName === 'INPUT' && SECRET_TYPES.has(el.type)) return true;
+        const ac = (el.getAttribute('autocomplete') || '').toLowerCase().split(/\s+/);
+        if (ac.some(tok => tok.startsWith('cc-') || SECRET_AUTOCOMPLETE.has(tok))) return true;
+        return SECRET_HINT.test(hintText(el));
+    }
+
+    /** 值本身像银行卡号（13~19 位数字、过 Luhn 校验）。字段名起得再无害也不存。 */
+    function looksLikeCardNumber(value) {
+        if (typeof value !== 'string') return false;
+        const digits = value.replace(/[\s-]/g, '');
+        if (!/^\d{13,19}$/.test(digits)) return false;
+        let sum = 0;
+        for (let i = 0; i < digits.length; i++) {
+            let d = +digits[digits.length - 1 - i];
+            if (i % 2) { d *= 2; if (d > 9) d -= 9; }
+            sum += d;
+        }
+        return sum % 10 === 0;
+    }
+
     /** 可存的字段。隐私过滤在这里收口。 */
     function shouldSave(el) {
         if (!isField(el)) return false;
         if (el.disabled || el.readOnly) return false;
         if (el.tagName === 'INPUT' && NON_DATA_TYPES.has(el.type)) return false;
-        return true;
+        if (el.type === 'password') {
+            seenSecret.add(el);
+            if (el.form) seenSecret.add(el.form);
+        }
+        return !isSecretField(el);
     }
 
     // =========================================================================
@@ -248,7 +313,7 @@
             const fk = fieldKey(el);
             const draft = bucket[pk] || { fields: {} };
             const value = readValue(el);
-            if (isPristine(el)) {
+            if (isPristine(el) || looksLikeCardNumber(value)) {
                 delete draft.fields[fk];
             } else if (typeof value === 'string' && value.length > CONFIG.maxValueLength) {
                 console.warn(TAG, '字段太长，不保存', fk, value.length);
@@ -277,7 +342,9 @@
             console.log(TAG, '本站已停用');
             return;
         }
+        rememberPasswords(document);
         // 捕获阶段：页面自己 stopPropagation 也挡不住我们
+        document.addEventListener('focusin', (e) => { if (e.target.type === 'password') shouldSave(e.target); }, true);
         document.addEventListener('input', onEdit, true);
         document.addEventListener('change', onEdit, true);
         console.log(TAG, '已启动', pageKey(settings));

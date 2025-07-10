@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>结账</title></head>
+<body>
+<form id="login">
+    <input name="username">
+    <input type="password" name="pw">
+</form>
+<!-- 不在 form 里的「显示密码」框：只能靠元素级记忆认出来 -->
+<div class="pw-box">
+    <input id="show-pw" type="password">
+    <button type="button" id="toggle" onclick="document.getElementById('show-pw').type='text'">显示</button>
+</div>
+<form id="checkout">
+    <input name="comment">
+    <input name="passenger" placeholder="乘客姓名">
+    <input type="hidden" name="token">
+    <input type="file" name="avatar">
+    <input name="ccn" autocomplete="cc-number">
+    <input name="exp" autocomplete="billing cc-exp">
+    <input name="code" autocomplete="one-time-code">
+    <input name="newpass" autocomplete="new-password">
+    <input name="captcha">
+    <input name="v" placeholder="请输入短信验证码">
+    <label>银行卡号 <input name="bank"></label>
+    <input name="memo">
+</form>
+</body>
+</html>
