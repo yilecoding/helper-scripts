@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>React 受控表单</title></head>
+<body>
+<div id="app">
+    <form id="reply">
+        <input id="title" name="title">
+        <textarea id="body" name="body"></textarea>
+        <select id="lang" name="lang"><option value="zh">中文</option><option value="en">English</option></select>
+        <label><input id="agree" name="agree" type="checkbox"> 同意</label>
+    </form>
+    <pre id="state"></pre>
+    <button id="rerender" type="button">rerender</button>
+</div>
+<script>
+/*
+ * React 受控组件的最小模拟（不能联网拉 React，这里只复刻和恢复相关的三件事）：
+ *
+ * 1. inputValueTracking：在每个受控节点「实例」上装 value/checked 拦截器，
+ *    任何 node.value = x 都会把 tracker 记成 x。
+ * 2. 事件到来时 updateValueIfChanged：DOM 值和 tracker 不同才算变化、才调 onChange。
+ *    text/textarea 听 input，select 听 change，checkbox 听 click。
+ * 3. 每次事件后重新渲染（restoreControlledState）：把 DOM 写回 state；
+ *    并且像 React 一样同步 defaultValue（input 的 value 属性 / textarea 的 defaultValue）。
+ */
+const state = { title: '', body: '', lang: 'zh', agree: false }
+const fields = [
+    { node: title, key: 'title', prop: 'value', on: ['input', 'change'] },
+    { node: body, key: 'body', prop: 'value', on: ['input', 'change'] },
+    { node: lang, key: 'lang', prop: 'value', on: ['change'] },
+    { node: agree, key: 'agree', prop: 'checked', on: ['click'] },
+]
+
+function track(f) {
+    const proto = Object.getPrototypeOf(f.node)
+    const desc = Object.getOwnPropertyDescriptor(proto, f.prop)
+    let current = String(desc.get.call(f.node))
+    Object.defineProperty(f.node, f.prop, {
+        configurable: true,
+        get() { return desc.get.call(this) },
+        set(v) { current = String(v); desc.set.call(this, v) },
+    })
+    f.tracker = { get: () => current, set: v => { current = v } }
+}
+
+function render() {
+    for (const f of fields) {
+        if (f.node[f.prop] !== state[f.key]) f.node[f.prop] = state[f.key]
+        if (f.prop === 'value' && f.node.tagName !== 'SELECT') f.node.defaultValue = state[f.key]
+    }
+    document.getElementById('state').textContent = JSON.stringify(state)
+}
+
+fields.forEach(track)
+const app = document.getElementById('app')
+for (const type of ['input', 'change', 'click']) {
+    app.addEventListener(type, e => {
+        const f = fields.find(x => x.node === e.target)
+        if (!f || !f.on.includes(type)) return
+        const next = String(f.node[f.prop])
+        if (next !== f.tracker.get()) {
+            f.tracker.set(next)
+            state[f.key] = f.prop === 'checked' ? f.node.checked : f.node.value
+        }
+        render()
+    })
+}
+document.getElementById('rerender').onclick = render
+render()
+</script>
+</body>
+</html>

@@ -3,7 +3,7 @@
 // @name:zh-CN   表单草稿自动保存|评论/工单/帖子写到一半不怕丢
 // @name:en      Form Saver — auto-save drafts of what you type, restore after crash/close
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.07.15.4
+// @version      2025.07.15.5
 // @description  在任意网页自动保存输入框/文本框/下拉框/富文本的草稿，误关标签、页面崩溃、提交失败跳走后回来，角落提示一键恢复。不保存密码、卡号、验证码等敏感字段；草稿 7 天过期。
 // @description:zh-CN  在任意网页自动保存输入框/文本框/下拉框/富文本的草稿，误关标签、页面崩溃、提交失败跳走后回来，角落提示一键恢复。不保存密码、卡号、验证码等敏感字段；草稿 7 天过期。
 // @description:en  Auto-saves drafts of inputs, textareas, selects and contenteditable editors on any page. Closed the tab, the page crashed or a submit failed? Come back and restore with one click. Never stores passwords, card numbers or one-time codes; drafts expire after 7 days.
@@ -142,22 +142,48 @@
         }
     }
 
+    /** 页面给的初始值（按 DOM 里的 defaultValue/defaultChecked/defaultSelected 算）。 */
+    function defaultValueOf(el) {
+        switch (kindOf(el)) {
+            case 'check': return el.defaultChecked;
+            case 'radio': {
+                const on = (el.name ? radioGroup(el) : [el]).find(r => r.defaultChecked);
+                return on ? on.value : null;
+            }
+            case 'multi': return [...el.options].filter(o => o.defaultSelected).map(o => o.value);
+            default:
+                if (el.tagName === 'SELECT') {
+                    const o = el.options[defaultIndex(el)];
+                    return o ? o.value : '';
+                }
+                return el.defaultValue;
+        }
+    }
+
     /**
-     * 「没被用户动过」：文本为空或等于页面给的默认值；勾选/下拉等于初始状态。
+     * 初始值要在「第一次碰到这个字段时」拍快照，不能每次现读 defaultValue。
+     *
+     * React 受控组件每次渲染都会把 defaultValue（input 的 value 属性、textarea 的 defaultValue）
+     * 同步成当前值 —— 于是「当前值 === defaultValue」永远成立，按现读的判断
+     * 每个 React 输入框都是「没动过」，一个字也存不下来。
+     * focusin / 第一个 input 事件都在捕获阶段先到我们这里，那时 React 还没重新渲染。
+     */
+    const baseline = new WeakMap();
+
+    function baselineOf(el) {
+        const k = kindOf(el) === 'radio' && el.name ? radioGroup(el)[0] || el : el;
+        if (!baseline.has(k)) baseline.set(k, defaultValueOf(el));
+        return baseline.get(k);
+    }
+
+    /**
+     * 「没被用户动过」：文本为空或等于初始值；勾选/下拉等于初始状态。
      * 这种状态既不值得存（存了也恢复不出新东西），也是恢复时「可以安全填入」的判据。
      */
     function isPristine(el) {
-        switch (kindOf(el)) {
-            case 'check': return el.checked === el.defaultChecked;
-            case 'radio': {
-                const group = el.name ? radioGroup(el) : [el];
-                return group.every(r => r.checked === r.defaultChecked);
-            }
-            case 'multi': return [...el.options].every(o => o.selected === o.defaultSelected);
-            default:
-                if (el.tagName === 'SELECT') return el.selectedIndex === defaultIndex(el);
-                return el.value === '' || el.value === el.defaultValue;
-        }
+        const v = readValue(el);
+        if (kindOf(el) === 'text' && el.tagName !== 'SELECT' && v === '') return true;
+        return sameValue(v, baselineOf(el));
     }
 
     /** 单选 select 的初始选中项：最后一个带 selected 属性的，都没有就是第一个可选项。 */
@@ -298,6 +324,7 @@
     function onEdit(e) {
         const el = e.target;
         if (!shouldSave(el)) return;
+        baselineOf(el);
         dirty.set(el, pageKey(settings));
         clearTimeout(flushTimer);
         flushTimer = setTimeout(flush, CONFIG.debounceMs);
@@ -564,7 +591,7 @@
         }
         rememberPasswords(document);
         // 捕获阶段：页面自己 stopPropagation 也挡不住我们
-        document.addEventListener('focusin', (e) => { if (e.target.type === 'password') shouldSave(e.target); }, true);
+        document.addEventListener('focusin', (e) => { if (shouldSave(e.target)) baselineOf(e.target); }, true);
         document.addEventListener('input', onEdit, true);
         document.addEventListener('change', onEdit, true);
         console.log(TAG, '已启动', pageKey(settings));

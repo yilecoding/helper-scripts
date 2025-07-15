@@ -280,6 +280,46 @@ async function main() {
         await page.close()
     })
 
+    console.log('React 受控组件')
+    await t.test('fixture 自检：直接 el.value = x 会被受控组件吞掉', async () => {
+        const page = await openPage('https://app.test', 'react.html')
+        await page.evaluate(() => {
+            const el = document.getElementById('title')
+            el.value = 'naive'
+            el.dispatchEvent(new Event('input', { bubbles: true }))
+        })
+        t.eq(await page.inputValue('#title'), '', '模拟的 React 应该把值改回 state')
+        t.eq(JSON.parse(await page.textContent('#state')).title, '')
+        await page.close()
+    })
+    await t.test('受控输入能被保存（React 会把 defaultValue 同步成当前值）', async () => {
+        const page = await openPage('https://app.test', 'react.html')
+        await page.fill('#title', 'React 标题')
+        await page.fill('#body', 'React 正文')
+        await page.waitForTimeout(DEBOUNCE)
+        t.eq(await page.evaluate(() => document.getElementById('title').defaultValue), 'React 标题', 'fixture 同步了 defaultValue')
+        const d = (await bucket(page, 'https://app.test'))['https://app.test/']
+        t.eq(Object.keys((d && d.fields) || {}).sort(), ['form#reply [name=body]', 'form#reply [name=title]'])
+        await page.close()
+    })
+    await t.test('恢复后组件 state 拿到值，重新渲染也不回退', async () => {
+        const page = await openPage('https://app.test', 'react.html')
+        await page.fill('#title', 'React 标题')
+        await page.fill('#body', 'React 正文')
+        await page.selectOption('#lang', 'en')
+        await page.check('#agree')
+        await page.waitForTimeout(DEBOUNCE)
+        await page.reload()
+        t.assert((await promptText(page)).includes('4 个字段'))
+        await page.click('form-saver-ui [data-act=restore]')
+        await page.click('#rerender')
+        t.eq(JSON.parse(await page.textContent('#state')), { title: 'React 标题', body: 'React 正文', lang: 'en', agree: true })
+        t.eq(await page.inputValue('#title'), 'React 标题')
+        t.eq(await page.inputValue('#body'), 'React 正文')
+        t.eq(await page.isChecked('#agree'), true)
+        await page.close()
+    })
+
     await env.close()
     t.done()
 }
