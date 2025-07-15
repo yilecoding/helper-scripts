@@ -3,7 +3,7 @@
 // @name:zh-CN   表单草稿自动保存|评论/工单/帖子写到一半不怕丢
 // @name:en      Form Saver — auto-save drafts of what you type, restore after crash/close
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.07.10.3
+// @version      2025.07.15.4
 // @description  在任意网页自动保存输入框/文本框/下拉框/富文本的草稿，误关标签、页面崩溃、提交失败跳走后回来，角落提示一键恢复。不保存密码、卡号、验证码等敏感字段；草稿 7 天过期。
 // @description:zh-CN  在任意网页自动保存输入框/文本框/下拉框/富文本的草稿，误关标签、页面崩溃、提交失败跳走后回来，角落提示一键恢复。不保存密码、卡号、验证码等敏感字段；草稿 7 天过期。
 // @description:en  Auto-saves drafts of inputs, textareas, selects and contenteditable editors on any page. Closed the tab, the page crashed or a submit failed? Come back and restore with one click. Never stores passwords, card numbers or one-time codes; drafts expire after 7 days.
@@ -333,6 +333,226 @@
     }
 
     // =========================================================================
+    // 恢复
+    // =========================================================================
+
+    /** 当前页面上所有可存字段，按字段键索引。radio 整组共用一个键，取组里第一个。 */
+    function fieldsByKey() {
+        const map = new Map();
+        for (const el of document.querySelectorAll(FIELD_SELECTOR)) {
+            if (!shouldSave(el)) continue;
+            const k = fieldKey(el);
+            if (!map.has(k)) map.set(k, el);
+        }
+        return map;
+    }
+
+    /** 恢复只往「空」里填：文本必须是空串（页面预填的内容也算用户已有的），其余必须是初始状态。 */
+    function isEmptyForRestore(el) {
+        return kindOf(el) === 'text' && el.tagName !== 'SELECT' ? el.value === '' : isPristine(el);
+    }
+
+    function sameValue(a, b) {
+        return JSON.stringify(a) === JSON.stringify(b);
+    }
+
+    /** 草稿里能填进当前页面的字段：元素存在、当前为空、值确实不同。 */
+    function restorable(draft) {
+        if (!draft) return [];
+        const els = fieldsByKey();
+        const out = [];
+        for (const [key, field] of Object.entries(draft.fields)) {
+            const el = els.get(key);
+            if (!el || !isEmptyForRestore(el) || sameValue(readValue(el), field.v)) continue;
+            out.push({ key, el, field });
+        }
+        return out;
+    }
+
+    /**
+     * 用原型上的原生 setter 写值，而不是 el.value = v。
+     *
+     * React 会在每个受控 input 实例上装一个 value 属性拦截器（inputValueTracking），
+     * 记下「它认为的当前值」。input 事件到来时，React 拿 el.value 和这个记录比，
+     * 相同就认为没变、不触发 onChange。直接 el.value = v 会走实例上的拦截器，
+     * 把记录也改成 v —— 事件派发出去 React 判定「没变」，state 还是空，
+     * 下一次渲染再把输入框改回空。原型 setter 绕过拦截器，记录停在旧值，事件才算数。
+     */
+    function setNative(el, prop, value) {
+        const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype
+            : el.tagName === 'SELECT' ? HTMLSelectElement.prototype
+                : HTMLInputElement.prototype;
+        Object.getOwnPropertyDescriptor(proto, prop).set.call(el, value);
+    }
+
+    /** Vue 的 v-model 听 input（.lazy 听 change），React 听 input；两个都发。 */
+    function fire(el) {
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+
+    function applyValue(el, field) {
+        switch (field.k) {
+            case 'check':
+                // click() 走浏览器的激活行为：改 checked 并按顺序派发 click/input/change。
+                // React 的 checkbox onChange 挂在 click 上，只发 change 它收不到。
+                if (el.checked !== field.v) el.click();
+                return;
+            case 'radio': {
+                const target = (el.name ? radioGroup(el) : [el]).find(r => r.value === field.v);
+                if (target && !target.checked) target.click();
+                return;
+            }
+            case 'multi':
+                for (const o of el.options) o.selected = field.v.includes(o.value);
+                fire(el);
+                return;
+            default:
+                setNative(el, 'value', field.v);
+                fire(el);
+        }
+    }
+
+    function restoreDraft(draft) {
+        const items = restorable(draft);
+        for (const { el, field } of items) {
+            try {
+                applyValue(el, field);
+            } catch (e) {
+                console.warn(TAG, '恢复失败', field.l, e);
+            }
+        }
+        return items.length;
+    }
+
+    function fmtAgo(ts) {
+        const m = Math.floor((Date.now() - ts) / 60000);
+        if (m < 1) return '刚刚';
+        if (m < 60) return m + ' 分钟前';
+        if (m < 24 * 60) return Math.floor(m / 60) + ' 小时前';
+        return Math.floor(m / 1440) + ' 天前';
+    }
+
+    // =========================================================================
+    // 界面：shadow DOM 隔离，页面样式进不来、我们的样式也出不去
+    // =========================================================================
+
+    const UI = (() => {
+        let host = null;
+        let box = null;
+        let hideTimer = 0;
+        const CSS = `
+            :host { all: initial; }
+            .card { font: 13px/1.5 system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+                color: #1f2328; background: #fff; border: 1px solid #d0d7de; border-radius: 8px;
+                box-shadow: 0 6px 24px rgba(0,0,0,.18); padding: 10px 12px; max-width: 360px;
+                display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+            .msg { flex: 1 1 180px; }
+            .muted { color: #656d76; }
+            button { font: inherit; border: 1px solid #d0d7de; border-radius: 6px; background: #f6f8fa;
+                color: inherit; padding: 3px 10px; cursor: pointer; }
+            button.primary { background: #1f6feb; border-color: #1f6feb; color: #fff; }
+            button:hover { filter: brightness(.96); }
+            @media (prefers-color-scheme: dark) {
+                .card { color: #e6edf3; background: #161b22; border-color: #30363d; }
+                .muted { color: #8d96a0; }
+                button { background: #21262d; border-color: #30363d; }
+            }
+        `;
+
+        function ensure() {
+            if (host && host.isConnected) return;
+            host = document.createElement('form-saver-ui');
+            // 内联 !important：页面写 form-saver-ui { display: none } 也盖不过
+            host.style.cssText = 'all:initial!important;position:fixed!important;right:16px!important;bottom:16px!important;'
+                + 'z-index:2147483647!important;display:block!important;';
+            const root = host.attachShadow({ mode: 'open' });
+            const style = document.createElement('style');
+            style.textContent = CSS;
+            box = document.createElement('div');
+            root.append(style, box);
+            document.documentElement.appendChild(host);
+        }
+
+        function el(tag, props, children) {
+            const n = document.createElement(tag);
+            Object.assign(n, props || {});
+            for (const c of children || []) n.append(c);
+            return n;
+        }
+
+        /** 只用 textContent 拼内容 —— 草稿是页面里来的文本，不能当 HTML 塞回去。 */
+        function show(parts, actions, { autoHide = 0 } = {}) {
+            ensure();
+            clearTimeout(hideTimer);
+            box.replaceChildren();
+            const card = el('div', { className: 'card' });
+            card.append(el('div', { className: 'msg' }, parts));
+            for (const a of actions || []) {
+                const b = el('button', { textContent: a.label, className: a.primary ? 'primary' : '' });
+                b.dataset.act = a.id;
+                b.addEventListener('click', () => a.run());
+                card.append(b);
+            }
+            box.append(card);
+            if (autoHide) hideTimer = setTimeout(hide, autoHide);
+        }
+
+        function hide() {
+            clearTimeout(hideTimer);
+            if (box) box.replaceChildren();
+        }
+
+        function toast(text) {
+            show([text], [], { autoHide: 3000 });
+        }
+
+        return { show, hide, toast, el };
+    })();
+
+    // =========================================================================
+    // 恢复提示
+    // =========================================================================
+
+    function loadDraft(pk) {
+        return Store.load(location.origin)[pk];
+    }
+
+    function updateDraft(pk, fn) {
+        const bucket = Store.load(location.origin);
+        if (!bucket[pk]) return;
+        fn(bucket[pk]);
+        Store.save(location.origin, bucket);
+    }
+
+    /** 回到页面时检查一次：有可恢复的字段、且用户没对这份草稿点过「忽略」，就浮出提示。 */
+    function checkRestore() {
+        const pk = pageKey(settings);
+        const draft = loadDraft(pk);
+        if (!draft || (draft.dismissedAt && draft.dismissedAt >= draft.t)) return;
+        const items = restorable(draft);
+        if (!items.length) return;
+        UI.show(
+            ['检测到 ' + items.length + ' 个字段的草稿', UI.el('span', { className: 'muted', textContent: '（' + fmtAgo(draft.t) + '）' })],
+            [
+                {
+                    id: 'restore', label: '恢复', primary: true, run() {
+                        const n = restoreDraft(loadDraft(pk));
+                        UI.toast(n ? '已恢复 ' + n + ' 个字段' : '没有可恢复的空字段（不会覆盖已填写的内容）');
+                    },
+                },
+                {
+                    id: 'dismiss', label: '忽略', run() {
+                        // 不删草稿：误点了还能从菜单里找回；只是这份草稿不再自动提示
+                        updateDraft(pk, d => { d.dismissedAt = Date.now(); });
+                        UI.hide();
+                    },
+                },
+            ],
+        );
+    }
+
+    // =========================================================================
     // 启动
     // =========================================================================
 
@@ -348,6 +568,7 @@
         document.addEventListener('input', onEdit, true);
         document.addEventListener('change', onEdit, true);
         console.log(TAG, '已启动', pageKey(settings));
+        checkRestore();
     }
 
     try {

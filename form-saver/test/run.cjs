@@ -19,6 +19,19 @@ let browser
 
 const DEBOUNCE = 1100 // 脚本防抖 800ms + 余量
 
+const PROMPT = 'form-saver-ui .card'
+
+/** 提示条文字（shadow DOM 是 open 的，locator 能穿进去）。 */
+async function promptText(page, timeout = 2000) {
+    const loc = page.locator(PROMPT)
+    try {
+        await loc.waitFor({ timeout })
+    } catch (e) {
+        return null
+    }
+    return loc.innerText()
+}
+
 /** 读模拟 GM 存储里某个站点的草稿桶。 */
 function bucket(page, origin) {
     return page.evaluate(k => JSON.parse(localStorage.getItem('__gm:fs:d:' + k) || 'null'), origin)
@@ -162,6 +175,108 @@ async function main() {
         await page.fill('[name=memo]', '4111-1111-1111-1111')
         await page.waitForTimeout(DEBOUNCE)
         t.eq(await bucket(page, 'https://shop.test'), null)
+        await page.close()
+    })
+
+    console.log('恢复')
+    await t.test('输入后刷新：出现提示，点恢复后值回来并派发 input/change', async () => {
+        const page = await openPage('https://forum.test', 'basic.html', { path: '/new' })
+        t.eq(await promptText(page, 300), null, '没有草稿时不提示')
+        await page.fill('[name=title]', '标题一')
+        await page.fill('[name=body]', '第一段\n第二段')
+        await page.waitForTimeout(DEBOUNCE)
+        await page.reload()
+        const text = await promptText(page)
+        t.assert(text && text.includes('检测到 2 个字段的草稿') && text.includes('刚刚'), String(text))
+        t.eq(await page.inputValue('[name=title]'), '', '不自动填')
+        await page.click('form-saver-ui [data-act=restore]')
+        t.eq(await page.inputValue('[name=title]'), '标题一')
+        t.eq(await page.inputValue('[name=body]'), '第一段\n第二段')
+        t.eq(await page.getAttribute('[name=body]', 'data-input'), '1')
+        t.eq(await page.getAttribute('[name=body]', 'data-change'), '1')
+        t.assert((await promptText(page)).includes('已恢复 2 个字段'))
+        t.eq(h.errors(page).map(String), [])
+        await page.close()
+    })
+    await t.test('勾选/单选/下拉/多选也能恢复', async () => {
+        const page = await openPage('https://desk.test', 'fields.html')
+        await page.selectOption('[name=priority]', 'high')
+        await page.selectOption('[name=tags]', ['b', 'c'])
+        await page.check('[value=feature]')
+        await page.check('[name=urgent]')
+        await page.waitForTimeout(DEBOUNCE)
+        await page.reload()
+        t.assert((await promptText(page)).includes('4 个字段'))
+        await page.click('form-saver-ui [data-act=restore]')
+        t.eq(await page.inputValue('[name=priority]'), 'high')
+        t.eq(await page.$eval('[name=tags]', s => [...s.selectedOptions].map(o => o.value)), ['b', 'c'])
+        t.eq(await page.isChecked('[value=feature]'), true)
+        t.eq(await page.isChecked('[name=urgent]'), true)
+        await page.close()
+    })
+    await t.test('不覆盖已有内容：提示后用户先填了一个字段，恢复只填空的那个', async () => {
+        const page = await openPage('https://forum.test', 'basic.html')
+        await page.fill('[name=title]', '旧标题')
+        await page.fill('[name=body]', '旧正文')
+        await page.waitForTimeout(DEBOUNCE)
+        await page.reload()
+        await promptText(page)
+        await page.fill('[name=title]', '新标题')
+        await page.click('form-saver-ui [data-act=restore]')
+        t.eq(await page.inputValue('[name=title]'), '新标题')
+        t.eq(await page.inputValue('[name=body]'), '旧正文')
+        t.assert((await promptText(page)).includes('已恢复 1 个字段'))
+        await page.close()
+    })
+    await t.test('不覆盖已有内容：字段已有内容时不计入，全都有内容就不提示', async () => {
+        const page = await openPage('https://forum.test', 'basic.html')
+        await page.fill('[name=title]', '旧标题')
+        await page.fill('[name=body]', '旧正文')
+        await page.waitForTimeout(DEBOUNCE)
+        // 模拟服务端把正文渲染回来（编辑页 / 提交失败回显）：正文有内容，只剩标题可恢复
+        await page.route('https://forum.test/**', r => r.fulfill({
+            contentType: 'text/html; charset=utf-8',
+            body: fs.readFileSync(path.join(FIX, 'basic.html'), 'utf8').replace('</textarea>', '服务端回显</textarea>'),
+        }))
+        await page.reload()
+        t.assert((await promptText(page)).includes('检测到 1 个字段'))
+        await page.click('form-saver-ui [data-act=restore]')
+        t.eq(await page.inputValue('[name=body]'), '服务端回显')
+        await page.route('https://forum.test/**', r => r.fulfill({
+            contentType: 'text/html; charset=utf-8',
+            body: fs.readFileSync(path.join(FIX, 'basic.html'), 'utf8')
+                .replace('</textarea>', '服务端回显</textarea>').replace('name="title"', 'name="title" value="回显标题"'),
+        }))
+        await page.reload()
+        t.eq(await promptText(page, 500), null)
+        await page.close()
+    })
+    await t.test('忽略：提示消失、刷新不再提示，但草稿还在', async () => {
+        const page = await openPage('https://forum.test', 'basic.html')
+        await page.fill('[name=title]', '标题')
+        await page.waitForTimeout(DEBOUNCE)
+        await page.reload()
+        await promptText(page)
+        await page.click('form-saver-ui [data-act=dismiss]')
+        t.eq(await page.locator(PROMPT).count(), 0)
+        await page.reload()
+        t.eq(await promptText(page, 500), null)
+        t.assert((await bucket(page, 'https://forum.test'))['https://forum.test/'].fields['form#post [name=title]'])
+        await page.close()
+    })
+    await t.test('页面样式隐藏不了提示条', async () => {
+        const page = await openPage('https://forum.test', 'basic.html')
+        await page.fill('[name=title]', '标题')
+        await page.waitForTimeout(DEBOUNCE)
+        await page.route('https://forum.test/**', r => r.fulfill({
+            contentType: 'text/html; charset=utf-8',
+            body: fs.readFileSync(path.join(FIX, 'basic.html'), 'utf8')
+                .replace('</head>', '<style>form-saver-ui{display:none!important} button{color:red!important}</style></head>'),
+        }))
+        await page.reload()
+        await promptText(page)
+        t.assert(await page.locator('form-saver-ui [data-act=restore]').isVisible())
+        t.eq(await page.locator('form-saver-ui [data-act=restore]').evaluate(b => getComputedStyle(b).color), 'rgb(255, 255, 255)')
         await page.close()
     })
 
