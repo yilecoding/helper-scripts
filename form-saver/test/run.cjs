@@ -320,6 +320,60 @@ async function main() {
         await page.close()
     })
 
+    console.log('SPA')
+    await t.test('随机 id 降级为锚定结构路径：刷新后 id 全变了也能对上', async () => {
+        const page = await openPage('https://mail.test', 'spa.html', { path: '/list' })
+        await page.click('text=写信')
+        await page.fill('textarea', '正文内容')
+        await page.fill('[placeholder=主题]', '周报')
+        await page.fill('.field:first-child input', 'boss@mail.test')
+        await page.waitForTimeout(DEBOUNCE)
+        const keys = Object.keys((await bucket(page, 'https://mail.test'))['https://mail.test/compose'].fields).sort()
+        t.eq(keys, ['#app @main:1>div:1>input:1', '#app @main:1>div:2>input:1', '#app @main:1>div:3>textarea:1'])
+        await page.reload() // 这次 body 最前面多了 cookie 横幅、id 全部重新生成
+        t.eq(await promptText(page, 200), null, '字段还没渲染出来时不提示')
+        const text = await promptText(page)
+        t.assert(text && text.includes('检测到 3 个字段'), String(text))
+        await page.click('form-saver-ui [data-act=restore]')
+        t.eq(await page.inputValue('textarea'), '正文内容')
+        t.eq(await page.inputValue('[placeholder=主题]'), '周报')
+        await page.close()
+    })
+    await t.test('路由切换：离开写信页提示收起，回来再出现', async () => {
+        const page = await openPage('https://mail.test', 'spa.html', { path: '/compose' })
+        await page.waitForSelector('textarea')
+        await page.fill('textarea', '写到一半')
+        await page.waitForTimeout(DEBOUNCE)
+        await page.click('text=列表')
+        await page.reload()
+        t.eq(await promptText(page, 600), null, '列表页没有草稿')
+        await page.click('text=写信')
+        t.assert((await promptText(page)).includes('1 个字段'))
+        await page.click('text=列表')
+        await page.waitForTimeout(500)
+        t.eq(await page.locator(PROMPT).count(), 0, '离开后收起')
+        await page.close()
+    })
+    await t.test('随机 id 判别：稳定的照常用，生成的降级', async () => {
+        const stable = ['contact', 'user_email', 'address2', 'reply-box', 'feedback']
+        const random = [':r1:', '«r2»', '_r_3_', 'el-id-1024-17', 'mui-38291', 'ember123', 'react-select-2-input',
+            '8f14e45f-ceea-4e7a-9f3c-1b2c3d4e5f60', 'a3f9c01bd2', 'V1StGXR8_Z5jdHi6B']
+        const ids = [...stable, ...random]
+        const page = await browser.newPage()
+        await page.route('https://ids.test/**', r => r.fulfill({
+            contentType: 'text/html; charset=utf-8',
+            body: '<!doctype html><meta charset="utf-8"><div>' + ids.map(id => `<input id="${id}">`).join('') + '</div>',
+        }))
+        await h.install(page, SCRIPT)
+        await page.goto('https://ids.test/')
+        for (const id of ids) await page.fill(`[id="${id}"]`, 'v')
+        await page.waitForTimeout(DEBOUNCE)
+        const keys = Object.keys((await bucket(page, 'https://ids.test'))['https://ids.test/'].fields)
+        const expected = ids.map((id, i) => (stable.includes(id) ? 'doc #' + id : 'doc @div:1>input:' + (i + 1)))
+        t.eq(keys.sort(), expected.sort())
+        await page.close()
+    })
+
     await env.close()
     t.done()
 }

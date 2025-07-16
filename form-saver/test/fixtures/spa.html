@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>SPA</title></head>
+<body>
+<div id="app">
+    <nav><a href="/list" data-link>列表</a> <a href="/compose" data-link>写信</a></nav>
+    <main></main>
+</div>
+<script>
+/*
+ * 模拟一个 SPA：pushState 路由；写信页「异步加载」后才渲染表单；
+ * 表单没有 <form>、没有 name，id 是每次渲染都变的 useId / 组件库自增 id。
+ * 第二次及以后加载时在 body 最前面插一条 cookie 横幅（打乱从 body 算起的结构路径）。
+ */
+let seq = Math.floor(Math.random() * 100000)
+const rid = () => ':r' + (seq++).toString(36) + ':'
+const main = document.querySelector('main')
+
+function render() {
+    main.replaceChildren()
+    if (location.pathname === '/compose') {
+        setTimeout(() => {
+            if (location.pathname !== '/compose') return
+            main.innerHTML = `
+                <div class="field"><label for="${rid()}">收件人</label><input id="${rid()}"></div>
+                <div class="field"><input id="mui-${seq++ + 10000}" placeholder="主题"></div>
+                <div class="field"><textarea id="${crypto.randomUUID()}"></textarea></div>`
+        }, 400)
+    } else {
+        main.innerHTML = '<ul><li>第一封</li></ul>'
+    }
+}
+document.addEventListener('click', e => {
+    const a = e.target.closest('[data-link]')
+    if (!a) return
+    e.preventDefault()
+    history.pushState(null, '', a.getAttribute('href'))
+    render()
+})
+window.addEventListener('popstate', render)
+if (sessionStorage.getItem('visited')) {
+    const banner = document.createElement('div')
+    banner.className = 'cookie'
+    banner.innerHTML = '<div>本站使用 cookie</div>'
+    document.body.prepend(banner)
+}
+sessionStorage.setItem('visited', '1')
+render()
+</script>
+</body>
+</html>

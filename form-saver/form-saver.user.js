@@ -3,7 +3,7 @@
 // @name:zh-CN   表单草稿自动保存|评论/工单/帖子写到一半不怕丢
 // @name:en      Form Saver — auto-save drafts of what you type, restore after crash/close
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.07.15.5
+// @version      2025.07.16.6
 // @description  在任意网页自动保存输入框/文本框/下拉框/富文本的草稿，误关标签、页面崩溃、提交失败跳走后回来，角落提示一键恢复。不保存密码、卡号、验证码等敏感字段；草稿 7 天过期。
 // @description:zh-CN  在任意网页自动保存输入框/文本框/下拉框/富文本的草稿，误关标签、页面崩溃、提交失败跳走后回来，角落提示一键恢复。不保存密码、卡号、验证码等敏感字段；草稿 7 天过期。
 // @description:en  Auto-saves drafts of inputs, textareas, selects and contenteditable editors on any page. Closed the tab, the page crashed or a submit failed? Come back and restore with one click. Never stores passwords, card numbers or one-time codes; drafts expire after 7 days.
@@ -203,33 +203,74 @@
         return parts.join('>');
     }
 
+    /**
+     * SPA 组件库生成的 id/name 每次渲染都不一样，拿来当键等于没存：刷新后对不上任何字段。
+     * 认出来就降级到结构路径。宁可多降级：结构路径在同一个页面里同样稳定，只是对改版更敏感。
+     */
+    const RANDOM_ID = [
+        /[:«»]/,                                    // React useId：:r1: / «r1»
+        /^_r_[0-9a-z]+_$/i,                         // React 19.2 的 useId
+        /\d{4,}/,                                   // 带长数字串：el-id-1024-17、ember1234、mui-38291
+        /[0-9a-f]{8}-[0-9a-f]{4}-/i,                // uuid
+        // 十六进制串：8 位以上、字母数字都有（a3f9c01b）
+        /(^|[^0-9a-z])(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{8,}($|[^0-9a-z])/i,
+        // nanoid 一类：8 位以上，同时有大写、小写、数字
+        /^(?=.*\d)(?=.*[a-z])(?=.*[A-Z])[\w-]{8,}$/,
+        // 组件库自增 id 的前缀
+        /^(ember|ext-gen|yui_|mui-|react-select-|el-id-|radix-|headlessui-|downshift-|rc_|rc-|vs\d|v-\d|input-\d|field-\d|uid-|id-\d)/i,
+    ];
+
+    function looksRandom(s) {
+        return !!s && RANDOM_ID.some(re => re.test(s));
+    }
+
+    function stableId(el) {
+        return el.id && !looksRandom(el.id) ? el.id : '';
+    }
+
+    function stableName(el) {
+        const n = el.getAttribute('name');
+        return n && !looksRandom(n) ? n : '';
+    }
+
     function formIdOf(form) {
-        if (!form) return 'doc';
-        if (form.id) return 'form#' + form.id;
-        if (form.getAttribute('name')) return 'form[' + form.getAttribute('name') + ']';
+        if (stableId(form)) return 'form#' + form.id;
+        if (stableName(form)) return 'form[' + form.getAttribute('name') + ']';
         return 'form:' + [...document.forms].indexOf(form);
     }
 
     /**
-     * 字段的稳定标识：所在表单 + 字段自身。字段自身依次用 name、id、结构路径。
+     * 字段所在的「锚」：有 form 用 form；没有就找最近的带稳定 id 的祖先（#app、#root 之类）。
+     * 结构路径从锚开始算 —— 从 body 算的话，页面顶上插一条 cookie 横幅，所有路径就全错位了。
+     */
+    function anchorOf(el) {
+        if (el.form) return { node: el.form, id: formIdOf(el.form) };
+        for (let n = el.parentElement; n && n !== document.body; n = n.parentElement) {
+            if (stableId(n)) return { node: n, id: '#' + n.id };
+        }
+        return { node: document.body, id: 'doc' };
+    }
+
+    /**
+     * 字段的稳定标识：锚 + 字段自身。字段自身依次用 name、id、结构路径（随机的 name/id 跳过）。
      * 同名的多个非 radio 字段（tags[] 这种）用同名中的序号区分。
      */
     function fieldKey(el) {
-        const form = el.form || null;
-        const scopeRoot = form || document.body;
+        const anchor = anchorOf(el);
+        const name = stableName(el);
         let own;
-        if (el.name) {
-            own = '[name=' + el.name + ']';
+        if (name) {
+            own = '[name=' + name + ']';
             if (el.type !== 'radio') {
-                const same = [...scopeRoot.querySelectorAll(FIELD_SELECTOR)].filter(f => f.name === el.name && f.type !== 'radio');
+                const same = [...anchor.node.querySelectorAll(FIELD_SELECTOR)].filter(f => f.getAttribute('name') === name && f.type !== 'radio');
                 if (same.length > 1) own += ':' + same.indexOf(el);
             }
-        } else if (el.id) {
+        } else if (stableId(el)) {
             own = '#' + el.id;
         } else {
-            own = '@' + cssPath(el, scopeRoot);
+            own = '@' + cssPath(el, anchor.node);
         }
-        return formIdOf(form) + ' ' + own;
+        return anchor.id + ' ' + own;
     }
 
     function labelOf(el) {
@@ -468,6 +509,7 @@
         let host = null;
         let box = null;
         let hideTimer = 0;
+        let current = '';   // 正在显示的是哪种卡片（'restore:<pageKey>' / 'toast' …），空 = 没显示
         const CSS = `
             :host { all: initial; }
             .card { font: 13px/1.5 system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
@@ -509,9 +551,10 @@
         }
 
         /** 只用 textContent 拼内容 —— 草稿是页面里来的文本，不能当 HTML 塞回去。 */
-        function show(parts, actions, { autoHide = 0 } = {}) {
+        function show(parts, actions, { autoHide = 0, tag = 'card' } = {}) {
             ensure();
             clearTimeout(hideTimer);
+            current = tag;
             box.replaceChildren();
             const card = el('div', { className: 'card' });
             card.append(el('div', { className: 'msg' }, parts));
@@ -527,14 +570,15 @@
 
         function hide() {
             clearTimeout(hideTimer);
+            current = '';
             if (box) box.replaceChildren();
         }
 
         function toast(text) {
-            show([text], [], { autoHide: 3000 });
+            show([text], [], { autoHide: 3000, tag: 'toast' });
         }
 
-        return { show, hide, toast, el };
+        return { show, hide, toast, el, current: () => current };
     })();
 
     // =========================================================================
@@ -552,31 +596,71 @@
         Store.save(location.origin, bucket);
     }
 
-    /** 回到页面时检查一次：有可恢复的字段、且用户没对这份草稿点过「忽略」，就浮出提示。 */
+    /** 这次页面生命周期里用户已经点过恢复/忽略的页面键，不再打扰。 */
+    const handled = new Set();
+    let shownCount = 0;
+
+    /**
+     * 有可恢复的字段、且用户没对这份草稿点过「忽略」，就浮出提示。
+     * SPA 里字段是陆续渲染出来的，所以 DOM 变化时会反复调用：数量变了就刷新提示，变成 0 就收起。
+     */
     function checkRestore() {
         const pk = pageKey(settings);
-        const draft = loadDraft(pk);
-        if (!draft || (draft.dismissedAt && draft.dismissedAt >= draft.t)) return;
-        const items = restorable(draft);
-        if (!items.length) return;
+        const tag = 'restore:' + pk;
+        const draft = handled.has(pk) ? null : loadDraft(pk);
+        const items = draft && !(draft.dismissedAt && draft.dismissedAt >= draft.t) ? restorable(draft) : [];
+        const showing = UI.current() === tag;
+        if (!items.length) {
+            if (showing || UI.current().startsWith('restore:')) UI.hide();
+            return;
+        }
+        if (showing && shownCount === items.length) return;
+        shownCount = items.length;
         UI.show(
             ['检测到 ' + items.length + ' 个字段的草稿', UI.el('span', { className: 'muted', textContent: '（' + fmtAgo(draft.t) + '）' })],
             [
                 {
                     id: 'restore', label: '恢复', primary: true, run() {
+                        handled.add(pk);
                         const n = restoreDraft(loadDraft(pk));
                         UI.toast(n ? '已恢复 ' + n + ' 个字段' : '没有可恢复的空字段（不会覆盖已填写的内容）');
                     },
                 },
                 {
                     id: 'dismiss', label: '忽略', run() {
+                        handled.add(pk);
                         // 不删草稿：误点了还能从菜单里找回；只是这份草稿不再自动提示
                         updateDraft(pk, d => { d.dismissedAt = Date.now(); });
                         UI.hide();
                     },
                 },
             ],
+            { tag },
         );
+    }
+
+    /**
+     * SPA：字段晚于脚本渲染、路由换了页面键，都靠 DOM 变化来发现（路由切换必然伴随 DOM 变化，
+     * 不用去改 history.pushState）。防抖后统一处理。
+     */
+    function watchDom() {
+        let timer = 0;
+        let lastKey = pageKey(settings);
+        const onChange = () => {
+            clearTimeout(timer);
+            timer = setTimeout(() => {
+                rememberPasswords(document);
+                const pk = pageKey(settings);
+                if (pk !== lastKey) {
+                    lastKey = pk;
+                    flush();
+                }
+                checkRestore();
+            }, 300);
+        };
+        new MutationObserver(onChange).observe(document.documentElement, { childList: true, subtree: true });
+        window.addEventListener('popstate', onChange);
+        window.addEventListener('hashchange', onChange);
     }
 
     // =========================================================================
@@ -596,6 +680,7 @@
         document.addEventListener('change', onEdit, true);
         console.log(TAG, '已启动', pageKey(settings));
         checkRestore();
+        watchDom();
     }
 
     try {
