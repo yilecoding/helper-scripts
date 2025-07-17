@@ -3,7 +3,7 @@
 // @name:zh-CN   表单草稿自动保存|评论/工单/帖子写到一半不怕丢
 // @name:en      Form Saver — auto-save drafts of what you type, restore after crash/close
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.07.16.6
+// @version      2025.07.17.7
 // @description  在任意网页自动保存输入框/文本框/下拉框/富文本的草稿，误关标签、页面崩溃、提交失败跳走后回来，角落提示一键恢复。不保存密码、卡号、验证码等敏感字段；草稿 7 天过期。
 // @description:zh-CN  在任意网页自动保存输入框/文本框/下拉框/富文本的草稿，误关标签、页面崩溃、提交失败跳走后回来，角落提示一键恢复。不保存密码、卡号、验证码等敏感字段；草稿 7 天过期。
 // @description:en  Auto-saves drafts of inputs, textareas, selects and contenteditable editors on any page. Closed the tab, the page crashed or a submit failed? Come back and restore with one click. Never stores passwords, card numbers or one-time codes; drafts expire after 7 days.
@@ -110,15 +110,26 @@
     // =========================================================================
 
     const FIELD_SELECTOR = 'input, textarea, select';
+    const RICH_SELECTOR = '[contenteditable]:not([contenteditable="false"])';
     /** 按钮类 input 没有「内容」可存。 */
     const NON_DATA_TYPES = new Set(['button', 'submit', 'reset', 'image']);
 
-    function isField(el) {
-        return el instanceof Element && el.matches(FIELD_SELECTOR);
+    /** 可编辑区域只认最外层的那个（编辑宿主）；里面的段落、嵌套的 contenteditable 都是它的内容。 */
+    function isRichHost(el) {
+        return el instanceof HTMLElement && el.isContentEditable && !(el.parentElement && el.parentElement.isContentEditable);
     }
 
-    /** text：value 字符串；check：checkbox 的 checked；radio：整组选中项的 value；multi：多选 select 的值数组。 */
+    function isField(el) {
+        return el instanceof Element && (el.matches(FIELD_SELECTOR) || isRichHost(el));
+    }
+
+    function allFields() {
+        return [...document.querySelectorAll(FIELD_SELECTOR + ',' + RICH_SELECTOR)].filter(isField);
+    }
+
+    /** text：value 字符串；check：checkbox 的 checked；radio：整组选中项的 value；multi：多选 select 的值数组；rich：清洗过的 HTML。 */
     function kindOf(el) {
+        if (isRichHost(el)) return 'rich';
         if (el.type === 'checkbox') return 'check';
         if (el.type === 'radio') return 'radio';
         if (el.tagName === 'SELECT' && el.multiple) return 'multi';
@@ -138,8 +149,38 @@
                 return on ? on.value : null;
             }
             case 'multi': return [...el.selectedOptions].map(o => o.value);
+            case 'rich': return cleanHtml(el.innerHTML);
             default: return el.value;
         }
+    }
+
+    /** 富文本「没有内容」：没有可见文字，也没有图片之类的嵌入物（编辑器的空状态常是 <p><br></p>）。 */
+    function richIsEmpty(el) {
+        return !el.textContent.trim() && !el.querySelector('img, video, audio, iframe, hr, table');
+    }
+
+    /**
+     * 富文本草稿按 HTML 存，恢复时还要塞回页面 —— 必须去掉一切可执行的东西。
+     * 存的时候洗一遍，恢复的时候再洗一遍（存储可能被别的脚本改过）。
+     * 用 <template> 解析：里面的 <img onerror> 不会被执行、图片也不会被加载。
+     */
+    function cleanHtml(html) {
+        const tpl = document.createElement('template');
+        tpl.innerHTML = html;
+        tpl.content.querySelectorAll('script, style, iframe, frame, object, embed, link, meta, base, form, input, textarea, select, button, svg, math, noscript, template')
+            .forEach(n => n.remove());
+        for (const n of tpl.content.querySelectorAll('*')) {
+            for (const a of [...n.attributes]) {
+                const name = a.name.toLowerCase();
+                const val = a.value.replace(/[\s\u0000-\u001f]/g, '').toLowerCase();
+                if (name.startsWith('on') || name === 'style' || name === 'srcdoc' || name === 'contenteditable'
+                    || ((name === 'href' || name === 'src' || name === 'action' || name === 'formaction' || name.endsWith(':href'))
+                        && /^(javascript|vbscript|data):/.test(val) && !/^data:image\/(png|gif|jpe?g|webp);/.test(val))) {
+                    n.removeAttribute(a.name);
+                }
+            }
+        }
+        return tpl.innerHTML;
     }
 
     /** 页面给的初始值（按 DOM 里的 defaultValue/defaultChecked/defaultSelected 算）。 */
@@ -151,6 +192,9 @@
                 return on ? on.value : null;
             }
             case 'multi': return [...el.options].filter(o => o.defaultSelected).map(o => o.value);
+            // 富文本没有 defaultValue 可回溯，只能「看见时」读当前内容；
+            // 第一次见到就已经是 input 事件（内容已经变了），那就当它原来是空的，见 onEdit
+            case 'rich': return readValue(el);
             default:
                 if (el.tagName === 'SELECT') {
                     const o = el.options[defaultIndex(el)];
@@ -181,6 +225,7 @@
      * 这种状态既不值得存（存了也恢复不出新东西），也是恢复时「可以安全填入」的判据。
      */
     function isPristine(el) {
+        if (kindOf(el) === 'rich' && richIsEmpty(el)) return true;
         const v = readValue(el);
         if (kindOf(el) === 'text' && el.tagName !== 'SELECT' && v === '') return true;
         return sameValue(v, baselineOf(el));
@@ -244,7 +289,8 @@
      * 结构路径从锚开始算 —— 从 body 算的话，页面顶上插一条 cookie 横幅，所有路径就全错位了。
      */
     function anchorOf(el) {
-        if (el.form) return { node: el.form, id: formIdOf(el.form) };
+        const form = el.form || (isRichHost(el) ? el.closest('form') : null);
+        if (form) return { node: form, id: formIdOf(form) };
         for (let n = el.parentElement; n && n !== document.body; n = n.parentElement) {
             if (stableId(n)) return { node: n, id: '#' + n.id };
         }
@@ -274,9 +320,9 @@
     }
 
     function labelOf(el) {
-        const txt = el.getAttribute('aria-label') || el.placeholder
+        const txt = el.getAttribute('aria-label') || el.getAttribute('placeholder') || el.getAttribute('data-placeholder')
             || (el.labels && el.labels[0] && el.labels[0].textContent)
-            || el.name || el.id || el.tagName.toLowerCase();
+            || el.getAttribute('name') || el.id || el.tagName.toLowerCase();
         return txt.trim().replace(/\s+/g, ' ').slice(0, 40);
     }
 
@@ -365,6 +411,7 @@
     function onEdit(e) {
         const el = e.target;
         if (!shouldSave(el)) return;
+        if (kindOf(el) === 'rich' && !baseline.has(el)) baseline.set(el, '');
         baselineOf(el);
         dirty.set(el, pageKey(settings));
         clearTimeout(flushTimer);
@@ -381,7 +428,7 @@
             const fk = fieldKey(el);
             const draft = bucket[pk] || { fields: {} };
             const value = readValue(el);
-            if (isPristine(el) || looksLikeCardNumber(value)) {
+            if (isPristine(el) || looksLikeCardNumber(kindOf(el) === 'rich' ? el.textContent.trim() : value)) {
                 delete draft.fields[fk];
             } else if (typeof value === 'string' && value.length > CONFIG.maxValueLength) {
                 console.warn(TAG, '字段太长，不保存', fk, value.length);
@@ -407,7 +454,7 @@
     /** 当前页面上所有可存字段，按字段键索引。radio 整组共用一个键，取组里第一个。 */
     function fieldsByKey() {
         const map = new Map();
-        for (const el of document.querySelectorAll(FIELD_SELECTOR)) {
+        for (const el of allFields()) {
             if (!shouldSave(el)) continue;
             const k = fieldKey(el);
             if (!map.has(k)) map.set(k, el);
@@ -417,6 +464,7 @@
 
     /** 恢复只往「空」里填：文本必须是空串（页面预填的内容也算用户已有的），其余必须是初始状态。 */
     function isEmptyForRestore(el) {
+        if (kindOf(el) === 'rich') return richIsEmpty(el);
         return kindOf(el) === 'text' && el.tagName !== 'SELECT' ? el.value === '' : isPristine(el);
     }
 
@@ -475,10 +523,38 @@
                 for (const o of el.options) o.selected = field.v.includes(o.value);
                 fire(el);
                 return;
+            case 'rich':
+                applyRich(el, cleanHtml(field.v));
+                return;
             default:
                 setNative(el, 'value', field.v);
                 fire(el);
         }
+    }
+
+    /**
+     * 富文本先走 execCommand('insertHTML')：它像用户粘贴一样经过 beforeinput/input，
+     * ProseMirror、Quill 这类自己维护文档模型的编辑器能跟着更新；直接改 innerHTML 它们看不见，
+     * 下一次按键就把内容冲掉。execCommand 不可用或没生效，才退回 innerHTML + input 事件。
+     */
+    function applyRich(el, html) {
+        const want = htmlText(html);
+        try {
+            el.focus();
+            const sel = window.getSelection();
+            sel.selectAllChildren(el);
+            document.execCommand('insertHTML', false, html);
+        } catch (e) { /* 走兜底 */ }
+        if (el.textContent.trim() !== want) {
+            el.innerHTML = html;
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+    }
+
+    function htmlText(html) {
+        const tpl = document.createElement('template');
+        tpl.innerHTML = html;
+        return tpl.content.textContent.trim();
     }
 
     function restoreDraft(draft) {
@@ -643,6 +719,11 @@
      * SPA：字段晚于脚本渲染、路由换了页面键，都靠 DOM 变化来发现（路由切换必然伴随 DOM 变化，
      * 不用去改 history.pushState）。防抖后统一处理。
      */
+    /** 富文本的初始内容趁「还没人动」时拍下来（启动时、DOM 变化后）。 */
+    function snapshotRich() {
+        for (const el of document.querySelectorAll(RICH_SELECTOR)) if (isRichHost(el)) baselineOf(el);
+    }
+
     function watchDom() {
         let timer = 0;
         let lastKey = pageKey(settings);
@@ -650,6 +731,7 @@
             clearTimeout(timer);
             timer = setTimeout(() => {
                 rememberPasswords(document);
+                snapshotRich();
                 const pk = pageKey(settings);
                 if (pk !== lastKey) {
                     lastKey = pk;
@@ -674,6 +756,7 @@
             return;
         }
         rememberPasswords(document);
+        snapshotRich();
         // 捕获阶段：页面自己 stopPropagation 也挡不住我们
         document.addEventListener('focusin', (e) => { if (shouldSave(e.target)) baselineOf(e.target); }, true);
         document.addEventListener('input', onEdit, true);

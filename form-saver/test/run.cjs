@@ -374,6 +374,51 @@ async function main() {
         await page.close()
     })
 
+    console.log('富文本')
+    await t.test('contenteditable：保存 HTML，刷新后恢复并派发 input', async () => {
+        const page = await openPage('https://blog.test', 'rich.html')
+        await page.click('#editor')
+        await page.keyboard.type('第一行')
+        await page.keyboard.press('Enter')
+        await page.keyboard.type('second line')
+        await page.waitForTimeout(DEBOUNCE)
+        const f = (await bucket(page, 'https://blog.test'))['https://blog.test/'].fields['form#comment #editor']
+        t.assert(f && f.k === 'rich' && f.l === '评论内容', JSON.stringify(f))
+        await page.reload()
+        t.assert((await promptText(page)).includes('1 个字段'))
+        await page.click('form-saver-ui [data-act=restore]')
+        t.eq(await page.$eval('#editor', e => e.innerText.replace(/\n+/g, '|')), '第一行|second line')
+        t.assert(await page.evaluate(() => window.__editorInputs >= 1), '要派发 input')
+        await page.close()
+    })
+    await t.test('富文本里的脚本/事件属性/javascript: 链接存之前就洗掉，恢复时不执行', async () => {
+        const page = await openPage('https://blog.test', 'rich.html')
+        await page.evaluate(() => {
+            const ed = document.getElementById('editor')
+            ed.innerHTML = '<p><b>粗体</b><a href="javascript:window.__pwned++">链接</a><a href="/ok">好链接</a></p>'
+                + '<img src="data:," onerror="window.__pwned++"><script>window.__pwned++<\/script>'
+            ed.dispatchEvent(new Event('input', { bubbles: true }))
+        })
+        await page.waitForTimeout(DEBOUNCE)
+        const v = (await bucket(page, 'https://blog.test'))['https://blog.test/'].fields['form#comment #editor'].v
+        t.assert(!/onerror|javascript:|<script/i.test(v), v)
+        t.assert(v.includes('<b>粗体</b>') && v.includes('href="/ok"'), v)
+        // 再往存储里塞一份「被改过」的脏草稿，验证恢复时也会洗
+        await page.evaluate(() => {
+            const k = '__gm:fs:d:https://blog.test'
+            const b = JSON.parse(localStorage.getItem(k))
+            b['https://blog.test/'].fields['form#comment #editor'].v = '<p>脏</p><img src="data:," onerror="window.__pwned=100">'
+            localStorage.setItem(k, JSON.stringify(b))
+        })
+        await page.reload()
+        await promptText(page)
+        await page.click('form-saver-ui [data-act=restore]')
+        await page.waitForTimeout(200)
+        t.eq(await page.evaluate(() => window.__pwned), 0)
+        t.eq(await page.$eval('#editor', e => e.textContent), '脏')
+        await page.close()
+    })
+
     await env.close()
     t.done()
 }
