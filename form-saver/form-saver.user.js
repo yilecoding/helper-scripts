@@ -3,7 +3,7 @@
 // @name:zh-CN   表单草稿自动保存|评论/工单/帖子写到一半不怕丢
 // @name:en      Form Saver — auto-save drafts of what you type, restore after crash/close
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.07.17.7
+// @version      2025.07.17.8
 // @description  在任意网页自动保存输入框/文本框/下拉框/富文本的草稿，误关标签、页面崩溃、提交失败跳走后回来，角落提示一键恢复。不保存密码、卡号、验证码等敏感字段；草稿 7 天过期。
 // @description:zh-CN  在任意网页自动保存输入框/文本框/下拉框/富文本的草稿，误关标签、页面崩溃、提交失败跳走后回来，角落提示一键恢复。不保存密码、卡号、验证码等敏感字段；草稿 7 天过期。
 // @description:en  Auto-saves drafts of inputs, textareas, selects and contenteditable editors on any page. Closed the tab, the page crashed or a submit failed? Come back and restore with one click. Never stores passwords, card numbers or one-time codes; drafts expire after 7 days.
@@ -12,6 +12,7 @@
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_deleteValue
+// @grant        GM_listValues
 // @license      CC BY-NC-SA
 // @run-at       document-end
 // @noframes
@@ -47,6 +48,17 @@
 
         debounceMs: 800,         // 停止输入多久后落盘
         maxValueLength: 20000,   // 单个字段超过这么长就不存（多半是粘贴的大段日志/代码，存了也撑爆配额）
+
+        ttlDays: 7,              // 草稿最后一次编辑后保留几天
+        maxPagesPerSite: 50,     // 单站点最多保留多少个页面的草稿，超了先丢最旧的
+        maxBytesPerSite: 512 * 1024, // 单站点草稿总体积（JSON 字符数）上限
+        /*
+         * 提交后不立刻删草稿：提交失败（服务器报错、登录过期、校验不过跳回来）时内容还在。
+         * 这段时间里回到原页面、字段是空的，提示会写明「刚提交过」；过了这段时间就删。
+         * 页面内提交（不跳转）能看到结果：表单被清空 = 成功，立刻删；内容还在 = 失败，取消标记。
+         */
+        submitGraceMs: 60 * 60 * 1000,
+        submitCheckMs: [1500, 4000],
     };
 
     // =========================================================================
@@ -406,6 +418,8 @@
     let settings;
     /** 待落盘的字段 → 编辑时所在的页面键（SPA 里防抖期间路由可能已经变了） */
     const dirty = new Map();
+    /** 这次页面生命周期里存过的字段 → { pk, fk }，用来发现「页面自己把它清空了」 */
+    const tracked = new Map();
     let flushTimer = 0;
 
     function onEdit(e) {
@@ -433,7 +447,9 @@
             } else if (typeof value === 'string' && value.length > CONFIG.maxValueLength) {
                 console.warn(TAG, '字段太长，不保存', fk, value.length);
             } else {
+                // 重新写入不带提交标记 s：提交之后又改了，就是一份新草稿
                 draft.fields[fk] = { v: value, k: kindOf(el), l: labelOf(el), t: now };
+                tracked.set(el, { pk, fk });
             }
             if (Object.keys(draft.fields).length) {
                 draft.t = now;
@@ -444,7 +460,131 @@
             }
         }
         dirty.clear();
+        enforceLimits(bucket);
         Store.save(origin, bucket);
+    }
+
+    // =========================================================================
+    // 清理：过期、上限、提交
+    // =========================================================================
+
+    function jsonSize(v) {
+        return JSON.stringify(v).length;
+    }
+
+    /** 先按页数、再按体积，从最久没编辑的页面开始丢。只剩一个页面还超体积，就丢它最旧的字段。 */
+    function enforceLimits(bucket) {
+        const pages = Object.keys(bucket).sort((a, b) => bucket[a].t - bucket[b].t);
+        while (pages.length > CONFIG.maxPagesPerSite) delete bucket[pages.shift()];
+        while (pages.length > 1 && jsonSize(bucket) > CONFIG.maxBytesPerSite) delete bucket[pages.shift()];
+        if (pages.length === 1 && jsonSize(bucket) > CONFIG.maxBytesPerSite) {
+            const d = bucket[pages[0]];
+            const keys = Object.keys(d.fields).sort((a, b) => d.fields[a].t - d.fields[b].t);
+            while (keys.length && jsonSize(bucket) > CONFIG.maxBytesPerSite) delete d.fields[keys.shift()];
+            if (!keys.length) delete bucket[pages[0]];
+        }
+    }
+
+    /** 过期字段、提交后过了宽限期的字段删掉；返回是否有改动。 */
+    function sweepBucket(bucket, now) {
+        const ttl = CONFIG.ttlDays * 86400000;
+        let changed = false;
+        for (const [pk, d] of Object.entries(bucket)) {
+            for (const [fk, f] of Object.entries(d.fields || {})) {
+                if (now - f.t > ttl || (f.s && now - f.s > CONFIG.submitGraceMs)) {
+                    delete d.fields[fk];
+                    changed = true;
+                }
+            }
+            if (!d.fields || !Object.keys(d.fields).length) {
+                delete bucket[pk];
+                changed = true;
+            }
+        }
+        return changed;
+    }
+
+    /** 启动时扫一遍所有站点：7 天的承诺不能只在「回到那个站点」时才兑现。 */
+    function sweepAll() {
+        const now = Date.now();
+        for (const key of GM_listValues()) {
+            if (!key.startsWith('fs:d:')) continue;
+            const origin = key.slice(5);
+            const bucket = Store.load(origin);
+            if (sweepBucket(bucket, now)) Store.save(origin, bucket);
+        }
+    }
+
+    function dropFields(pk, fks) {
+        if (!fks.length) return;
+        const bucket = Store.load(location.origin);
+        const d = bucket[pk];
+        if (!d) return;
+        for (const fk of fks) delete d.fields[fk];
+        if (!Object.keys(d.fields).length) delete bucket[pk];
+        Store.save(location.origin, bucket);
+    }
+
+    function formFields(form) {
+        return allFields().filter(el => (el.form || el.closest('form')) === form && shouldSave(el));
+    }
+
+    function onSubmit(e) {
+        const form = e.target;
+        if (!(form instanceof HTMLFormElement)) return;
+        flush();
+        const pk = pageKey(settings);
+        const els = formFields(form);
+        const fks = els.map(fieldKey);
+        const bucket = Store.load(location.origin);
+        const d = bucket[pk];
+        if (!d) return;
+        const now = Date.now();
+        const marked = fks.filter(fk => d.fields[fk]);
+        for (const fk of marked) d.fields[fk].s = now;
+        Store.save(location.origin, bucket);
+        if (!marked.length) return;
+        // 页面没跳走（AJAX 提交）才轮得到这两次检查
+        for (const delay of CONFIG.submitCheckMs) {
+            setTimeout(() => {
+                const live = els.filter(el => el.isConnected);
+                if (!live.length) return;
+                if (live.every(isPristine)) {
+                    dropFields(pk, marked);
+                } else if (delay === CONFIG.submitCheckMs[CONFIG.submitCheckMs.length - 1]) {
+                    updateDraft(pk, dd => { for (const fk of marked) if (dd.fields[fk]) delete dd.fields[fk].s; });
+                }
+            }, delay);
+        }
+    }
+
+    /** 重置按钮：用户明确不要这些内容了。 */
+    function onReset(e) {
+        const form = e.target;
+        if (!(form instanceof HTMLFormElement)) return;
+        // reset 事件在字段复位之前触发，等它复位完再看
+        setTimeout(() => dropTracked(formFields(form)), 0);
+    }
+
+    /**
+     * 存过的字段被页面自己清空了（没有 input 事件）—— 发送成功后清输入框是最常见的原因，
+     * 不用 <form> 的 SPA 聊天框、评论框只能靠这个发现「已经发出去了」。
+     */
+    function dropTracked(els) {
+        const byPage = new Map();
+        for (const el of els) {
+            const t = tracked.get(el);
+            if (!t || dirty.has(el) || !isPristine(el)) continue;
+            tracked.delete(el);
+            if (!byPage.has(t.pk)) byPage.set(t.pk, []);
+            byPage.get(t.pk).push(t.fk);
+        }
+        for (const [pk, fks] of byPage) dropFields(pk, fks);
+    }
+
+    function checkCleared() {
+        for (const el of [...tracked.keys()]) if (!el.isConnected) tracked.delete(el);
+        dropTracked([...tracked.keys()]);
     }
 
     // =========================================================================
@@ -692,8 +832,12 @@
         }
         if (showing && shownCount === items.length) return;
         shownCount = items.length;
+        const submitted = items.every(it => it.field.s);
+        const when = UI.el('span', { className: 'muted', textContent: '（' + fmtAgo(draft.t) + '）' });
         UI.show(
-            ['检测到 ' + items.length + ' 个字段的草稿', UI.el('span', { className: 'muted', textContent: '（' + fmtAgo(draft.t) + '）' })],
+            submitted
+                ? ['检测到 ' + items.length + ' 个字段刚提交过的内容', when, '，如果提交没成功，可以恢复']
+                : ['检测到 ' + items.length + ' 个字段的草稿', when],
             [
                 {
                     id: 'restore', label: '恢复', primary: true, run() {
@@ -705,8 +849,13 @@
                 {
                     id: 'dismiss', label: '忽略', run() {
                         handled.add(pk);
-                        // 不删草稿：误点了还能从菜单里找回；只是这份草稿不再自动提示
-                        updateDraft(pk, d => { d.dismissedAt = Date.now(); });
+                        if (submitted) {
+                            // 提交过、又说不要：多半是成功了，删掉
+                            dropFields(pk, items.map(it => it.key));
+                        } else {
+                            // 不删草稿：误点了还能从菜单里找回；只是这份草稿不再自动提示
+                            updateDraft(pk, d => { d.dismissedAt = Date.now(); });
+                        }
                         UI.hide();
                     },
                 },
@@ -732,6 +881,7 @@
             timer = setTimeout(() => {
                 rememberPasswords(document);
                 snapshotRich();
+                checkCleared();
                 const pk = pageKey(settings);
                 if (pk !== lastKey) {
                     lastKey = pk;
@@ -755,12 +905,15 @@
             console.log(TAG, '本站已停用');
             return;
         }
+        sweepAll();
         rememberPasswords(document);
         snapshotRich();
         // 捕获阶段：页面自己 stopPropagation 也挡不住我们
         document.addEventListener('focusin', (e) => { if (shouldSave(e.target)) baselineOf(e.target); }, true);
         document.addEventListener('input', onEdit, true);
         document.addEventListener('change', onEdit, true);
+        document.addEventListener('submit', onSubmit, true);
+        document.addEventListener('reset', onReset, true);
         console.log(TAG, '已启动', pageKey(settings));
         checkRestore();
         watchDom();

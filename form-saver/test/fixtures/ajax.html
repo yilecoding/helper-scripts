@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>AJAX 提交</title></head>
+<body>
+<form id="f">
+    <input name="title">
+    <textarea name="body"></textarea>
+    <button type="submit">提交</button>
+    <button type="reset">清空</button>
+</form>
+<p id="msg"></p>
+<script>
+    // 标题里带 ok 就「提交成功」并清空表单；否则「校验失败」，内容留着
+    document.getElementById('f').addEventListener('submit', e => {
+        e.preventDefault()
+        const f = e.target
+        setTimeout(() => {
+            if (f.title.value.includes('ok')) {
+                f.reset()
+                document.getElementById('msg').textContent = '已发送'
+            } else {
+                document.getElementById('msg').textContent = '标题不合格'
+            }
+        }, 300)
+    })
+</script>
+</body>
+</html>

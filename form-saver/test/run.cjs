@@ -419,6 +419,142 @@ async function main() {
         await page.close()
     })
 
+    console.log('清理')
+    const DAY = 86400000
+    await t.test('过期：7 天前的草稿启动时删掉（包括别的站点的）', async () => {
+        const now = Date.now()
+        const f = (v, ago) => ({ v, k: 'text', l: v, t: now - ago })
+        const page = await openPage('https://forum.test', 'basic.html', {
+            values: {
+                'fs:d:https://forum.test': {
+                    'https://forum.test/': { t: now - 8 * DAY, fields: { 'form#post [name=title]': f('老', 8 * DAY), 'form#post [name=body]': f('新', DAY) } },
+                    'https://forum.test/old': { t: now - 9 * DAY, fields: { 'doc #x': f('很老', 9 * DAY) } },
+                },
+                'fs:d:https://other.test': { 'https://other.test/': { t: now - 10 * DAY, fields: { 'doc #y': f('别处', 10 * DAY) } } },
+            },
+        })
+        const b = await bucket(page, 'https://forum.test')
+        t.eq(Object.keys(b), ['https://forum.test/'])
+        t.eq(Object.keys(b['https://forum.test/'].fields), ['form#post [name=body]'])
+        t.eq(await bucket(page, 'https://other.test'), null)
+        t.assert((await promptText(page)).includes('1 个字段'))
+        await page.close()
+    })
+    await t.test('上限：单站点超过 50 个页面时丢最旧的', async () => {
+        const now = Date.now()
+        const pages = {}
+        for (let i = 0; i < 55; i++) {
+            pages['https://forum.test/p' + i] = { t: now - (60 - i) * 60000, fields: { 'doc #a': { v: 'x' + i, k: 'text', l: 'a', t: now - (60 - i) * 60000 } } }
+        }
+        const page = await openPage('https://forum.test', 'basic.html', { path: '/new', values: { 'fs:d:https://forum.test': pages } })
+        await page.fill('[name=title]', '最新')
+        await page.waitForTimeout(DEBOUNCE)
+        const keys = Object.keys(await bucket(page, 'https://forum.test'))
+        t.eq(keys.length, 50)
+        t.assert(keys.includes('https://forum.test/new') && keys.includes('https://forum.test/p54'))
+        t.assert(!keys.includes('https://forum.test/p5') && keys.includes('https://forum.test/p6'))
+        await page.close()
+    })
+    await t.test('上限：单站点体积超限时丢最旧的页面', async () => {
+        const now = Date.now()
+        const big = 'x'.repeat(15000)
+        const pages = {}
+        for (let i = 0; i < 40; i++) {
+            pages['https://forum.test/p' + i] = { t: now - (60 - i) * 60000, fields: { 'doc #a': { v: big, k: 'text', l: 'a', t: now - (60 - i) * 60000 } } }
+        }
+        const page = await openPage('https://forum.test', 'basic.html', { path: '/new', values: { 'fs:d:https://forum.test': pages } })
+        await page.fill('[name=body]', big)
+        await page.waitForTimeout(DEBOUNCE)
+        const b = await bucket(page, 'https://forum.test')
+        t.assert(JSON.stringify(b).length <= 512 * 1024, '体积 ' + JSON.stringify(b).length)
+        t.assert(b['https://forum.test/new'] && b['https://forum.test/p39'] && !b['https://forum.test/p0'])
+        await page.close()
+    })
+    await t.test('跳转式提交：不立刻删，回到原页面提示「刚提交过」；过了宽限期删掉', async () => {
+        const page = await openPage('https://forum.test', 'basic.html', { path: '/new', pages: { '/submit': 'done.html' } })
+        await page.fill('[name=title]', '要发的标题')
+        await page.fill('[name=body]', '要发的正文')
+        await Promise.all([page.waitForURL('**/submit'), page.click('button[type=submit]')]) // 防抖还没到就提交
+        const d = (await bucket(page, 'https://forum.test'))['https://forum.test/new']
+        t.assert(d && Object.values(d.fields).every(f => f.s), '提交前要先落盘并打上提交标记')
+        await page.goto('https://forum.test/new')
+        const text = await promptText(page)
+        t.assert(text.includes('刚提交过') && text.includes('2 个字段'), text)
+        // 一小时后
+        await page.evaluate(() => {
+            const k = '__gm:fs:d:https://forum.test'
+            const b = JSON.parse(localStorage.getItem(k))
+            for (const f of Object.values(b['https://forum.test/new'].fields)) f.s -= 2 * 3600000
+            localStorage.setItem(k, JSON.stringify(b))
+        })
+        await page.reload()
+        t.eq(await promptText(page, 500), null)
+        t.eq(await bucket(page, 'https://forum.test'), null)
+        await page.close()
+    })
+    await t.test('跳转式提交失败（服务端回到空表单）：能恢复；对「刚提交过」点忽略就删掉', async () => {
+        const page = await openPage('https://forum.test', 'basic.html', { path: '/new', pages: { '/submit': 'basic.html' } })
+        await page.fill('[name=title]', '标题')
+        await Promise.all([page.waitForURL('**/submit'), page.click('button[type=submit]')])
+        await page.goBack({ waitUntil: 'load' }) // 用户点返回
+        await page.reload()
+        t.assert((await promptText(page)).includes('刚提交过'))
+        await page.click('form-saver-ui [data-act=restore]')
+        t.eq(await page.inputValue('[name=title]'), '标题')
+        await page.waitForTimeout(DEBOUNCE)
+        const f = (await bucket(page, 'https://forum.test'))['https://forum.test/new'].fields['form#post [name=title]']
+        t.assert(!f.s, '恢复后重新落盘，不再带提交标记')
+        // 再提交一次，这次「成功」了，回来点忽略
+        await Promise.all([page.waitForURL('**/submit'), page.click('button[type=submit]')])
+        await page.goto('https://forum.test/new')
+        await promptText(page)
+        await page.click('form-saver-ui [data-act=dismiss]')
+        t.eq(await bucket(page, 'https://forum.test'), null)
+        await page.close()
+    })
+    await t.test('页面内提交：表单被清空 = 成功，删草稿', async () => {
+        const page = await openPage('https://ajax.test', 'ajax.html')
+        await page.fill('[name=title]', 'ok 标题')
+        await page.fill('[name=body]', '正文')
+        await page.waitForTimeout(DEBOUNCE)
+        await page.click('button[type=submit]')
+        await page.waitForTimeout(1800)
+        t.eq(await page.textContent('#msg'), '已发送')
+        t.eq(await bucket(page, 'https://ajax.test'), null)
+        await page.close()
+    })
+    await t.test('页面内提交：内容还在 = 失败，草稿保留并去掉提交标记', async () => {
+        const page = await openPage('https://ajax.test', 'ajax.html')
+        await page.fill('[name=title]', '坏标题')
+        await page.click('button[type=submit]')
+        await page.waitForTimeout(4300)
+        t.eq(await page.textContent('#msg'), '标题不合格')
+        const d = (await bucket(page, 'https://ajax.test'))['https://ajax.test/']
+        t.assert(d && d.fields['form#f [name=title]'] && !d.fields['form#f [name=title]'].s, JSON.stringify(d))
+        await page.close()
+    })
+    await t.test('表单 reset：删掉这张表单的草稿', async () => {
+        const page = await openPage('https://ajax.test', 'ajax.html')
+        await page.fill('[name=title]', '不要了')
+        await page.waitForTimeout(DEBOUNCE)
+        // 用 reset() 而不是点按钮：点按钮会让输入框失焦发 change，走的是普通防抖保存那条路
+        await page.evaluate(() => document.getElementById('f').reset())
+        await page.waitForTimeout(100)
+        t.eq(await bucket(page, 'https://ajax.test'), null)
+        await page.close()
+    })
+    await t.test('没有 <form> 的聊天框：发送后程序清空输入框，草稿删掉', async () => {
+        const page = await openPage('https://chat.test', 'chat.html')
+        await page.fill('#box', '你好')
+        await page.waitForTimeout(DEBOUNCE)
+        t.assert(await bucket(page, 'https://chat.test'))
+        await page.press('#box', 'Enter')
+        await page.waitForTimeout(600)
+        t.eq(await page.textContent('#log'), '你好')
+        t.eq(await bucket(page, 'https://chat.test'), null)
+        await page.close()
+    })
+
     await env.close()
     t.done()
 }
