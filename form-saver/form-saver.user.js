@@ -3,7 +3,7 @@
 // @name:zh-CN   表单草稿自动保存|评论/工单/帖子写到一半不怕丢
 // @name:en      Form Saver — auto-save drafts of what you type, restore after crash/close
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.07.17.8
+// @version      2025.07.21.9
 // @description  在任意网页自动保存输入框/文本框/下拉框/富文本的草稿，误关标签、页面崩溃、提交失败跳走后回来，角落提示一键恢复。不保存密码、卡号、验证码等敏感字段；草稿 7 天过期。
 // @description:zh-CN  在任意网页自动保存输入框/文本框/下拉框/富文本的草稿，误关标签、页面崩溃、提交失败跳走后回来，角落提示一键恢复。不保存密码、卡号、验证码等敏感字段；草稿 7 天过期。
 // @description:en  Auto-saves drafts of inputs, textareas, selects and contenteditable editors on any page. Closed the tab, the page crashed or a submit failed? Come back and restore with one click. Never stores passwords, card numbers or one-time codes; drafts expire after 7 days.
@@ -13,6 +13,8 @@
 // @grant        GM_setValue
 // @grant        GM_deleteValue
 // @grant        GM_listValues
+// @grant        GM_registerMenuCommand
+// @grant        GM_unregisterMenuCommand
 // @license      CC BY-NC-SA
 // @run-at       document-end
 // @noframes
@@ -416,6 +418,8 @@
     // =========================================================================
 
     let settings;
+    /** 本站停用后置 false：监听器还挂着（撤不干净也没必要），但什么都不做 */
+    let active = false;
     /** 待落盘的字段 → 编辑时所在的页面键（SPA 里防抖期间路由可能已经变了） */
     const dirty = new Map();
     /** 这次页面生命周期里存过的字段 → { pk, fk }，用来发现「页面自己把它清空了」 */
@@ -424,7 +428,7 @@
 
     function onEdit(e) {
         const el = e.target;
-        if (!shouldSave(el)) return;
+        if (!active || !shouldSave(el)) return;
         if (kindOf(el) === 'rich' && !baseline.has(el)) baseline.set(el, '');
         baselineOf(el);
         dirty.set(el, pageKey(settings));
@@ -462,6 +466,7 @@
         dirty.clear();
         enforceLimits(bucket);
         Store.save(origin, bucket);
+        Menu.refresh();
     }
 
     // =========================================================================
@@ -523,6 +528,7 @@
         for (const fk of fks) delete d.fields[fk];
         if (!Object.keys(d.fields).length) delete bucket[pk];
         Store.save(location.origin, bucket);
+        Menu.refresh();
     }
 
     function formFields(form) {
@@ -531,7 +537,7 @@
 
     function onSubmit(e) {
         const form = e.target;
-        if (!(form instanceof HTMLFormElement)) return;
+        if (!active || !(form instanceof HTMLFormElement)) return;
         flush();
         const pk = pageKey(settings);
         const els = formFields(form);
@@ -561,7 +567,7 @@
     /** 重置按钮：用户明确不要这些内容了。 */
     function onReset(e) {
         const form = e.target;
-        if (!(form instanceof HTMLFormElement)) return;
+        if (!active || !(form instanceof HTMLFormElement)) return;
         // reset 事件在字段复位之前触发，等它复位完再看
         setTimeout(() => dropTracked(formFields(form)), 0);
     }
@@ -738,9 +744,19 @@
                 color: inherit; padding: 3px 10px; cursor: pointer; }
             button.primary { background: #1f6feb; border-color: #1f6feb; color: #fff; }
             button:hover { filter: brightness(.96); }
+            .panel { display: block; width: 360px; max-width: calc(100vw - 32px); }
+            .panel h3 { font-size: 14px; margin: 0 0 8px; }
+            .list { max-height: 50vh; overflow: auto; margin: 0 -4px; }
+            .row { display: flex; gap: 8px; align-items: flex-start; padding: 6px 4px; border-top: 1px solid #eaeef2; }
+            .row .info { flex: 1; min-width: 0; }
+            .row .label { font-weight: 600; }
+            .row .preview { color: #656d76; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+            .row button { padding: 1px 8px; font-size: 12px; }
+            .foot { display: flex; gap: 8px; justify-content: flex-end; margin-top: 8px; flex-wrap: wrap; }
             @media (prefers-color-scheme: dark) {
                 .card { color: #e6edf3; background: #161b22; border-color: #30363d; }
-                .muted { color: #8d96a0; }
+                .muted, .row .preview { color: #8d96a0; }
+                .row { border-color: #30363d; }
                 button { background: #21262d; border-color: #30363d; }
             }
         `;
@@ -759,6 +775,13 @@
             document.documentElement.appendChild(host);
         }
 
+        function button(a) {
+            const b = el('button', { textContent: a.label, className: a.primary ? 'primary' : '' });
+            b.dataset.act = a.id;
+            b.addEventListener('click', () => a.run());
+            return b;
+        }
+
         function el(tag, props, children) {
             const n = document.createElement(tag);
             Object.assign(n, props || {});
@@ -774,12 +797,7 @@
             box.replaceChildren();
             const card = el('div', { className: 'card' });
             card.append(el('div', { className: 'msg' }, parts));
-            for (const a of actions || []) {
-                const b = el('button', { textContent: a.label, className: a.primary ? 'primary' : '' });
-                b.dataset.act = a.id;
-                b.addEventListener('click', () => a.run());
-                card.append(b);
-            }
+            for (const a of actions || []) card.append(button(a));
             box.append(card);
             if (autoHide) hideTimer = setTimeout(hide, autoHide);
         }
@@ -794,7 +812,30 @@
             show([text], [], { autoHide: 3000, tag: 'toast' });
         }
 
-        return { show, hide, toast, el, current: () => current };
+        /** 列表面板：rows = [{ label, preview, meta, actions }]，footer = actions。 */
+        function panel(title, rows, footer) {
+            ensure();
+            clearTimeout(hideTimer);
+            current = 'panel';
+            const list = el('div', { className: 'list' });
+            for (const r of rows) {
+                const info = el('div', { className: 'info' }, [
+                    el('div', { className: 'label', textContent: r.label }),
+                    el('div', { className: 'preview', textContent: r.preview, title: r.preview }),
+                    el('div', { className: 'muted', textContent: r.meta }),
+                ]);
+                const row = el('div', { className: 'row' }, [info, ...r.actions.map(button)]);
+                row.dataset.key = r.key;
+                list.append(row);
+            }
+            box.replaceChildren(el('div', { className: 'card panel' }, [
+                el('h3', { textContent: title }),
+                rows.length ? list : el('div', { className: 'muted', textContent: '本页没有草稿' }),
+                el('div', { className: 'foot' }, footer.map(button)),
+            ]));
+        }
+
+        return { show, hide, toast, panel, el, current: () => current };
     })();
 
     // =========================================================================
@@ -821,6 +862,7 @@
      * SPA 里字段是陆续渲染出来的，所以 DOM 变化时会反复调用：数量变了就刷新提示，变成 0 就收起。
      */
     function checkRestore() {
+        if (!active || UI.current() === 'panel') return;
         const pk = pageKey(settings);
         const tag = 'restore:' + pk;
         const draft = handled.has(pk) ? null : loadDraft(pk);
@@ -879,6 +921,7 @@
         const onChange = () => {
             clearTimeout(timer);
             timer = setTimeout(() => {
+                if (!active) return;
                 rememberPasswords(document);
                 snapshotRich();
                 checkCleared();
@@ -886,6 +929,7 @@
                 if (pk !== lastKey) {
                     lastKey = pk;
                     flush();
+                    Menu.refresh();
                 }
                 checkRestore();
             }, 300);
@@ -899,17 +943,138 @@
     // 启动
     // =========================================================================
 
-    function boot() {
-        settings = Store.settings();
-        if (settings.disabled[location.origin]) {
-            console.log(TAG, '本站已停用');
+    // =========================================================================
+    // 菜单
+    // =========================================================================
+
+    function previewOf(f) {
+        switch (f.k) {
+            case 'check': return f.v ? '已勾选' : '未勾选';
+            case 'multi': return f.v.join('、') || '（全不选）';
+            case 'rich': return htmlText(f.v);
+            default: return String(f.v).replace(/\s+/g, ' ');
+        }
+    }
+
+    function showPagePanel() {
+        const pk = pageKey(settings);
+        const draft = loadDraft(pk);
+        const fields = draft ? Object.entries(draft.fields).sort((a, b) => b[1].t - a[1].t) : [];
+        const els = fieldsByKey();
+        const rows = fields.map(([key, f]) => ({
+            key,
+            label: f.l,
+            preview: previewOf(f).slice(0, 200),
+            meta: fmtAgo(f.t) + (f.s ? ' · 已提交过' : '') + (els.has(key) ? '' : ' · 当前页面上找不到这个字段'),
+            actions: [
+                {
+                    id: 'restore-one', label: '恢复', run() {
+                        const el = els.get(key);
+                        if (!el || !el.isConnected) return UI.toast('当前页面上找不到这个字段');
+                        if (!isEmptyForRestore(el)) return UI.toast('「' + f.l + '」已有内容，先清空再恢复');
+                        applyValue(el, f);
+                        showPagePanel();
+                    },
+                },
+                { id: 'delete-one', label: '删除', run() { dropFields(pk, [key]); showPagePanel(); } },
+            ],
+        }));
+        UI.panel('本页草稿（' + rows.length + '）', rows, [
+            {
+                id: 'restore-all', label: '全部恢复（只填空字段）', primary: true, run() {
+                    handled.add(pk);
+                    const n = restoreDraft(loadDraft(pk));
+                    UI.toast(n ? '已恢复 ' + n + ' 个字段' : '没有可恢复的空字段');
+                },
+            },
+            { id: 'clear-page', label: '清除本页草稿', run() { dropFields(pk, fields.map(([k]) => k)); handled.add(pk); UI.toast('已清除本页草稿'); } },
+            { id: 'close', label: '关闭', run: () => UI.hide() },
+        ]);
+    }
+
+    function toggleSite() {
+        const origin = location.origin;
+        if (settings.disabled[origin]) {
+            delete settings.disabled[origin];
+            Store.saveSettings(settings);
+            start();
+            UI.toast('已在本站启用草稿保存');
+        } else {
+            // 停用 = 不想让这个站点的输入被记下来，已有的也一并删掉
+            active = false;
+            clearTimeout(flushTimer);
+            dirty.clear();
+            tracked.clear();
+            settings.disabled[origin] = 1;
+            Store.saveSettings(settings);
+            Store.save(origin, {});
+            UI.toast('已在本站停用，并删除了本站的草稿');
+        }
+        Menu.refresh();
+    }
+
+    /**
+     * 页面键是否带 query 是按站点存的。切换后旧键下的草稿不迁移 —— 迁移规则说不清
+     * （一个不带 query 的键该分给哪个带 query 的键？），留着按 7 天过期。
+     */
+    function toggleQuery() {
+        flush();
+        const origin = location.origin;
+        settings.query[origin] = !useQuery(settings);
+        Store.saveSettings(settings);
+        UI.toast(settings.query[origin] ? '本站页面按「路径 + 参数」区分草稿' : '本站页面只按路径区分草稿（忽略参数）');
+        Menu.refresh();
+        checkRestore();
+    }
+
+    function clearAll() {
+        if (!window.confirm('删除所有网站上保存的全部表单草稿？')) return;
+        for (const key of GM_listValues()) if (key.startsWith('fs:d:')) GM_deleteValue(key);
+        tracked.clear();
+        UI.toast('已清除全部草稿');
+        Menu.refresh();
+    }
+
+    /** 菜单项的文字带状态（草稿数、开关），所以每次状态变化整组重新注册。 */
+    const Menu = {
+        ids: [],
+        sig: '',
+        refresh() {
+            const disabled = !!settings.disabled[location.origin];
+            const items = [];
+            if (!disabled) {
+                const draft = loadDraft(pageKey(settings));
+                const n = draft ? Object.keys(draft.fields).length : 0;
+                items.push(['本页草稿（' + n + '）', showPagePanel]);
+                items.push([(useQuery(settings) ? '✓ ' : '') + '本站按 URL 参数区分页面', toggleQuery]);
+            }
+            items.push([disabled ? '在本站启用草稿保存' : '在本站停用草稿保存', toggleSite]);
+            items.push(['清除全部草稿', clearAll]);
+            const sig = items.map(([c]) => c).join('|');
+            if (sig === this.sig) return; // 每次落盘都会调用，没变化就别重排菜单
+            this.sig = sig;
+            for (const id of this.ids) GM_unregisterMenuCommand(id);
+            this.ids = items.map(([caption, fn]) => GM_registerMenuCommand(caption, fn));
+        },
+    };
+
+    // =========================================================================
+    // 启动
+    // =========================================================================
+
+    let started = false;
+
+    function start() {
+        active = true;
+        if (started) {
+            checkRestore();
             return;
         }
-        sweepAll();
+        started = true;
         rememberPasswords(document);
         snapshotRich();
         // 捕获阶段：页面自己 stopPropagation 也挡不住我们
-        document.addEventListener('focusin', (e) => { if (shouldSave(e.target)) baselineOf(e.target); }, true);
+        document.addEventListener('focusin', (e) => { if (active && shouldSave(e.target)) baselineOf(e.target); }, true);
         document.addEventListener('input', onEdit, true);
         document.addEventListener('change', onEdit, true);
         document.addEventListener('submit', onSubmit, true);
@@ -917,6 +1082,14 @@
         console.log(TAG, '已启动', pageKey(settings));
         checkRestore();
         watchDom();
+    }
+
+    function boot() {
+        settings = Store.settings();
+        sweepAll();
+        if (settings.disabled[location.origin]) console.log(TAG, '本站已停用');
+        else start();
+        Menu.refresh();
     }
 
     try {
