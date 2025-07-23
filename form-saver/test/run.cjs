@@ -39,7 +39,7 @@ function bucket(page, origin) {
 
 /** 新页面：装脚本，把 origin 下的所有路径都用 fixture 应答；pages 可按 pathname 指定不同 fixture。 */
 async function openPage(origin, fixture, opts = {}) {
-    const page = await browser.newPage()
+    const page = opts.context ? await opts.context.newPage() : await browser.newPage()
     page.__logs = []
     page.on('console', m => page.__logs.push(m.text()))
     const pages = opts.pages || {}
@@ -133,6 +133,22 @@ async function main() {
         await page.waitForTimeout(DEBOUNCE)
         t.eq(await bucket(page, 'https://desk.test'), null)
         await page.close()
+    })
+
+    await t.test('防抖期间刷新/关标签：不丢最后几个字', async () => {
+        const context = await browser.newContext() // 关标签后要在同一个 context 里重开，localStorage 才在
+        const page = await openPage('https://forum.test', 'basic.html', { context })
+        await page.fill('[name=body]', '刚打完就刷新')
+        await page.reload() // 不等防抖
+        t.assert((await promptText(page)).includes('1 个字段'), '刷新前要落盘')
+        await page.click('form-saver-ui [data-act=restore]')
+        await page.fill('[name=body]', '刚打完就关标签')
+        await page.close({ runBeforeUnload: true })
+        const again = await openPage('https://forum.test', 'basic.html', { context })
+        await promptText(again)
+        await again.click('form-saver-ui [data-act=restore]')
+        t.eq(await again.inputValue('[name=body]'), '刚打完就关标签')
+        await context.close()
     })
 
     console.log('隐私')

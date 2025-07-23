@@ -3,7 +3,7 @@
 // @name:zh-CN   表单草稿自动保存|评论/工单/帖子写到一半不怕丢
 // @name:en      Form Saver — auto-save drafts of what you type, restore after crash/close
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.07.21.9
+// @version      2025.07.23.10
 // @description  在任意网页自动保存输入框/文本框/下拉框/富文本的草稿，误关标签、页面崩溃、提交失败跳走后回来，角落提示一键恢复。不保存密码、卡号、验证码等敏感字段；草稿 7 天过期。
 // @description:zh-CN  在任意网页自动保存输入框/文本框/下拉框/富文本的草稿，误关标签、页面崩溃、提交失败跳走后回来，角落提示一键恢复。不保存密码、卡号、验证码等敏感字段；草稿 7 天过期。
 // @description:en  Auto-saves drafts of inputs, textareas, selects and contenteditable editors on any page. Closed the tab, the page crashed or a submit failed? Come back and restore with one click. Never stores passwords, card numbers or one-time codes; drafts expire after 7 days.
@@ -1079,6 +1079,14 @@
         document.addEventListener('change', onEdit, true);
         document.addEventListener('submit', onSubmit, true);
         document.addEventListener('reset', onReset, true);
+        /*
+         * 防抖期间刷新/关标签/跳走，最后那几个字还在 dirty 里没落盘 —— 恰恰是最想保住的那几个字。
+         * pagehide 覆盖刷新、关闭、导航（也兼容 bfcache，不像 unload 会让页面进不了 bfcache）；
+         * 手机上切后台后页面可能直接被杀、连 pagehide 都没有，所以 hidden 时也落一次。
+         * GM_setValue 是同步写，来得及。
+         */
+        window.addEventListener('pagehide', () => { if (active) flush(); });
+        document.addEventListener('visibilitychange', () => { if (active && document.visibilityState === 'hidden') flush(); });
         console.log(TAG, '已启动', pageKey(settings));
         checkRestore();
         watchDom();
