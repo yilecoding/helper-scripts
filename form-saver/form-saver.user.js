@@ -3,7 +3,7 @@
 // @name:zh-CN   表单草稿自动保存|评论/工单/帖子写到一半不怕丢
 // @name:en      Form Saver — auto-save drafts of what you type, restore after crash/close
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.07.23.10
+// @version      2025.07.23.11
 // @description  在任意网页自动保存输入框/文本框/下拉框/富文本的草稿，误关标签、页面崩溃、提交失败跳走后回来，角落提示一键恢复。不保存密码、卡号、验证码等敏感字段；草稿 7 天过期。
 // @description:zh-CN  在任意网页自动保存输入框/文本框/下拉框/富文本的草稿，误关标签、页面崩溃、提交失败跳走后回来，角落提示一键恢复。不保存密码、卡号、验证码等敏感字段；草稿 7 天过期。
 // @description:en  Auto-saves drafts of inputs, textareas, selects and contenteditable editors on any page. Closed the tab, the page crashed or a submit failed? Come back and restore with one click. Never stores passwords, card numbers or one-time codes; drafts expire after 7 days.
@@ -442,7 +442,14 @@
         const origin = location.origin;
         const bucket = Store.load(origin);
         const now = Date.now();
+        const cur = pageKey(settings);
         for (const [el, pk] of dirty) {
+            // 编辑之后路由变了、输入框又被页面清空：那是 SPA 换页复用了同一个输入框，
+            // 不是用户删光了内容。按「空」处理会把上一页的草稿删掉
+            if (pk !== cur && isPristine(el)) {
+                tracked.delete(el); // 回到那一页时它还是空的，也别被 checkCleared 当成「发送成功」
+                continue;
+            }
             const fk = fieldKey(el);
             const draft = bucket[pk] || { fields: {} };
             const value = readValue(el);
@@ -578,10 +585,12 @@
      */
     function dropTracked(els) {
         const byPage = new Map();
+        const cur = pageKey(settings);
         for (const el of els) {
             const t = tracked.get(el);
             if (!t || dirty.has(el) || !isPristine(el)) continue;
             tracked.delete(el);
+            if (t.pk !== cur) continue; // 换页时被清空不算「已发送」（SPA 复用输入框），只是不再跟踪
             if (!byPage.has(t.pk)) byPage.set(t.pk, []);
             byPage.get(t.pk).push(t.fk);
         }
@@ -924,13 +933,13 @@
                 if (!active) return;
                 rememberPasswords(document);
                 snapshotRich();
-                checkCleared();
                 const pk = pageKey(settings);
                 if (pk !== lastKey) {
                     lastKey = pk;
                     flush();
                     Menu.refresh();
                 }
+                checkCleared();
                 checkRestore();
             }, 300);
         };

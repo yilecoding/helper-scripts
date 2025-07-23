@@ -370,6 +370,17 @@ async function main() {
         t.eq(await page.locator(PROMPT).count(), 0, '离开后收起')
         await page.close()
     })
+    await t.test('切换路由时页面复用输入框并清空：不能当成「已发送」删掉上一页的草稿', async () => {
+        const page = await openPage('https://im.test', 'inbox.html', { path: '/c/1' })
+        await page.fill('#reply', '给会话 1 的回复')
+        await page.waitForTimeout(DEBOUNCE)
+        await page.click('text=会话 2')
+        await page.waitForTimeout(600)
+        t.assert((await bucket(page, 'https://im.test'))['https://im.test/c/1'], '会话 1 的草稿被删了')
+        await page.click('text=会话 1')
+        t.assert((await promptText(page)).includes('1 个字段'))
+        await page.close()
+    })
     await t.test('随机 id 判别：稳定的照常用，生成的降级', async () => {
         const stable = ['contact', 'user_email', 'address2', 'reply-box', 'feedback']
         const random = [':r1:', '«r2»', '_r_3_', 'el-id-1024-17', 'mui-38291', 'ember123', 'react-select-2-input',
