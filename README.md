@@ -16,6 +16,31 @@
 
 调研笔记见 [notes.md](./smartedu-2026-basic/notes.md)。
 
+### 通用工具类
+
+下面这些不限站点（个别带站点规则表），每个目录下的 `notes.md` 写了实现思路、踩过的坑和已知限制。
+
+| 脚本 | 做什么 |
+|---|---|
+| [copy-unlock](./copy-unlock/copy-unlock.user.js) | 解除禁止选中 / 禁止右键 / 复制追加版权尾巴；CSDN 代码块免登录复制；按站点开关 |
+| [link-direct](./link-direct/link-direct.user.js) | 跳过知乎、掘金、CSDN、简书、QQ、Steam 等二十多个站点的「即将离开」中转页，可选去掉 utm 追踪参数 |
+| [video-speed](./video-speed/video-speed.user.js) | 任意网站 HTML5 视频快捷键调速、快进快退，按站点记住倍速，站点重置倍速后自动恢复 |
+| [page-to-markdown](./page-to-markdown/page-to-markdown.user.js) | 自动识别文章正文，转成干净的 Markdown（表格、代码块、嵌套列表、front-matter），复制或下载；提取不准时可手动选区 |
+| [table-export](./table-export/table-export.user.js) | 悬停任意表格即可复制 TSV / Markdown，下载 CSV（带 BOM，Excel 不乱码）/ JSON；正确展开合并单元格，支持 ARIA 表格 |
+| [form-saver](./form-saver/form-saver.user.js) | 输入框、富文本自动存草稿，误关页面回来一键恢复；兼容 React 受控组件；不存密码、卡号、验证码 |
+| [image-gallery](./image-gallery/image-gallery.user.js) | 收集页面所有图片（srcset 最大图、懒加载、背景图）成画廊，大图查看缩放旋转，勾选批量下载 |
+| [translate-selection](./translate-selection/translate-selection.user.js) | 划词翻译，中英自动互译，单词显示词典释义，Google 接口失败自动降级 MyMemory，可朗读 |
+| [article-toc](./article-toc/article-toc.user.js) | 给长文章生成浮动目录，滚动高亮当前章节，跳转扣除吸顶导航栏，可拖动折叠，支持 SPA |
+| [search-switcher](./search-switcher/search-switcher.user.js) | 搜索结果页带上同一关键词一键切换百度 / Google / Bing / GitHub / 知乎 / B 站等，可自定义引擎列表 |
+
+## 测试
+
+每个脚本的 `test/run.cjs` 用 [tools/userscript-harness.cjs](./tools/userscript-harness.cjs) 在 Playwright 里加载脚本、模拟 `GM_*`，全程离线。仓库不带 `node_modules`，借一个装了 `playwright` 的目录：
+
+```bash
+NODE_PATH=/path/to/node_modules node <script>/test/run.cjs
+```
+
 ## 安装
 
 在 Tampermonkey 中新建脚本，粘贴对应 `*.user.js` 的内容即可；或在浏览器打开脚本文件的 raw 链接（需先关联 GitHub 远程仓库）由 Tampermonkey 自动识别安装。
