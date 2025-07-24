@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>聊天</title></head>
+<body>
+<div id="chat">
+    <ul id="log"></ul>
+    <textarea id="box"></textarea>
+    <button id="send" type="button">发送</button>
+</div>
+<script>
+    // 没有 <form>：回车或点发送后程序把输入框清空（不会有 input 事件），消息追加到列表。
+    // 回车发送时焦点一直在输入框里，连 change 事件都没有。
+    document.getElementById('box').addEventListener('keydown', e => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault()
+            send()
+        }
+    })
+    document.getElementById('send').onclick = send
+    function send() {
+        const box = document.getElementById('box')
+        const li = document.createElement('li')
+        li.textContent = box.value
+        document.getElementById('log').append(li)
+        box.value = ''
+    }
+</script>
+</body>
+</html>

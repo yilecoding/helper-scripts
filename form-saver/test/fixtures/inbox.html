@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>会话</title></head>
+<body>
+<div id="app">
+    <nav><a href="/c/1" data-link>会话 1</a> <a href="/c/2" data-link>会话 2</a></nav>
+    <h2 id="who"></h2>
+    <textarea id="reply"></textarea>
+</div>
+<script>
+    // 切换会话时复用同一个输入框，程序把它清空（不发 input 事件）——不是「发送成功」
+    function render() {
+        document.getElementById('who').textContent = '会话 ' + location.pathname.split('/').pop()
+        document.getElementById('reply').value = ''
+    }
+    document.addEventListener('click', e => {
+        const a = e.target.closest('[data-link]')
+        if (!a) return
+        e.preventDefault()
+        history.pushState(null, '', a.getAttribute('href'))
+        render()
+    })
+    window.addEventListener('popstate', render)
+    render()
+</script>
+</body>
+</html>

@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>发帖</title></head>
+<body>
+<h1>发表新帖</h1>
+<form id="post" action="/submit" method="post">
+    <input name="title" placeholder="标题">
+    <textarea name="body" placeholder="正文"></textarea>
+    <button type="submit">发布</button>
+</form>
+<script>
+    // 记录页面收到的 input/change 事件，验证恢复时派发了事件
+    for (const type of ['input', 'change']) {
+        document.addEventListener(type, e => { e.target.dataset[type] = (+e.target.dataset[type] || 0) + 1 })
+    }
+</script>
+</body>
+</html>
