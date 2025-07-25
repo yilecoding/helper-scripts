@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>普通亮色页面</title>
+<script>
+    // 页面自己的第一段脚本：此时 <body> 还没解析，记下这一刻 <html> 上有没有 filter
+    window.__earlyFilter = getComputedStyle(document.documentElement).filter
+    document.addEventListener('DOMContentLoaded', () => {
+        window.__dclFilter = getComputedStyle(document.documentElement).filter
+    })
+</script>
+<style>
+    body { margin: 0; font: 16px/1.6 sans-serif; color: #222; }
+    .content { height: 120px; padding: 8px; }
+</style>
+</head>
+<body>
+<div class="content">
+    <h1>标题</h1>
+    <p>正文文字。</p>
+</div>
+<img id="photo" width="40" height="40" alt="" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='40' height='40'%3E%3Crect width='40' height='40' fill='%23c33'/%3E%3C/svg%3E">
+<video id="clip" width="40" height="30"></video>
+<canvas id="board" width="40" height="30"></canvas>
+<iframe id="frame" width="60" height="30" srcdoc="<p>frame</p>"></iframe>
+<svg id="icon" width="40" height="40"><image id="svgimg" width="40" height="40" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'/%3E"/><path d="M0 0h10v10H0z"/></svg>
+</body>
+</html>
