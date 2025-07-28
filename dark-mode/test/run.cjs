@@ -30,6 +30,7 @@ async function open(browser, file, opts = {}) {
         route.fulfill({ contentType: 'text/html; charset=utf-8', body: fs.readFileSync(fp) })
     })
     await h.install(page, SCRIPT, opts)
+    if (opts.beforeGoto) await opts.beforeGoto(page)
     await page.goto((opts.site || SITE) + '/' + file)
     return page
 }
@@ -60,6 +61,16 @@ async function pixel(page, x, y) {
         return Array.from(g.getImageData(0, 0, 1, 1).data)
     }, 'data:image/png;base64,' + buf.toString('base64'))
     return rgba.slice(0, 3)
+}
+
+/** 等脚本量完页面背景（load 之后还会再量一次，所以等 load），返回它的判断。 */
+async function detected(page) {
+    await page.waitForLoadState('load')
+    await page.waitForFunction(() => {
+        const s = document.getElementById('dark-mode-userscript')
+        return s && s.dataset.pageDark !== 'null'
+    })
+    return page.evaluate(() => document.getElementById('dark-mode-userscript').dataset.pageDark === 'true')
 }
 
 async function main() {
@@ -132,6 +143,51 @@ async function main() {
     await t.test('存储里的色调值越界 / 不是数字时夹回范围或用默认值', async () => {
         const page = await open(browser, 'light.html', { values: { settings: { brightness: 5, contrast: 'abc', sepia: 300 } } })
         t.eq(await filterOf(page, 'html'), `${FILTER} brightness(0.3) sepia(1)`)
+        await page.close()
+    })
+
+    await t.test('亮色页面量完背景后仍然反转', async () => {
+        const page = await open(browser, 'light.html')
+        t.eq(await detected(page), false)
+        t.eq(await filterOf(page, 'html'), FILTER)
+        await page.close()
+    })
+
+    await t.test('暗色站点（body 铺深色）被识别，撤掉反转', async () => {
+        const page = await open(browser, 'dark.html')
+        t.eq(await detected(page), true)
+        t.eq(await filterOf(page, 'html'), 'none')
+        const bg = await pixel(page, 400, 300)
+        t.eq(bg, [30, 30, 30], '画面就是页面自己的 #1e1e1e，没有被反成浅色')
+        await page.close()
+    })
+
+    await t.test('暗色 SPA（body 透明，#app 铺深色）也能识别', async () => {
+        const page = await open(browser, 'dark-app.html')
+        t.eq(await detected(page), true)
+        t.eq(await filterOf(page, 'html'), 'none')
+        await page.close()
+    })
+
+    await t.test('声明 color-scheme: light dark 且不铺背景：系统暗色时不反，系统亮色时反', async () => {
+        for (const [scheme, dark] of [['dark', true], ['light', false]]) {
+            const p = await open(browser, 'scheme.html', { beforeGoto: (pg) => pg.emulateMedia({ colorScheme: scheme }) })
+            t.eq(await detected(p), dark, '系统 ' + scheme)
+            t.eq(await filterOf(p, 'html'), dark ? 'none' : FILTER, '系统 ' + scheme)
+            await p.close()
+        }
+    })
+
+    await t.test('声明 light dark 但自己铺白底：系统暗色时照样反转', async () => {
+        const page = await open(browser, 'scheme-white.html', { beforeGoto: (pg) => pg.emulateMedia({ colorScheme: 'dark' }) })
+        t.eq(await detected(page), false)
+        t.eq(await filterOf(page, 'html'), FILTER)
+        await page.close()
+    })
+
+    await t.test('CSS 只声明 color-scheme: dark：不论系统主题都不反', async () => {
+        const page = await open(browser, 'scheme-dark-only.html', { beforeGoto: (pg) => pg.emulateMedia({ colorScheme: 'light' }) })
+        t.eq(await detected(page), true)
         await page.close()
     })
 
