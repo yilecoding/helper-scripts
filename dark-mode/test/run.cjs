@@ -191,6 +191,65 @@ async function main() {
         await page.close()
     })
 
+    await t.test('带 background-image: url() 的元素（行内样式 / 样式表）反转回来，渐变和零尺寸的不动', async () => {
+        const page = await open(browser, 'bg.html')
+        await detected(page)
+        t.eq(await filterOf(page, '#inline'), FILTER)
+        t.eq(await filterOf(page, '#banner'), FILTER)
+        t.eq(await filterOf(page, '#gradient'), 'none', '纯渐变跟着页面一起反')
+        t.eq(await page.evaluate(() => document.getElementById('hidden').classList.contains('dm-revert-bg')), false, 'display:none 的不打标')
+        await page.close()
+    })
+
+    await t.test('动态插入的背景图元素、后来才设上背景图的元素都会被处理（节流后）', async () => {
+        const page = await open(browser, 'bg.html')
+        await detected(page)
+        await page.evaluate(() => {
+            const wrap = document.createElement('section')
+            wrap.innerHTML = '<div><div id="added" class="lazy-bg" style="width:50px;height:50px"></div></div>'
+            document.getElementById('slot').appendChild(wrap)
+            document.getElementById('later').style.backgroundImage = "url('data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22/%3E')"
+            document.getElementById('hidden').style.display = 'block'
+            document.getElementById('hidden').style.height = '20px'
+        })
+        await page.waitForFunction(() => document.querySelectorAll('.dm-revert-bg').length >= 5, null, { timeout: 2000 })
+        for (const sel of ['#added', '#later', '#hidden']) t.eq(await filterOf(page, sel), FILTER, sel)
+
+        // 背景图被去掉后类名也撤掉
+        await page.evaluate(() => { document.getElementById('later').style.backgroundImage = 'none' })
+        await page.waitForFunction(() => !document.getElementById('later').classList.contains('dm-revert-bg'), null, { timeout: 2000 })
+        t.eq(await filterOf(page, '#later'), 'none')
+        await page.close()
+    })
+
+    await t.test('一直在变的页面也按节流间隔扫，不会被无限推迟；自己加类名不会触发死循环', async () => {
+        const page = await open(browser, 'bg.html')
+        await detected(page)
+        const found = await page.evaluate(() => new Promise((resolve) => {
+            const slot = document.getElementById('slot')
+            const start = performance.now()
+            const el = document.createElement('div')
+            el.className = 'lazy-bg'
+            el.style.cssText = 'width:10px;height:10px'
+            slot.appendChild(el)
+            // 每 50ms 改一次 DOM，防抖的话永远等不到
+            const iv = setInterval(() => { slot.dataset.n = String(performance.now()); slot.appendChild(document.createTextNode('.')) }, 50)
+            const poll = setInterval(() => {
+                if (el.classList.contains('dm-revert-bg')) { clearInterval(iv); clearInterval(poll); resolve(performance.now() - start) }
+                else if (performance.now() - start > 2000) { clearInterval(iv); clearInterval(poll); resolve(-1) }
+            }, 20)
+        }))
+        t.assert(found > 0 && found < 600, `持续变化时也应在节流间隔内处理，实际 ${found}ms`)
+        // 静下来以后不应再有扫描（用一个计数的 MutationObserver 看类名有没有被反复改）
+        const churn = await page.evaluate(() => new Promise((resolve) => {
+            let n = 0
+            new MutationObserver((rs) => { n += rs.length }).observe(document.body, { attributes: true, subtree: true, attributeFilter: ['class'] })
+            setTimeout(() => resolve(n), 800)
+        }))
+        t.eq(churn, 0)
+        await page.close()
+    })
+
     await close()
     t.done()
 }

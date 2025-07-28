@@ -3,10 +3,10 @@
 // @name:zh-CN   通用暗色模式
 // @name:en      Dark Mode for Any Site
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.07.28.3
-// @description  任意网站一键暗色：整页反色再把图片、视频、画布、iframe 反转回来，页面渲染前注入，不闪白；自动识别本来就是暗色的站点，不做「暗上加暗」；可调亮度、对比度、棕褐色。
-// @description:zh-CN  任意网站一键暗色：整页反色再把图片、视频、画布、iframe 反转回来，页面渲染前注入，不闪白；自动识别本来就是暗色的站点，不做「暗上加暗」；可调亮度、对比度、棕褐色。
-// @description:en  Dark mode for any website: inverts the page and flips images, videos, canvases and iframes back, injected before the page renders so there is no white flash. Sites that are already dark are detected and left alone. Adjustable brightness, contrast and sepia.
+// @version      2025.07.28.4
+// @description  任意网站一键暗色：整页反色再把图片、视频、画布、iframe、背景图反转回来（含动态插入的），页面渲染前注入，不闪白；自动识别本来就是暗色的站点，不做「暗上加暗」；可调亮度、对比度、棕褐色。
+// @description:zh-CN  任意网站一键暗色：整页反色再把图片、视频、画布、iframe、背景图反转回来（含动态插入的），页面渲染前注入，不闪白；自动识别本来就是暗色的站点，不做「暗上加暗」；可调亮度、对比度、棕褐色。
+// @description:en  Dark mode for any website: inverts the page and flips images, videos, canvases, iframes and background images back (including ones added later), injected before the page renders so there is no white flash. Sites that are already dark are detected and left alone. Adjustable brightness, contrast and sepia.
 // @author       壹樂（V：ita1125）
 // @match        http://*/*
 // @match        https://*/*
@@ -59,9 +59,13 @@
          * 0.2 大约是 #7c7c7c：深灰背景都算暗，浅灰（#ccc 是 0.6）不算。
          */
         darkLuminance: 0.2,
+        /* 动态插入 / 改了样式的节点攒一批再扫，最多攒这么久（节流，不是防抖：持续变化也要按时扫） */
+        scanThrottle: 200,
     };
 
     const STYLE_ID = 'dark-mode-userscript';
+    /** 带背景图的元素打这个类，反转回来 */
+    const BG_CLASS = 'dm-revert-bg';
     const FILTER = 'invert(1) hue-rotate(180deg)';
 
     // =========================================================================
@@ -108,7 +112,7 @@ html {
     /* 透明的根背景透出来的是浏览器画布，画布不吃 filter，反转后还是白的 */
     background-color: #fff;
 }
-${CONFIG.revertSelector} {
+${CONFIG.revertSelector}, .${BG_CLASS} {
     filter: ${FILTER} !important;
 }
 `;
@@ -235,6 +239,78 @@ ${CONFIG.revertSelector} {
     })();
 
     // =========================================================================
+    // 背景图元素
+    // =========================================================================
+
+    /**
+     * background-image 没法用选择器选中，只能逐个读计算样式。
+     * 只给有尺寸的打标：零尺寸的看不见，没必要；之后它的 style / class 变了会被重新检查。
+     */
+    const Scanner = (() => {
+        let observer = null;
+        const subtrees = new Set();   // 新插入的节点：连同后代一起扫
+        const singles = new Set();    // 改了 style / class 的节点：只看它自己
+        let timer = null;
+
+        function check(el) {
+            const has = /url\(/.test(getComputedStyle(el).backgroundImage);
+            if (has) {
+                const r = el.getBoundingClientRect();
+                if (r.width > 0 && r.height > 0 && !el.classList.contains(BG_CLASS)) el.classList.add(BG_CLASS);
+            } else if (el.classList.contains(BG_CLASS)) {
+                el.classList.remove(BG_CLASS);
+            }
+        }
+
+        function scanTree(root) {
+            if (root.nodeType !== 1) return;
+            check(root);
+            for (const el of root.querySelectorAll('*')) check(el);
+        }
+
+        function flush() {
+            timer = null;
+            for (const n of subtrees) if (n.isConnected) scanTree(n);
+            for (const n of singles) if (n.isConnected && !subtrees.has(n)) check(n);
+            subtrees.clear();
+            singles.clear();
+            // 上面加 / 删类名产生的记录是自己造成的，丢掉，否则每次扫完都会再触发一轮
+            if (observer) observer.takeRecords();
+        }
+
+        function schedule() {
+            if (!timer) timer = setTimeout(flush, CONFIG.scanThrottle);
+        }
+
+        function onMutations(records) {
+            for (const r of records) {
+                if (r.type === 'childList') r.addedNodes.forEach((n) => n.nodeType === 1 && subtrees.add(n));
+                else singles.add(r.target);
+            }
+            if (subtrees.size || singles.size) schedule();
+        }
+
+        /** 第一次开启时全量扫一遍并开始监听；之后再调只是空操作。暗色站点永远不会走到这里。 */
+        function start() {
+            if (observer || !document.body) return;
+            fullScan();
+            observer = new MutationObserver(onMutations);
+            observer.observe(document.documentElement, {
+                childList: true,
+                subtree: true,
+                attributes: true,
+                attributeFilter: ['style', 'class'],
+            });
+        }
+
+        function fullScan() {
+            scanTree(document.documentElement);
+        }
+
+        return { start, fullScan, get started() { return !!observer; } };
+    })();
+
+    // =========================================================================
     // 状态
     // =========================================================================
 
@@ -247,6 +323,7 @@ ${CONFIG.revertSelector} {
         const on = State.pageDark !== true;
         Style.setEnabled(on);
         if (Style.el) Style.el.dataset.pageDark = String(State.pageDark);
+        if (on) Scanner.start();
     }
 
     function detect() {
@@ -274,5 +351,10 @@ ${CONFIG.revertSelector} {
      */
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', detect, { once: true });
     else detect();
-    if (document.readyState !== 'complete') window.addEventListener('load', detect, { once: true });
+    const onLoad = () => {
+        detect();
+        // 晚到的样式表可能给已有元素加了背景图
+        if (Scanner.started) Scanner.fullScan();
+    };
+    if (document.readyState !== 'complete') window.addEventListener('load', onLoad, { once: true });
 })();
