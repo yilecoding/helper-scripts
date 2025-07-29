@@ -3,16 +3,18 @@
 // @name:zh-CN   通用暗色模式
 // @name:en      Dark Mode for Any Site
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.07.28.4
-// @description  任意网站一键暗色：整页反色再把图片、视频、画布、iframe、背景图反转回来（含动态插入的），页面渲染前注入，不闪白；自动识别本来就是暗色的站点，不做「暗上加暗」；可调亮度、对比度、棕褐色。
-// @description:zh-CN  任意网站一键暗色：整页反色再把图片、视频、画布、iframe、背景图反转回来（含动态插入的），页面渲染前注入，不闪白；自动识别本来就是暗色的站点，不做「暗上加暗」；可调亮度、对比度、棕褐色。
-// @description:en  Dark mode for any website: inverts the page and flips images, videos, canvases, iframes and background images back (including ones added later), injected before the page renders so there is no white flash. Sites that are already dark are detected and left alone. Adjustable brightness, contrast and sepia.
+// @version      2025.07.29.5
+// @description  任意网站一键暗色：整页反色再把图片、视频、画布、iframe、背景图反转回来（含动态插入的），页面渲染前注入，不闪白；自动识别本来就是暗色的站点，不做「暗上加暗」；全局可选总是开 / 跟随系统主题（实时切换）/ 定时开，每个站点可单独强制开或关；可调亮度、对比度、棕褐色。
+// @description:zh-CN  任意网站一键暗色：整页反色再把图片、视频、画布、iframe、背景图反转回来（含动态插入的），页面渲染前注入，不闪白；自动识别本来就是暗色的站点，不做「暗上加暗」；全局可选总是开 / 跟随系统主题（实时切换）/ 定时开，每个站点可单独强制开或关；可调亮度、对比度、棕褐色。
+// @description:en  Dark mode for any website: inverts the page and flips images, videos, canvases, iframes and background images back (including ones added later), injected before the page renders so there is no white flash. Sites that are already dark are detected and left alone. Globally: always on, follow the system theme (switches live) or on a schedule; each site can be forced on or off. Adjustable brightness, contrast and sepia.
 // @author       壹樂（V：ita1125）
 // @match        http://*/*
 // @match        https://*/*
 // @noframes
 // @grant        GM_addStyle
 // @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_deleteValue
 // @license      CC BY-NC-SA
 // @run-at       document-start
 // @homepageURL  https://github.com/yilecoding/helper-scripts
@@ -61,7 +63,17 @@
         darkLuminance: 0.2,
         /* 动态插入 / 改了样式的节点攒一批再扫，最多攒这么久（节流，不是防抖：持续变化也要按时扫） */
         scanThrottle: 200,
+        /*
+         * 全局模式：always 总是开 / system 跟随系统 prefers-color-scheme / schedule 定时（跨午夜）。
+         * 默认 always：装这个脚本的人就是想要暗色，系统是亮色的人不少。
+         */
+        mode: 'always',
+        schedule: { from: '19:00', to: '07:00' },
+        scheduleCheck: 30 * 1000, // 定时模式多久看一次钟（电脑睡眠醒来后最多晚这么久切换）
     };
+
+    const MODES = ['always', 'system', 'schedule'];
+    const SITE_MODES = ['auto', 'on', 'off'];
 
     const STYLE_ID = 'dark-mode-userscript';
     /** 带背景图的元素打这个类，反转回来 */
@@ -79,13 +91,48 @@
             return Number.isFinite(n) ? Math.min(hi, Math.max(lo, Math.round(n))) : CONFIG[key];
         }
 
-        /** 全局设置。存的值可能是旧版本 / 手改坏的，读出来一律夹回范围。 */
-        function settings() {
-            const raw = { brightness: CONFIG.brightness, contrast: CONFIG.contrast, sepia: CONFIG.sepia, ...GM_getValue('settings', {}) };
-            return { ...raw, brightness: clamp('brightness', raw.brightness), contrast: clamp('contrast', raw.contrast), sepia: clamp('sepia', raw.sepia) };
+        function validTime(v, fallback) {
+            return /^([01]?\d|2[0-3]):[0-5]\d$/.test(String(v)) ? String(v) : fallback;
         }
 
-        return { settings, clamp };
+        /** 全局设置。存的值可能是旧版本 / 手改坏的，读出来一律夹回范围。 */
+        function settings() {
+            const raw = {
+                brightness: CONFIG.brightness,
+                contrast: CONFIG.contrast,
+                sepia: CONFIG.sepia,
+                mode: CONFIG.mode,
+                ...GM_getValue('settings', {}),
+            };
+            const sch = raw.schedule || {};
+            return {
+                ...raw,
+                brightness: clamp('brightness', raw.brightness),
+                contrast: clamp('contrast', raw.contrast),
+                sepia: clamp('sepia', raw.sepia),
+                mode: MODES.includes(raw.mode) ? raw.mode : CONFIG.mode,
+                schedule: { from: validTime(sch.from, CONFIG.schedule.from), to: validTime(sch.to, CONFIG.schedule.to) },
+            };
+        }
+
+        function saveSettings(patch) {
+            GM_setValue('settings', { ...settings(), ...patch });
+        }
+
+        /** 站点三态按 hostname 存：auto 跟随全局 / on 强制开 / off 强制关。 */
+        const siteKey = 'site:' + location.hostname;
+
+        function site() {
+            const v = GM_getValue(siteKey, 'auto');
+            return SITE_MODES.includes(v) ? v : 'auto';
+        }
+
+        function saveSite(v) {
+            if (v === 'auto') GM_deleteValue(siteKey);
+            else GM_setValue(siteKey, v);
+        }
+
+        return { settings, saveSettings, site, saveSite, clamp, validTime };
     })();
 
     // =========================================================================
@@ -319,10 +366,45 @@ ${CONFIG.revertSelector}, .${BG_CLASS} {
         pageDark: null,
     };
 
+    const systemDark = matchMedia('(prefers-color-scheme: dark)');
+
+    function minutes(hhmm) {
+        const [h, m] = hhmm.split(':').map(Number);
+        return h * 60 + m;
+    }
+
+    /** 现在是否在定时区间内。from > to 表示跨午夜（19:00–07:00）；相等视为空区间。 */
+    function inSchedule({ from, to }, now = new Date()) {
+        const t = now.getHours() * 60 + now.getMinutes();
+        const a = minutes(from), b = minutes(to);
+        return a < b ? t >= a && t < b : a > b ? t >= a || t < b : false;
+    }
+
+    /** 全局模式此刻要不要暗色（不管站点设置和页面本身）。 */
+    function globalWants(s) {
+        if (s.mode === 'system') return systemDark.matches;
+        if (s.mode === 'schedule') return inSchedule(s.schedule);
+        return true;
+    }
+
+    /**
+     * 最终开不开：站点强制开 > 站点强制关 > 全局模式 && 页面本来不是暗色。
+     * 强制开连「页面本来就暗」也不管 —— 用户强制开，多半就是因为自动识别判错了。
+     */
+    function decide() {
+        const site = Store.site();
+        if (site === 'on') return true;
+        if (site === 'off') return false;
+        return globalWants(Store.settings()) && State.pageDark !== true;
+    }
+
     function apply() {
-        const on = State.pageDark !== true;
+        const on = decide();
         Style.setEnabled(on);
-        if (Style.el) Style.el.dataset.pageDark = String(State.pageDark);
+        if (Style.el) {
+            Style.el.dataset.pageDark = String(State.pageDark);
+            Style.el.dataset.site = Store.site();
+        }
         if (on) Scanner.start();
     }
 
@@ -357,4 +439,18 @@ ${CONFIG.revertSelector}, .${BG_CLASS} {
         if (Scanner.started) Scanner.fullScan();
     };
     if (document.readyState !== 'complete') window.addEventListener('load', onLoad, { once: true });
+
+    // 系统主题实时切换（跟随系统模式下立刻生效；也影响「声明了 light dark 的页面」算不算暗）
+    systemDark.addEventListener('change', () => {
+        if (document.body) State.pageDark = Detect.measure();
+        apply();
+    });
+
+    // 定时模式：定期看钟。用短间隔轮询而不是算好下一个整点 setTimeout —— 电脑睡眠时长定时器会被拖后
+    setInterval(() => {
+        if (Store.settings().mode === 'schedule') apply();
+    }, CONFIG.scheduleCheck);
+    document.addEventListener('visibilitychange', () => {
+        if (!document.hidden) apply();
+    });
 })();

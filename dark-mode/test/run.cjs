@@ -21,7 +21,7 @@ const t = h.createRunner('dark-mode')
 
 /** 新开一个页面（独立 context，GM 存储互不影响），把假域名的请求映射到 fixtures。 */
 async function open(browser, file, opts = {}) {
-    const page = await browser.newPage({ viewport: { width: 800, height: 600 } })
+    const page = await browser.newPage({ viewport: { width: 800, height: 600 }, timezoneId: 'Asia/Shanghai' })
     page.on('console', (m) => { if (m.type() === 'error') console.log('      [page error]', m.text()) })
     await page.route(/^https:\/\/([\w-]+\.)*example\.com\//, (route) => {
         const url = new URL(route.request().url())
@@ -29,6 +29,8 @@ async function open(browser, file, opts = {}) {
         if (!fs.existsSync(fp)) return route.fulfill({ status: 404, body: 'not found' })
         route.fulfill({ contentType: 'text/html; charset=utf-8', body: fs.readFileSync(fp) })
     })
+    // 假时钟要在脚本之前装：init script 按注册顺序执行，后装的话脚本已经拿到了真的 setInterval
+    if (opts.clock) await page.clock.install({ time: opts.clock })
     await h.install(page, SCRIPT, opts)
     if (opts.beforeGoto) await opts.beforeGoto(page)
     await page.goto((opts.site || SITE) + '/' + file)
@@ -247,6 +249,91 @@ async function main() {
             setTimeout(() => resolve(n), 800)
         }))
         t.eq(churn, 0)
+        await page.close()
+    })
+
+    await t.test('跟随系统：系统亮色时不开，emulateMedia 切到暗色立刻开，切回亮色立刻关', async () => {
+        const page = await open(browser, 'light.html', {
+            values: { settings: { mode: 'system' } },
+            beforeGoto: (pg) => pg.emulateMedia({ colorScheme: 'light' }),
+        })
+        await detected(page)
+        t.eq(await filterOf(page, 'html'), 'none')
+        await page.emulateMedia({ colorScheme: 'dark' })
+        await page.waitForFunction(() => getComputedStyle(document.documentElement).filter !== 'none', null, { timeout: 2000 })
+        t.eq(await filterOf(page, 'html'), FILTER)
+        t.eq(await filterOf(page, '#photo'), FILTER)
+        await page.emulateMedia({ colorScheme: 'light' })
+        await page.waitForFunction(() => getComputedStyle(document.documentElement).filter === 'none', null, { timeout: 2000 })
+        await page.close()
+    })
+
+    await t.test('跟随系统、系统已是暗色：document-start 就开着（DOMContentLoaded 前）', async () => {
+        const page = await open(browser, 'light.html', {
+            values: { settings: { mode: 'system' } },
+            beforeGoto: (pg) => pg.emulateMedia({ colorScheme: 'dark' }),
+        })
+        t.eq(await page.evaluate(() => window.__earlyFilter), FILTER)
+        await page.close()
+    })
+
+    await t.test('站点强制关优先于全局「总是」', async () => {
+        const page = await open(browser, 'light.html', { values: { 'site:example.com': 'off', settings: { mode: 'always' } } })
+        t.eq(await page.evaluate(() => window.__earlyFilter), 'none', '一开始就没开，不会先黑一下')
+        await detected(page)
+        t.eq(await filterOf(page, 'html'), 'none')
+        await page.close()
+    })
+
+    await t.test('站点设置按 hostname 区分：别的子域名不受影响', async () => {
+        const page = await open(browser, 'light.html', { site: 'https://www.example.com', values: { 'site:example.com': 'off' } })
+        await detected(page)
+        t.eq(await filterOf(page, 'html'), FILTER)
+        await page.close()
+    })
+
+    await t.test('站点强制开优先于全局（跟随系统 + 系统亮色），也压过「页面本来就暗」', async () => {
+        const opts = {
+            values: { 'site:example.com': 'on', settings: { mode: 'system' } },
+            beforeGoto: (pg) => pg.emulateMedia({ colorScheme: 'light' }),
+        }
+        const page = await open(browser, 'light.html', opts)
+        await detected(page)
+        t.eq(await filterOf(page, 'html'), FILTER)
+        await page.close()
+        const dark = await open(browser, 'dark.html', opts)
+        t.eq(await detected(dark), true)
+        t.eq(await filterOf(dark, 'html'), FILTER)
+        await dark.close()
+    })
+
+    await t.test('定时模式 19:00–07:00：晚上开、白天关、跨过 07:00 时自动关', async () => {
+        const at = async (time) => {
+            const page = await open(browser, 'light.html', {
+                values: { settings: { mode: 'schedule', schedule: { from: '19:00', to: '07:00' } } },
+                clock: new Date(`2026-10-29T${time}+08:00`),
+            })
+            await detected(page)
+            return page
+        }
+        for (const [time, on] of [['20:00:00', true], ['02:30:00', true], ['12:00:00', false], ['19:00:00', true], ['07:00:00', false]]) {
+            const page = await at(time)
+            t.eq(await filterOf(page, 'html'), on ? FILTER : 'none', time)
+            await page.close()
+        }
+        const page = await at('06:59:00')
+        t.eq(await filterOf(page, 'html'), FILTER)
+        await page.clock.runFor('01:30')
+        t.eq(await filterOf(page, 'html'), 'none', '过了 07:00 之后最多一个检查周期就关')
+        await page.close()
+    })
+
+    await t.test('存储里的模式 / 时间不合法时用默认值', async () => {
+        const page = await open(browser, 'light.html', {
+            values: { settings: { mode: 'weird', schedule: { from: '25:00', to: 'x' } }, 'site:example.com': 'maybe' },
+        })
+        await detected(page)
+        t.eq(await filterOf(page, 'html'), FILTER, '默认 always')
         await page.close()
     })
 
