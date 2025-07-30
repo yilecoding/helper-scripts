@@ -3,10 +3,10 @@
 // @name:zh-CN   通用暗色模式
 // @name:en      Dark Mode for Any Site
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.07.29.5
-// @description  任意网站一键暗色：整页反色再把图片、视频、画布、iframe、背景图反转回来（含动态插入的），页面渲染前注入，不闪白；自动识别本来就是暗色的站点，不做「暗上加暗」；全局可选总是开 / 跟随系统主题（实时切换）/ 定时开，每个站点可单独强制开或关；可调亮度、对比度、棕褐色。
-// @description:zh-CN  任意网站一键暗色：整页反色再把图片、视频、画布、iframe、背景图反转回来（含动态插入的），页面渲染前注入，不闪白；自动识别本来就是暗色的站点，不做「暗上加暗」；全局可选总是开 / 跟随系统主题（实时切换）/ 定时开，每个站点可单独强制开或关；可调亮度、对比度、棕褐色。
-// @description:en  Dark mode for any website: inverts the page and flips images, videos, canvases, iframes and background images back (including ones added later), injected before the page renders so there is no white flash. Sites that are already dark are detected and left alone. Globally: always on, follow the system theme (switches live) or on a schedule; each site can be forced on or off. Adjustable brightness, contrast and sepia.
+// @version      2025.07.30.6
+// @description  任意网站一键暗色：整页反色再把图片、视频、画布、iframe、背景图反转回来（含动态插入的），页面渲染前注入，不闪白；自动识别本来就是暗色的站点，不做「暗上加暗」；全局可选总是开 / 跟随系统主题（实时切换）/ 定时开，每个站点可单独强制开或关（Alt+Shift+D）；可调亮度、对比度、棕褐色。
+// @description:zh-CN  任意网站一键暗色：整页反色再把图片、视频、画布、iframe、背景图反转回来（含动态插入的），页面渲染前注入，不闪白；自动识别本来就是暗色的站点，不做「暗上加暗」；全局可选总是开 / 跟随系统主题（实时切换）/ 定时开，每个站点可单独强制开或关（Alt+Shift+D）；可调亮度、对比度、棕褐色。
+// @description:en  Dark mode for any website: inverts the page and flips images, videos, canvases, iframes and background images back (including ones added later), injected before the page renders so there is no white flash. Sites that are already dark are detected and left alone. Globally: always on, follow the system theme (switches live) or on a schedule; each site can be forced on or off (Alt+Shift+D). Adjustable brightness, contrast and sepia.
 // @author       壹樂（V：ita1125）
 // @match        http://*/*
 // @match        https://*/*
@@ -15,6 +15,8 @@
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_deleteValue
+// @grant        GM_registerMenuCommand
+// @grant        GM_unregisterMenuCommand
 // @license      CC BY-NC-SA
 // @run-at       document-start
 // @homepageURL  https://github.com/yilecoding/helper-scripts
@@ -70,6 +72,11 @@
         mode: 'always',
         schedule: { from: '19:00', to: '07:00' },
         scheduleCheck: 30 * 1000, // 定时模式多久看一次钟（电脑睡眠醒来后最多晚这么久切换）
+        /*
+         * 切换本站的快捷键：Alt+Shift+ 这个键，写的是 KeyboardEvent.code（物理键位）。
+         * 不用 e.key：macOS 上 Option+Shift+D 得到的 e.key 是「Î」。
+         */
+        toggleKey: 'KeyD',
     };
 
     const MODES = ['always', 'system', 'schedule'];
@@ -91,8 +98,10 @@
             return Number.isFinite(n) ? Math.min(hi, Math.max(lo, Math.round(n))) : CONFIG[key];
         }
 
+        /** 'H:MM' / 'HH:MM' → 补零的 'HH:MM'；不合法返回 fallback。 */
         function validTime(v, fallback) {
-            return /^([01]?\d|2[0-3]):[0-5]\d$/.test(String(v)) ? String(v) : fallback;
+            const m = /^([01]?\d|2[0-3]):([0-5]\d)$/.exec(String(v));
+            return m ? m[1].padStart(2, '0') + ':' + m[2] : fallback;
         }
 
         /** 全局设置。存的值可能是旧版本 / 手改坏的，读出来一律夹回范围。 */
@@ -177,6 +186,11 @@ ${CONFIG.revertSelector}, .${BG_CLASS} {
             el.id = STYLE_ID;
         }
 
+        /** 色调改了以后重写同一个 <style>，开关状态（media）不变。 */
+        function refresh() {
+            if (el) el.textContent = buildCss(Store.settings());
+        }
+
         function setEnabled(on) {
             if (el) el.media = on ? 'all' : 'not all';
         }
@@ -196,7 +210,7 @@ ${CONFIG.revertSelector}, .${BG_CLASS} {
             }
         }
 
-        return { mount, setEnabled, enabled, without, get el() { return el; } };
+        return { mount, refresh, setEnabled, enabled, without, get el() { return el; } };
     })();
 
     // =========================================================================
@@ -406,6 +420,7 @@ ${CONFIG.revertSelector}, .${BG_CLASS} {
             Style.el.dataset.site = Store.site();
         }
         if (on) Scanner.start();
+        Menu.render();
     }
 
     function detect() {
@@ -414,6 +429,103 @@ ${CONFIG.revertSelector}, .${BG_CLASS} {
         if (dark !== State.pageDark) console.log(TAG, dark ? '页面本来就是暗色，不反转' : '页面是亮色，反转');
         State.pageDark = dark;
         apply();
+    }
+
+    // =========================================================================
+    // 操作（菜单 / 快捷键）
+    // =========================================================================
+
+    const MODE_NAMES = { always: '总是开', system: '跟随系统', schedule: '定时' };
+    const SITE_NAMES = { auto: '跟随全局', on: '强制开', off: '强制关' };
+
+    /**
+     * 切换本站：翻转「现在看到的」状态。翻过去的结果如果正好等于跟随全局的结果，就存回 auto，
+     * 而不是留下一个强制值 —— 否则按两下快捷键之后，本站就再也不跟着全局模式 / 定时走了。
+     */
+    function toggleSite() {
+        const target = !Style.enabled();
+        const auto = globalWants(Store.settings()) && State.pageDark !== true;
+        Store.saveSite(target === auto ? 'auto' : target ? 'on' : 'off');
+        apply();
+        console.log(TAG, `本站：${SITE_NAMES[Store.site()]}（${target ? '开' : '关'}）`);
+    }
+
+    function setSite(v) {
+        Store.saveSite(v);
+        apply();
+    }
+
+    function askMode() {
+        const s = Store.settings();
+        const cur = s.mode === 'schedule' ? `3 ${s.schedule.from}-${s.schedule.to}` : String(MODES.indexOf(s.mode) + 1);
+        const input = prompt('全局模式：\n1 = 总是开\n2 = 跟随系统主题\n3 = 定时，如「3 19:00-07:00」', cur);
+        if (input === null) return;
+        const m = /^\s*([123])(?:\s+(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2}))?\s*$/.exec(input);
+        if (!m) return alert('没看懂：' + input);
+        const patch = { mode: MODES[Number(m[1]) - 1] };
+        if (m[2]) {
+            const from = Store.validTime(m[2], null), to = Store.validTime(m[3], null);
+            if (!from || !to) return alert('时间不对：' + input);
+            patch.schedule = { from, to };
+        }
+        Store.saveSettings(patch);
+        apply();
+    }
+
+    function askTone() {
+        const s = Store.settings();
+        const input = prompt('亮度 对比度 棕褐色（百分比，空格分隔）\n默认「100 100 0」；亮度调到 80～90 夜里更柔和', `${s.brightness} ${s.contrast} ${s.sepia}`);
+        if (input === null) return;
+        const nums = input.trim().split(/[\s,，]+/).map(Number);
+        if (nums.length !== 3 || nums.some((n) => !Number.isFinite(n))) return alert('要三个数字：' + input);
+        Store.saveSettings({
+            brightness: Store.clamp('brightness', nums[0]),
+            contrast: Store.clamp('contrast', nums[1]),
+            sepia: Store.clamp('sepia', nums[2]),
+        });
+        Style.refresh();
+        Menu.render();
+    }
+
+    /**
+     * 菜单文字带当前状态，状态变了就重注册。
+     * 没有 GM_unregisterMenuCommand 的管理器上重注册会越点越多，那种情况只注册一次、文字不带状态。
+     */
+    const Menu = (() => {
+        const canUnregister = typeof GM_unregisterMenuCommand === 'function';
+        let ids = [];
+        let last = '';
+
+        /** 每次 apply() 都会调；文字没变就不动（定时模式每 30 秒 apply 一次，别让菜单跟着闪）。 */
+        function render() {
+            if (typeof GM_registerMenuCommand !== 'function') return;
+            if (ids.length && !canUnregister) return;
+            const s = Store.settings();
+            const site = Store.site();
+            const st = (text) => (canUnregister ? text : '');
+            const modeText = s.mode === 'schedule' ? `定时 ${s.schedule.from}-${s.schedule.to}` : MODE_NAMES[s.mode];
+            const items = [[`切换本站暗色（Alt+Shift+D）${st(`：现在${Style.enabled() ? '开' : '关'}`)}`, toggleSite]];
+            if (site !== 'auto' || !canUnregister) {
+                items.push([`本站恢复跟随全局${st(`（现在${SITE_NAMES[site]}）`)}`, () => setSite('auto')]);
+            }
+            items.push([`全局模式…${st(`（${modeText}）`)}`, askMode]);
+            items.push([`亮度 / 对比度 / 棕褐色…${st(`（${s.brightness} / ${s.contrast} / ${s.sepia}）`)}`, askTone]);
+
+            const sig = items.map((i) => i[0]).join('\n');
+            if (sig === last) return;
+            last = sig;
+            ids.forEach((id) => GM_unregisterMenuCommand(id));
+            ids = items.map(([caption, fn]) => GM_registerMenuCommand(caption, fn));
+        }
+
+        return { render };
+    })();
+
+    function onKey(e) {
+        if (e.code !== CONFIG.toggleKey || !e.altKey || !e.shiftKey || e.ctrlKey || e.metaKey || e.repeat) return;
+        e.preventDefault();
+        e.stopPropagation();
+        toggleSite();
     }
 
     // =========================================================================
@@ -426,6 +538,9 @@ ${CONFIG.revertSelector}, .${BG_CLASS} {
     } catch (e) {
         console.error(TAG, '注入样式失败', e);
     }
+
+    // 捕获阶段、document-start 时注册，排在页面自己的快捷键监听前面
+    window.addEventListener('keydown', onKey, true);
 
     /*
      * DOMContentLoaded 先量一次；load 时外部样式表、字体都到了，再量一次 ——

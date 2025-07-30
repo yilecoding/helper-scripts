@@ -65,6 +65,19 @@ async function pixel(page, x, y) {
     return rgba.slice(0, 3)
 }
 
+/** 存储里的值（harness 把 GM 存储放在页面 localStorage 的 __gm: 前缀下）。 */
+function stored(page, key) {
+    return page.evaluate((k) => {
+        const raw = localStorage.getItem('__gm:' + k)
+        return raw === null ? undefined : JSON.parse(raw)
+    }, key)
+}
+
+/** 下一个 prompt 回答 answer（null = 点取消）。 */
+function answerPrompt(page, answer) {
+    page.once('dialog', (d) => (answer === null ? d.dismiss() : d.accept(answer)))
+}
+
 /** 等脚本量完页面背景（load 之后还会再量一次，所以等 load），返回它的判断。 */
 async function detected(page) {
     await page.waitForLoadState('load')
@@ -334,6 +347,84 @@ async function main() {
         })
         await detected(page)
         t.eq(await filterOf(page, 'html'), FILTER, '默认 always')
+        await page.close()
+    })
+
+    await t.test('菜单：文字带当前状态，状态变了跟着变', async () => {
+        const page = await open(browser, 'light.html')
+        await detected(page)
+        t.eq((await h.gm(page)).menu, [
+            '切换本站暗色（Alt+Shift+D）：现在开',
+            '全局模式…（总是开）',
+            '亮度 / 对比度 / 棕褐色…（100 / 100 / 0）',
+        ])
+        await h.menu(page, '切换本站暗色')
+        t.eq(await filterOf(page, 'html'), 'none')
+        t.eq((await h.gm(page)).menu, [
+            '切换本站暗色（Alt+Shift+D）：现在关',
+            '本站恢复跟随全局（现在强制关）',
+            '全局模式…（总是开）',
+            '亮度 / 对比度 / 棕褐色…（100 / 100 / 0）',
+        ])
+        await h.menu(page, '本站恢复跟随全局')
+        t.eq(await filterOf(page, 'html'), FILTER)
+        t.eq(await stored(page, 'site:example.com'), undefined)
+        await page.close()
+    })
+
+    await t.test('Alt+Shift+D 切换本站并记住（刷新后保持）；再按一次回到跟随全局而不是强制开', async () => {
+        const page = await open(browser, 'light.html')
+        await detected(page)
+        await page.keyboard.press('Alt+Shift+KeyD')
+        t.eq(await filterOf(page, 'html'), 'none')
+        t.eq(await stored(page, 'site:example.com'), 'off')
+        await page.reload()
+        t.eq(await page.evaluate(() => window.__earlyFilter), 'none', '刷新后一开始就是关的')
+        await detected(page)
+        await page.keyboard.press('Alt+Shift+KeyD')
+        t.eq(await filterOf(page, 'html'), FILTER)
+        t.eq(await stored(page, 'site:example.com'), undefined, '翻回来正好等于全局结果，存回 auto')
+        // 只按 Alt+D / Shift+D 不触发
+        await page.keyboard.press('Alt+KeyD')
+        await page.keyboard.press('Shift+KeyD')
+        t.eq(await filterOf(page, 'html'), FILTER)
+        await page.close()
+    })
+
+    await t.test('暗色站点上按快捷键 = 强制开（反转它）', async () => {
+        const page = await open(browser, 'dark.html')
+        t.eq(await detected(page), true)
+        await page.keyboard.press('Alt+Shift+KeyD')
+        t.eq(await filterOf(page, 'html'), FILTER)
+        t.eq(await stored(page, 'site:example.com'), 'on')
+        await page.close()
+    })
+
+    await t.test('菜单「全局模式」：prompt 输入 2 切到跟随系统；输入 3 和时间段切到定时；取消不改', async () => {
+        const page = await open(browser, 'light.html', { beforeGoto: (pg) => pg.emulateMedia({ colorScheme: 'light' }) })
+        await detected(page)
+        answerPrompt(page, '2')
+        await h.menu(page, '全局模式')
+        t.eq((await stored(page, 'settings')).mode, 'system')
+        t.eq(await filterOf(page, 'html'), 'none', '系统是亮色，立刻关掉')
+        answerPrompt(page, '3 20:30-6:15')
+        await h.menu(page, '全局模式')
+        const s = await stored(page, 'settings')
+        t.eq([s.mode, s.schedule], ['schedule', { from: '20:30', to: '06:15' }], '时间补零存')
+        t.assert((await h.gm(page)).menu.includes('全局模式…（定时 20:30-06:15）'))
+        answerPrompt(page, null)
+        await h.menu(page, '全局模式')
+        t.eq((await stored(page, 'settings')).mode, 'schedule')
+        await page.close()
+    })
+
+    await t.test('菜单「亮度 / 对比度 / 棕褐色」：prompt 改完立刻生效，越界值夹回范围', async () => {
+        const page = await open(browser, 'light.html')
+        await detected(page)
+        answerPrompt(page, '80, 120 500')
+        await h.menu(page, '亮度')
+        t.eq(await filterOf(page, 'html'), `${FILTER} brightness(0.8) contrast(1.2) sepia(1)`)
+        t.assert((await h.gm(page)).menu.includes('亮度 / 对比度 / 棕褐色…（80 / 120 / 100）'))
         await page.close()
     })
 
