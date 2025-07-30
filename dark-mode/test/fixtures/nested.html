@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>背景图里套图片 / body 有背景图</title>
+<style>
+    body {
+        margin: 0;
+        font: 16px/1.6 sans-serif;
+        /* 很多老站给 body 铺一张纹理图 */
+        background: #fff url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='4' height='4'%3E%3Crect width='1' height='1' fill='%23eee'/%3E%3C/svg%3E");
+    }
+    .hero {
+        width: 400px; height: 200px;
+        background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10'%3E%3Crect width='10' height='10' fill='%23369'/%3E%3C/svg%3E");
+    }
+    .hero .badge {
+        width: 60px; height: 30px;
+        background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10'%3E%3Crect width='10' height='10' fill='%23c93'/%3E%3C/svg%3E");
+    }
+</style>
+</head>
+<body>
+<p id="text">正文</p>
+<div id="hero" class="hero">
+    <a href="#"><img id="logo" width="40" height="40" alt="" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='40' height='40'%3E%3Crect width='40' height='40' fill='%23c33'/%3E%3C/svg%3E"></a>
+    <video id="vid" width="40" height="30"></video>
+    <div id="badge" class="badge"></div>
+    <svg width="20" height="20"><image id="svgimg" width="20" height="20" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'/%3E"/></svg>
+</div>
+<img id="outside" width="40" height="40" alt="" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='40' height='40'%3E%3Crect width='40' height='40' fill='%2333c'/%3E%3C/svg%3E">
+</body>
+</html>

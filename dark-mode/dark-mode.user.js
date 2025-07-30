@@ -3,7 +3,7 @@
 // @name:zh-CN   通用暗色模式
 // @name:en      Dark Mode for Any Site
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.07.30.6
+// @version      2025.07.30.7
 // @description  任意网站一键暗色：整页反色再把图片、视频、画布、iframe、背景图反转回来（含动态插入的），页面渲染前注入，不闪白；自动识别本来就是暗色的站点，不做「暗上加暗」；全局可选总是开 / 跟随系统主题（实时切换）/ 定时开，每个站点可单独强制开或关（Alt+Shift+D）；可调亮度、对比度、棕褐色。
 // @description:zh-CN  任意网站一键暗色：整页反色再把图片、视频、画布、iframe、背景图反转回来（含动态插入的），页面渲染前注入，不闪白；自动识别本来就是暗色的站点，不做「暗上加暗」；全局可选总是开 / 跟随系统主题（实时切换）/ 定时开，每个站点可单独强制开或关（Alt+Shift+D）；可调亮度、对比度、棕褐色。
 // @description:en  Dark mode for any website: inverts the page and flips images, videos, canvases, iframes and background images back (including ones added later), injected before the page renders so there is no white flash. Sites that are already dark are detected and left alone. Globally: always on, follow the system theme (switches live) or on a schedule; each site can be forced on or off (Alt+Shift+D). Adjustable brightness, contrast and sepia.
@@ -171,6 +171,13 @@ html {
 ${CONFIG.revertSelector}, .${BG_CLASS} {
     filter: ${FILTER} !important;
 }
+/*
+ * 已经反转回来的元素里面的媒体不能再反：背景图横幅里的 logo、卡片背景里的视频，
+ * 反两次又成了底片。选择器特异性比上一条高，同为 !important 时它赢。
+ */
+:is(${CONFIG.revertSelector}, .${BG_CLASS}) :is(${CONFIG.revertSelector}, .${BG_CLASS}) {
+    filter: none !important;
+}
 `;
     }
 
@@ -314,6 +321,11 @@ ${CONFIG.revertSelector}, .${BG_CLASS} {
         let timer = null;
 
         function check(el) {
+            /*
+             * html / body 上的背景图（老站常见的纹理底）不算：反转回来等于把整页又翻成亮色。
+             * 代价是这类纹理图本身是反色的，纹理一般很淡，看不太出来。
+             */
+            if (el === document.documentElement || el === document.body) return;
             const has = /url\(/.test(getComputedStyle(el).backgroundImage);
             if (has) {
                 const r = el.getBoundingClientRect();

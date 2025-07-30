@@ -428,6 +428,29 @@ async function main() {
         await page.close()
     })
 
+    await t.test('body 铺了背景纹理图：body 不能被当成背景图元素反转回来（否则整页又变白）', async () => {
+        const page = await open(browser, 'nested.html')
+        t.eq(await detected(page), false)
+        t.eq(await filterOf(page, 'body'), 'none')
+        t.eq(await filterOf(page, 'html'), FILTER)
+        const px = await pixel(page, 700, 500)
+        t.assert(px.every((v) => v < 60), `页面空白处应为暗色，实际 ${px}`)
+        await page.close()
+    })
+
+    await t.test('背景图元素里的图片 / 视频 / 嵌套背景图不再反第二次（反两次 = 又成了底片）', async () => {
+        const page = await open(browser, 'nested.html')
+        await detected(page)
+        t.eq(await filterOf(page, '#hero'), FILTER)
+        for (const sel of ['#logo', '#vid', '#badge', '#svgimg']) t.eq(await filterOf(page, sel), 'none', sel)
+        t.eq(await filterOf(page, '#outside'), FILTER, '外面的图片照常反转')
+        // 画面上：logo 是 #cc3333，最终应该还是红色
+        const box = await page.locator('#logo').boundingBox()
+        const [r, g, b] = await pixel(page, Math.round(box.x + 20), Math.round(box.y + 20))
+        t.assert(r > 150 && g < 100 && b < 100, `背景图元素里的 logo 应保持原色（红），实际 ${[r, g, b]}`)
+        await page.close()
+    })
+
     await close()
     t.done()
 }
