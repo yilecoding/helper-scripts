@@ -3,6 +3,10 @@
 <head>
 <meta charset="utf-8">
 <title>本来就是暗色的站点</title>
+<script>
+    // 页面自己的第一段脚本：记下这一刻 <html> 上有没有 filter（有 = 首屏会先被反成亮色）
+    window.__earlyFilter = getComputedStyle(document.documentElement).filter
+</script>
 <style>
     body { margin: 0; background: #1e1e1e; color: #ddd; font: 16px/1.6 sans-serif; }
 </style>

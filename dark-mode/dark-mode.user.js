@@ -3,7 +3,7 @@
 // @name:zh-CN   通用暗色模式
 // @name:en      Dark Mode for Any Site
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.07.31.8
+// @version      2025.07.31.9
 // @description  任意网站一键暗色：整页反色再把图片、视频、画布、iframe、背景图、彩色 emoji 反转回来（含动态插入的），页面渲染前注入，不闪白；自动识别本来就是暗色的站点，不做「暗上加暗」；全局可选总是开 / 跟随系统主题（实时切换）/ 定时开，每个站点可单独强制开或关（Alt+Shift+D）；可调亮度、对比度、棕褐色。
 // @description:zh-CN  任意网站一键暗色：整页反色再把图片、视频、画布、iframe、背景图、彩色 emoji 反转回来（含动态插入的），页面渲染前注入，不闪白；自动识别本来就是暗色的站点，不做「暗上加暗」；全局可选总是开 / 跟随系统主题（实时切换）/ 定时开，每个站点可单独强制开或关（Alt+Shift+D）；可调亮度、对比度、棕褐色。
 // @description:en  Dark mode for any website: inverts the page and flips images, videos, canvases, iframes, background images and colour emoji back (including ones added later), injected before the page renders so there is no white flash. Sites that are already dark are detected and left alone. Globally: always on, follow the system theme (switches live) or on a schedule; each site can be forced on or off (Alt+Shift+D). Adjustable brightness, contrast and sepia.
@@ -153,7 +153,22 @@
             else GM_setValue(siteKey, v);
         }
 
-        return { settings, saveSettings, site, saveSite, clamp, validTime };
+        /**
+         * 上次量出来的「这个站本来是不是暗色」。document-start 时还没有 DOM 可量，
+         * 不记的话暗色站点每次打开都会先被反成亮色、DOM 就绪后才变回来（反向的闪白）。
+         */
+        const darkKey = 'pageDark:' + location.hostname;
+
+        function pageDark() {
+            const v = GM_getValue(darkKey, null);
+            return typeof v === 'boolean' ? v : null;
+        }
+
+        function savePageDark(v) {
+            if (pageDark() !== v) GM_setValue(darkKey, v);
+        }
+
+        return { settings, saveSettings, site, saveSite, pageDark, savePageDark, clamp, validTime };
     })();
 
     // =========================================================================
@@ -421,8 +436,11 @@ ${REVERTED} {
     // =========================================================================
 
     const State = {
-        /** null = 还没量过（document-start 阶段），先按亮色站点处理 */
-        pageDark: null,
+        /**
+         * 页面本来是不是暗色。document-start 时先用上次在这个站点量到的结果，
+         * 没量过（null）就按亮色处理；DOM 就绪后以实测为准。
+         */
+        pageDark: Store.pageDark(),
     };
 
     const systemDark = matchMedia('(prefers-color-scheme: dark)');
@@ -473,6 +491,7 @@ ${REVERTED} {
         const dark = Detect.measure();
         if (dark !== State.pageDark) console.log(TAG, dark ? '页面本来就是暗色，不反转' : '页面是亮色，反转');
         State.pageDark = dark;
+        Store.savePageDark(dark);
         apply();
     }
 
@@ -602,8 +621,8 @@ ${REVERTED} {
 
     // 系统主题实时切换（跟随系统模式下立刻生效；也影响「声明了 light dark 的页面」算不算暗）
     systemDark.addEventListener('change', () => {
-        if (document.body) State.pageDark = Detect.measure();
-        apply();
+        if (document.body) detect();
+        else apply();
     });
 
     // 定时模式：定期看钟。用短间隔轮询而不是算好下一个整点 setTimeout —— 电脑睡眠时长定时器会被拖后

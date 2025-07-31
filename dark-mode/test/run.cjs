@@ -473,6 +473,26 @@ async function main() {
         await page.close()
     })
 
+    await t.test('暗色站点第二次打开时，document-start 就不反（不会先亮一下再暗）', async () => {
+        const page = await open(browser, 'dark.html')
+        t.eq(await detected(page), true)
+        await page.reload()
+        t.eq(await page.evaluate(() => window.__earlyFilter), 'none')
+        t.eq(await detected(page), true)
+        await page.close()
+    })
+
+    await t.test('记住的「暗色」过期了（站点改成亮色）：本次 DOM 就绪后纠正，下次一开始就反', async () => {
+        const page = await open(browser, 'light.html', { values: { 'pageDark:example.com': true } })
+        t.eq(await page.evaluate(() => window.__earlyFilter), 'none', '按记住的结果先不反')
+        t.eq(await detected(page), false)
+        t.eq(await filterOf(page, 'html'), FILTER)
+        t.eq(await stored(page, 'pageDark:example.com'), false)
+        await page.reload()
+        t.eq(await page.evaluate(() => window.__earlyFilter), FILTER)
+        await page.close()
+    })
+
     await close()
     t.done()
 }
