@@ -451,6 +451,28 @@ async function main() {
         await page.close()
     })
 
+    await t.test('只装彩色 emoji 的元素反转回来；混排文字、© ™ 这类按文字颜色画的符号不动', async () => {
+        const page = await open(browser, 'emoji.html')
+        await detected(page)
+        for (const sel of ['#smile', '#family', '#thumb', '#flag', '#heart', '#react-icon']) t.eq(await filterOf(page, sel), FILTER, sel)
+        for (const sel of ['#react', '#mixed', '#copy', '#tm', '#digits', '#later']) t.eq(await filterOf(page, sel), 'none', sel)
+        await page.close()
+    })
+
+    await t.test('文字后来变成 emoji / 从 emoji 变回文字时跟着更新', async () => {
+        const page = await open(browser, 'emoji.html')
+        await detected(page)
+        await page.evaluate(() => {
+            document.getElementById('later').textContent = '🔥'
+            document.getElementById('smile').textContent = '笑'
+        })
+        await page.waitForFunction(() => document.getElementById('later').classList.contains('dm-revert-emoji')
+            && !document.getElementById('smile').classList.contains('dm-revert-emoji'), null, { timeout: 2000 })
+        t.eq(await filterOf(page, '#later'), FILTER)
+        t.eq(await filterOf(page, '#smile'), 'none')
+        await page.close()
+    })
+
     await close()
     t.done()
 }

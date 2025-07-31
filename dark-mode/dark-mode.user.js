@@ -3,10 +3,10 @@
 // @name:zh-CN   通用暗色模式
 // @name:en      Dark Mode for Any Site
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.07.30.7
-// @description  任意网站一键暗色：整页反色再把图片、视频、画布、iframe、背景图反转回来（含动态插入的），页面渲染前注入，不闪白；自动识别本来就是暗色的站点，不做「暗上加暗」；全局可选总是开 / 跟随系统主题（实时切换）/ 定时开，每个站点可单独强制开或关（Alt+Shift+D）；可调亮度、对比度、棕褐色。
-// @description:zh-CN  任意网站一键暗色：整页反色再把图片、视频、画布、iframe、背景图反转回来（含动态插入的），页面渲染前注入，不闪白；自动识别本来就是暗色的站点，不做「暗上加暗」；全局可选总是开 / 跟随系统主题（实时切换）/ 定时开，每个站点可单独强制开或关（Alt+Shift+D）；可调亮度、对比度、棕褐色。
-// @description:en  Dark mode for any website: inverts the page and flips images, videos, canvases, iframes and background images back (including ones added later), injected before the page renders so there is no white flash. Sites that are already dark are detected and left alone. Globally: always on, follow the system theme (switches live) or on a schedule; each site can be forced on or off (Alt+Shift+D). Adjustable brightness, contrast and sepia.
+// @version      2025.07.31.8
+// @description  任意网站一键暗色：整页反色再把图片、视频、画布、iframe、背景图、彩色 emoji 反转回来（含动态插入的），页面渲染前注入，不闪白；自动识别本来就是暗色的站点，不做「暗上加暗」；全局可选总是开 / 跟随系统主题（实时切换）/ 定时开，每个站点可单独强制开或关（Alt+Shift+D）；可调亮度、对比度、棕褐色。
+// @description:zh-CN  任意网站一键暗色：整页反色再把图片、视频、画布、iframe、背景图、彩色 emoji 反转回来（含动态插入的），页面渲染前注入，不闪白；自动识别本来就是暗色的站点，不做「暗上加暗」；全局可选总是开 / 跟随系统主题（实时切换）/ 定时开，每个站点可单独强制开或关（Alt+Shift+D）；可调亮度、对比度、棕褐色。
+// @description:en  Dark mode for any website: inverts the page and flips images, videos, canvases, iframes, background images and colour emoji back (including ones added later), injected before the page renders so there is no white flash. Sites that are already dark are detected and left alone. Globally: always on, follow the system theme (switches live) or on a schedule; each site can be forced on or off (Alt+Shift+D). Adjustable brightness, contrast and sepia.
 // @author       壹樂（V：ita1125）
 // @match        http://*/*
 // @match        https://*/*
@@ -85,6 +85,18 @@
     const STYLE_ID = 'dark-mode-userscript';
     /** 带背景图的元素打这个类，反转回来 */
     const BG_CLASS = 'dm-revert-bg';
+    /** 只装着彩色 emoji 的元素打这个类 */
+    const EMOJI_CLASS = 'dm-revert-emoji';
+    /** 所有「反转回来」的东西 */
+    const REVERTED = `${CONFIG.revertSelector}, .${BG_CLASS}, .${EMOJI_CLASS}`;
+    /*
+     * 彩色 emoji：默认就按彩色显示的字符（Emoji_Presentation，😀 🇨🇳），或者带 U+FE0F 的（❤️）。
+     * 不能用 Extended_Pictographic —— © ® ™ ↔ 都在里面，它们按普通文字的颜色画，
+     * 反转回来就成了暗底上的暗字，直接看不见了。
+     */
+    const EMOJI_CHAR = '(?:\\p{Emoji_Presentation}|\\p{Extended_Pictographic}\\uFE0F)';
+    const EMOJI_ONLY = new RegExp(`^(?:${EMOJI_CHAR}|\\p{Emoji_Modifier}|\\u200D|\\uFE0F|\\s)+$`, 'u');
+    const EMOJI_ANY = new RegExp(EMOJI_CHAR, 'u');
     const FILTER = 'invert(1) hue-rotate(180deg)';
 
     // =========================================================================
@@ -168,14 +180,14 @@ html {
     /* 透明的根背景透出来的是浏览器画布，画布不吃 filter，反转后还是白的 */
     background-color: #fff;
 }
-${CONFIG.revertSelector}, .${BG_CLASS} {
+${REVERTED} {
     filter: ${FILTER} !important;
 }
 /*
  * 已经反转回来的元素里面的媒体不能再反：背景图横幅里的 logo、卡片背景里的视频，
  * 反两次又成了底片。选择器特异性比上一条高，同为 !important 时它赢。
  */
-:is(${CONFIG.revertSelector}, .${BG_CLASS}) :is(${CONFIG.revertSelector}, .${BG_CLASS}) {
+:is(${REVERTED}) :is(${REVERTED}) {
     filter: none !important;
 }
 `;
@@ -317,7 +329,7 @@ ${CONFIG.revertSelector}, .${BG_CLASS} {
     const Scanner = (() => {
         let observer = null;
         const subtrees = new Set();   // 新插入的节点：连同后代一起扫
-        const singles = new Set();    // 改了 style / class 的节点：只看它自己
+        const singles = new Set();    // 改了 style / class / 子节点的元素：只看它自己
         let timer = null;
 
         function check(el) {
@@ -329,10 +341,26 @@ ${CONFIG.revertSelector}, .${BG_CLASS} {
             const has = /url\(/.test(getComputedStyle(el).backgroundImage);
             if (has) {
                 const r = el.getBoundingClientRect();
-                if (r.width > 0 && r.height > 0 && !el.classList.contains(BG_CLASS)) el.classList.add(BG_CLASS);
-            } else if (el.classList.contains(BG_CLASS)) {
-                el.classList.remove(BG_CLASS);
+                if (r.width > 0 && r.height > 0) mark(el, BG_CLASS, true);
+            } else {
+                mark(el, BG_CLASS, false);
             }
+            mark(el, EMOJI_CLASS, isEmojiOnly(el));
+        }
+
+        /** 只在需要时改 classList：add 一个已有的类也会产生一条 attributes 变更记录。 */
+        function mark(el, cls, on) {
+            if (el.classList.contains(cls) !== on) el.classList.toggle(cls, on);
+        }
+
+        /**
+         * 叶子元素、文字很短、全是 emoji —— 反应按钮、标签前缀那种。
+         * 和普通文字混排的 emoji 没法单独反（要拆文本节点包 span，框架会把它当脏 DOM），放弃。
+         */
+        function isEmojiOnly(el) {
+            if (el.childElementCount !== 0) return false;
+            const text = el.textContent;
+            return text.length > 0 && text.length <= 32 && EMOJI_ONLY.test(text) && EMOJI_ANY.test(text);
         }
 
         function scanTree(root) {
@@ -357,8 +385,13 @@ ${CONFIG.revertSelector}, .${BG_CLASS} {
 
         function onMutations(records) {
             for (const r of records) {
-                if (r.type === 'childList') r.addedNodes.forEach((n) => n.nodeType === 1 && subtrees.add(n));
-                else singles.add(r.target);
+                if (r.type === 'childList') {
+                    r.addedNodes.forEach((n) => n.nodeType === 1 && subtrees.add(n));
+                    // 子节点变了，父元素自己是不是「只装 emoji」也可能变了（textContent = '👍'）
+                    if (r.target.nodeType === 1) singles.add(r.target);
+                } else {
+                    singles.add(r.target);
+                }
             }
             if (subtrees.size || singles.size) schedule();
         }
