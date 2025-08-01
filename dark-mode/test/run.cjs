@@ -200,6 +200,17 @@ async function main() {
         await page.close()
     })
 
+    await t.test('声明 light dark 的页面：系统主题实时切到暗色时重新识别、撤掉反转，切回亮色再反', async () => {
+        const page = await open(browser, 'scheme.html', { beforeGoto: (pg) => pg.emulateMedia({ colorScheme: 'light' }) })
+        t.eq(await detected(page), false)
+        t.eq(await filterOf(page, 'html'), FILTER)
+        await page.emulateMedia({ colorScheme: 'dark' })
+        await page.waitForFunction(() => getComputedStyle(document.documentElement).filter === 'none', null, { timeout: 2000 })
+        await page.emulateMedia({ colorScheme: 'light' })
+        await page.waitForFunction(() => getComputedStyle(document.documentElement).filter !== 'none', null, { timeout: 2000 })
+        await page.close()
+    })
+
     await t.test('CSS 只声明 color-scheme: dark：不论系统主题都不反', async () => {
         const page = await open(browser, 'scheme-dark-only.html', { beforeGoto: (pg) => pg.emulateMedia({ colorScheme: 'light' }) })
         t.eq(await detected(page), true)

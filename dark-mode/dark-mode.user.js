@@ -3,7 +3,7 @@
 // @name:zh-CN   通用暗色模式
 // @name:en      Dark Mode for Any Site
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.07.31.9
+// @version      2025.08.01.10
 // @description  任意网站一键暗色：整页反色再把图片、视频、画布、iframe、背景图、彩色 emoji 反转回来（含动态插入的），页面渲染前注入，不闪白；自动识别本来就是暗色的站点，不做「暗上加暗」；全局可选总是开 / 跟随系统主题（实时切换）/ 定时开，每个站点可单独强制开或关（Alt+Shift+D）；可调亮度、对比度、棕褐色。
 // @description:zh-CN  任意网站一键暗色：整页反色再把图片、视频、画布、iframe、背景图、彩色 emoji 反转回来（含动态插入的），页面渲染前注入，不闪白；自动识别本来就是暗色的站点，不做「暗上加暗」；全局可选总是开 / 跟随系统主题（实时切换）/ 定时开，每个站点可单独强制开或关（Alt+Shift+D）；可调亮度、对比度、棕褐色。
 // @description:en  Dark mode for any website: inverts the page and flips images, videos, canvases, iframes, background images and colour emoji back (including ones added later), injected before the page renders so there is no white flash. Sites that are already dark are detected and left alone. Globally: always on, follow the system theme (switches live) or on a schedule; each site can be forced on or off (Alt+Shift+D). Adjustable brightness, contrast and sepia.
@@ -60,7 +60,7 @@
         limits: { brightness: [30, 150], contrast: [30, 150], sepia: [0, 100] },
         /*
          * 背景相对亮度（0 黑 ~ 1 白）低于这个值就算暗色站点。
-         * 0.2 大约是 #7c7c7c：深灰背景都算暗，浅灰（#ccc 是 0.6）不算。
+         * 0.2 大约是 #7c7c7c：深灰背景都算暗，浅灰（#ccc 约 0.68）不算。
          */
         darkLuminance: 0.2,
         /* 动态插入 / 改了样式的节点攒一批再扫，最多攒这么久（节流，不是防抖：持续变化也要按时扫） */
