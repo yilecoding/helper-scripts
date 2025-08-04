@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>背景图元素</title>
+<style>
+    body { margin: 0; font: 16px/1.6 sans-serif; }
+    .banner { width: 300px; height: 80px; background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10'%3E%3Crect width='10' height='10' fill='%23396'/%3E%3C/svg%3E"); }
+    .gradient { width: 300px; height: 40px; background: linear-gradient(#fff, #eee); }
+    .hidden-bg { display: none; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'/%3E"); }
+    .lazy-bg { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'/%3E"); }
+</style>
+</head>
+<body>
+<div id="inline" style="width:200px;height:60px;background-image:url('data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22/%3E')"></div>
+<div id="banner" class="banner"></div>
+<div id="gradient" class="gradient"></div>
+<div id="hidden" class="hidden-bg"></div>
+<div id="later" style="width:100px;height:40px"></div>
+<div id="slot"></div>
+</body>
+</html>
