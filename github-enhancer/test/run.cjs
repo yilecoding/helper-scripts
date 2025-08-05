@@ -73,6 +73,40 @@ async function closePage(page) {
     await page.context().close()
 }
 
+const REPO_JSON = { id: 1, full_name: 'octo/demo', size: 2048, default_branch: 'main', created_at: '2020-01-02T20:04:05Z', private: false }
+
+/** 模拟 API：/repos/octo/demo 返回 REPO_JSON，其余 404。extra(d) 返回非空时优先。 */
+function api(extra) {
+    return async (d) => {
+        const r = extra && (await extra(d))
+        if (r) return r
+        if (d.url === 'https://api.github.com/repos/octo/demo') return { status: 200, responseText: JSON.stringify(REPO_JSON) }
+        return { status: 404, responseText: '{"message":"Not Found"}' }
+    }
+}
+
+const repoRequests = (page) => page.requests.filter((d) => d.url === 'https://api.github.com/repos/octo/demo').length
+
+/** 仓库信息条：{ state, text, items, afterTitle }，不存在返回 null。 */
+function repoInfo(page) {
+    return page.evaluate(() => {
+        const node = document.getElementById('ghe-repo-info')
+        if (!node) return null
+        const items = {}
+        node.querySelectorAll('.ghe-item').forEach((i) => { items[i.dataset.k] = i.querySelector('b').textContent })
+        const title = document.getElementById('repo-title-component')
+        return { state: node.dataset.state, text: node.textContent, items, afterTitle: !!title && title.nextElementSibling === node, count: document.querySelectorAll('#ghe-repo-info').length }
+    })
+}
+
+async function waitRepoInfo(page, state = 'ready') {
+    await page.waitForFunction((s) => {
+        const n = document.getElementById('ghe-repo-info')
+        return n && n.dataset.state === s
+    }, state)
+    return repoInfo(page)
+}
+
 /** 只挑断言关心的字段。 */
 function pick(ctx, keys = ['owner', 'repo', 'type', 'ref', 'path', 'sha', 'exact']) {
     if (!ctx) return ctx
@@ -129,6 +163,81 @@ function pick(ctx, keys = ['owner', 'repo', 'type', 'ref', 'path', 'sha', 'exact
         t.eq((await lastContext(page, 3)).type, 'issues')
         await page.goBack({ waitUntil: 'commit' }).catch(() => {})
         t.eq((await lastContext(page, 4)).type, 'root')
+        await closePage(page)
+    })
+
+    console.log('仓库信息')
+
+    const REPO_ROUTES = { '/octo/demo': 'repo-react.html' }
+
+    await t.test('仓库首页显示大小（KB 换算）、默认分支、创建日期（本地时区），挂在仓库名后面', async () => {
+        const page = await open(browser, GH + '/octo/demo', { routes: REPO_ROUTES, xhr: api() })
+        const info = await waitRepoInfo(page)
+        // 2048 KB = 2.0 MB；2020-01-02T20:04:05Z 在 +08:00 已经是 1 月 3 日
+        t.eq(info.items, { size: '2.0 MB', branch: 'main', created: '2020-01-03' })
+        t.assert(info.afterTitle, '应插在 #repo-title-component 后面')
+        t.eq(page.requests[0].headers.Accept, 'application/vnd.github+json')
+        await closePage(page)
+    })
+
+    await t.test('缓存命中不再请求：刷新、同仓库内换目录都只请求过一次', async () => {
+        const page = await open(browser, GH + '/octo/demo', { routes: REPO_ROUTES, xhr: api() })
+        await waitRepoInfo(page)
+        await page.reload()
+        await waitRepoInfo(page)
+        await page.evaluate(() => {
+            history.pushState({}, '', '/octo/demo/tree/main/src')
+            document.dispatchEvent(new Event('turbo:load'))
+        })
+        await lastContext(page, 3)
+        await page.waitForTimeout(300)
+        const info = await repoInfo(page)
+        t.eq(info.count, 1)
+        t.eq(info.state, 'ready')
+        t.eq(repoRequests(page), 1)
+        const stored = await page.evaluate(() => JSON.parse(localStorage.getItem('__gm:cache:repo:octo/demo')))
+        t.eq(stored.data, { size: 2048, default_branch: 'main', created_at: '2020-01-02T20:04:05Z' })
+        await closePage(page)
+    })
+
+    await t.test('缓存超过 1 小时就重新请求', async () => {
+        const stale = { at: Date.now() - 61 * 60 * 1000, data: { size: 1, default_branch: 'old', created_at: '2000-01-01T00:00:00Z' } }
+        const page = await open(browser, GH + '/octo/demo', { routes: REPO_ROUTES, xhr: api(), values: { 'cache:repo:octo/demo': stale } })
+        const info = await waitRepoInfo(page)
+        t.eq(info.items.branch, 'main')
+        t.eq(repoRequests(page), 1)
+        await closePage(page)
+    })
+
+    await t.test('未过期的缓存直接用', async () => {
+        const fresh = { at: Date.now() - 10 * 60 * 1000, data: { size: 3 * 1024 * 1024, default_branch: 'trunk', created_at: '2000-01-01T00:00:00Z' } }
+        const page = await open(browser, GH + '/octo/demo', { routes: REPO_ROUTES, xhr: api(), values: { 'cache:repo:octo/demo': fresh } })
+        const info = await waitRepoInfo(page)
+        t.eq(info.items, { size: '3.00 GB', branch: 'trunk', created: '2000-01-01' })
+        t.eq(repoRequests(page), 0)
+        await closePage(page)
+    })
+
+    await t.test('请求失败显示错误和重试，重试成功后正常显示', async () => {
+        let fail = true
+        const page = await open(browser, GH + '/octo/demo', {
+            routes: REPO_ROUTES,
+            xhr: api(() => (fail ? { status: 500, responseText: '{"message":"Server Error"}' } : null)),
+        })
+        const info = await waitRepoInfo(page, 'error')
+        t.assert(info.text.includes('HTTP 500'), info.text)
+        fail = false
+        await page.click('#ghe-repo-info button')
+        t.eq((await waitRepoInfo(page)).items.branch, 'main')
+        await closePage(page)
+    })
+
+    await t.test('issue 页不显示仓库信息，也不发请求', async () => {
+        const page = await open(browser, GH + '/octo/demo/issues/1', { xhr: api() })
+        await lastContext(page)
+        await page.waitForTimeout(300)
+        t.eq(await repoInfo(page), null)
+        t.eq(page.requests.length, 0)
         await closePage(page)
     })
 

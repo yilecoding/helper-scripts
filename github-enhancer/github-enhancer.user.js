@@ -3,14 +3,19 @@
 // @name:zh-CN   GitHub 增强
 // @name:en      GitHub Enhancer
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.08.04.1
-// @description  GitHub 页面增强：解析当前仓库 / 分支 / 路径上下文，适配 Turbo 换页。
-// @description:zh-CN  GitHub 页面增强：解析当前仓库 / 分支 / 路径上下文，适配 Turbo 换页。
-// @description:en  GitHub enhancements: parses the current repository / ref / path context and follows Turbo navigation.
+// @version      2025.08.05.2
+// @description  GitHub 页面增强：仓库页显示仓库大小、默认分支、创建时间（按仓库缓存 1 小时），适配 Turbo 换页。
+// @description:zh-CN  GitHub 页面增强：仓库页显示仓库大小、默认分支、创建时间（按仓库缓存 1 小时），适配 Turbo 换页。
+// @description:en  GitHub enhancements: shows repository size, default branch and creation date on repository pages (cached per repository for an hour), following Turbo navigation.
 // @author       壹樂（V：ita1125）
 // @match        https://github.com/*
 // @noframes
+// @grant        GM_xmlhttpRequest
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_addStyle
 // @grant        unsafeWindow
+// @connect      api.github.com
 // @license      CC BY-NC-SA
 // @run-at       document-end
 // @homepageURL  https://github.com/yilecoding/helper-scripts
@@ -34,6 +39,9 @@
 
     const CONFIG = {
         applyDebounce: 150,     // 导航事件 / DOM 变化后等这么久再统一注入一次
+        cacheTtl: 60 * 60 * 1000, // 仓库信息按仓库缓存 1 小时
+        requestTimeout: 15000,  // API 请求超时
+        apiBase: 'https://api.github.com',
     };
 
     /**
@@ -124,6 +132,235 @@
     })();
 
     // =========================================================================
+    // 存储（GM）
+    // =========================================================================
+
+    const Store = (() => {
+        const CACHE_PREFIX = 'cache:';
+
+        /** 缓存条目带写入时间，过期的当不存在（不主动删，下次写入时覆盖）。 */
+        function getCache(key) {
+            const entry = GM_getValue(CACHE_PREFIX + key, null);
+            if (!entry || typeof entry.at !== 'number' || Date.now() - entry.at > CONFIG.cacheTtl) return null;
+            return entry.data;
+        }
+
+        function setCache(key, data) {
+            GM_setValue(CACHE_PREFIX + key, { at: Date.now(), data });
+        }
+
+        return { getCache, setCache };
+    })();
+
+    // =========================================================================
+    // GitHub API
+    // =========================================================================
+
+    const Api = (() => {
+        /** 「name: value」一行一个的响应头文本 → 小写键的对象。 */
+        function parseHeaders(raw) {
+            const out = {};
+            for (const line of String(raw || '').split(/\r?\n/)) {
+                const i = line.indexOf(':');
+                if (i > 0) out[line.slice(0, i).trim().toLowerCase()] = line.slice(i + 1).trim();
+            }
+            return out;
+        }
+
+        /**
+         * GM_xmlhttpRequest 的 Promise 包装（api.github.com 跨域，页面 fetch 不带 cookie 也拿不到私有仓库）。
+         * 非 2xx 不 reject，把 status 和响应头原样交回去：403 到底是限流还是没权限，要调用方看头判断。
+         * 超时自己计时：有的管理器不触发 ontimeout，请求就永远挂着、界面一直「加载中」。
+         */
+        function request(path, { accept = 'application/vnd.github+json' } = {}) {
+            return new Promise((resolve, reject) => {
+                let done = false;
+                const finish = (fn, arg) => {
+                    if (done) return;
+                    done = true;
+                    clearTimeout(timer);
+                    fn(arg);
+                };
+                const timer = setTimeout(() => finish(reject, new Error('请求超时')), CONFIG.requestTimeout);
+                GM_xmlhttpRequest({
+                    method: 'GET',
+                    url: CONFIG.apiBase + path,
+                    headers: { Accept: accept, 'X-GitHub-Api-Version': '2022-11-28' },
+                    timeout: CONFIG.requestTimeout,
+                    onload: (r) => {
+                        let json = null;
+                        try {
+                            json = JSON.parse(r.responseText);
+                        } catch (e) { /* 非 JSON（比如 sha 媒体类型）就只给 text */ }
+                        finish(resolve, { status: r.status, text: r.responseText, json, headers: parseHeaders(r.responseHeaders) });
+                    },
+                    onerror: () => finish(reject, new Error('网络错误')),
+                    ontimeout: () => finish(reject, new Error('请求超时')),
+                });
+            });
+        }
+
+        const inflight = new Map();
+
+        /**
+         * 仓库基本信息。先查缓存；同一仓库并发的请求合并成一个 ——
+         * 换页时 turbo:load、pushState、DOM 变化会在几十毫秒内各触发一次注入。
+         */
+        function repo(owner, name) {
+            const key = `repo:${owner}/${name}`.toLowerCase();
+            const cached = Store.getCache(key);
+            if (cached) return Promise.resolve({ ok: true, data: cached, cached: true });
+            if (inflight.has(key)) return inflight.get(key);
+            const p = request(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`)
+                .then((r) => {
+                    if (r.status === 200 && r.json) {
+                        const { size, default_branch, created_at } = r.json;
+                        const data = { size, default_branch, created_at };
+                        Store.setCache(key, data);
+                        return { ok: true, data };
+                    }
+                    return { ok: false, status: r.status, message: (r.json && r.json.message) || '' };
+                })
+                .catch((e) => ({ ok: false, status: 0, message: e.message }))
+                .finally(() => inflight.delete(key));
+            inflight.set(key, p);
+            return p;
+        }
+
+        return { request, repo, parseHeaders };
+    })();
+
+    // =========================================================================
+    // 格式化
+    // =========================================================================
+
+    const pad = (n) => String(n).padStart(2, '0');
+
+    /** 本地时区的 YYYY-MM-DD（withTime 时带 HH:mm）。 */
+    function formatDate(iso, withTime) {
+        const d = new Date(iso);
+        if (isNaN(d)) return '';
+        const day = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+        return withTime ? `${day} ${pad(d.getHours())}:${pad(d.getMinutes())}` : day;
+    }
+
+    /** API 的 size 单位是 KB。 */
+    function formatSize(kb) {
+        if (typeof kb !== 'number' || kb < 0) return '未知';
+        if (kb < 1024) return `${kb} KB`;
+        if (kb < 1024 * 1024) return `${(kb / 1024).toFixed(1)} MB`;
+        return `${(kb / 1024 / 1024).toFixed(2)} GB`;
+    }
+
+    function el(tag, attrs = {}, children = []) {
+        const node = document.createElement(tag);
+        for (const [k, v] of Object.entries(attrs)) {
+            if (k === 'text') node.textContent = v;
+            else if (k.startsWith('on')) node.addEventListener(k.slice(2), v);
+            else node.setAttribute(k, v);
+        }
+        for (const c of [].concat(children)) if (c != null) node.append(c);
+        return node;
+    }
+
+    // =========================================================================
+    // 样式
+    // =========================================================================
+
+    /** 颜色走 GitHub 自己的 CSS 变量，深色主题自动跟随；变量不存在时用后面的浅色兜底。 */
+    GM_addStyle(`
+        .ghe-repo-info { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px 12px;
+            font-size: 12px; line-height: 20px; color: var(--fgColor-muted, #59636e); }
+        .ghe-repo-info .ghe-item b { font-weight: 600; color: var(--fgColor-default, #1f2328); }
+        .ghe-repo-info[data-state="error"] { color: var(--fgColor-danger, #d1242f); }
+        .ghe-link-btn { background: none; border: 0; padding: 0; font: inherit; cursor: pointer;
+            color: var(--fgColor-accent, #0969da); }
+        .ghe-link-btn:hover { text-decoration: underline; }
+    `);
+
+    // =========================================================================
+    // 功能：仓库信息
+    // =========================================================================
+
+    const RepoInfo = (() => {
+        const ID = 'ghe-repo-info';
+        /** 只在代码视图（首页 / 目录 / 文件）显示，issue、PR 页不需要。 */
+        const TYPES = new Set(['root', 'tree', 'blob']);
+
+        /**
+         * 挂载点，按顺序找第一个存在的：
+         *   - #repo-title-component：React 版仓库头（2025 起）里的「头像 + 仓库名」，插在它后面同一行
+         *   - #repository-container-header：旧版服务端渲染的仓库头，插在末尾
+         *   - repo-content 的 turbo-frame / pjax 容器：都没有时放在内容区最上面
+         */
+        const MOUNTS = [
+            ['#repo-title-component', 'afterend'],
+            ['#repository-container-header', 'beforeend'],
+            ['#repo-content-turbo-frame', 'afterbegin'],
+            ['#repo-content-pjax-container', 'afterbegin'],
+        ];
+
+        function mount(node) {
+            for (const [sel, where] of MOUNTS) {
+                const anchor = document.querySelector(sel);
+                if (anchor) {
+                    anchor.insertAdjacentElement(where, node);
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        function render(node, state, ctx) {
+            node.dataset.state = state.kind;
+            node.replaceChildren();
+            if (state.kind === 'loading') {
+                node.append('仓库信息加载中…');
+            } else if (state.kind === 'ready') {
+                const { size, default_branch, created_at } = state.data;
+                const item = (k, label, value) => el('span', { class: 'ghe-item', 'data-k': k }, [label + ' ', el('b', { text: value })]);
+                node.append(
+                    item('size', '大小', formatSize(size)),
+                    item('branch', '默认分支', default_branch || '未知'),
+                    item('created', '创建于', formatDate(created_at) || '未知'),
+                );
+            } else {
+                // 失败要看得见：吞掉的话用户只会以为脚本没装上
+                const reason = state.status ? `HTTP ${state.status}` : state.message || '网络错误';
+                node.append(`仓库信息加载失败（${reason}）`, ' ', el('button', {
+                    type: 'button', class: 'ghe-link-btn', text: '重试', onclick: () => load(node, ctx),
+                }));
+            }
+        }
+
+        function load(node, ctx) {
+            render(node, { kind: 'loading' }, ctx);
+            Api.repo(ctx.owner, ctx.repo).then((r) => {
+                // 结果回来时可能已经换到别的仓库了
+                if (node.dataset.repo !== `${ctx.owner}/${ctx.repo}`) return;
+                render(node, r.ok ? { kind: 'ready', data: r.data } : { kind: 'error', ...r }, ctx);
+            });
+        }
+
+        function apply(ctx) {
+            const existing = document.getElementById(ID);
+            if (!ctx || !TYPES.has(ctx.type)) {
+                if (existing) existing.remove();
+                return;
+            }
+            const repoKey = `${ctx.owner}/${ctx.repo}`;
+            // 同一仓库内换目录不重复请求；React 重渲染把它冲掉了才重新挂（走缓存）
+            if (existing && existing.dataset.repo === repoKey && existing.isConnected) return;
+            if (existing) existing.remove();
+            const node = el('div', { id: ID, class: 'ghe-repo-info', 'data-repo': repoKey });
+            if (!mount(node)) return; // 找不到挂载点：这一项静默跳过
+            load(node, ctx);
+        }
+
+        return { apply };
+    })();
+
+    // =========================================================================
     // 导航监听
     // =========================================================================
 
@@ -198,6 +435,14 @@
             lastKey = key;
             // 调试用：上下文一变就打一条，测试也靠它核对解析结果
             console.debug(TAG, '上下文', JSON.stringify(ctx));
+        }
+        // 每项独立 try：某一项的选择器在新版页面上失效，不该连累别的功能
+        for (const [name, feature] of [['仓库信息', RepoInfo]]) {
+            try {
+                feature.apply(ctx);
+            } catch (e) {
+                console.error(TAG, name + '注入失败', e);
+            }
         }
     }
 
