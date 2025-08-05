@@ -3,7 +3,7 @@
 // @name:zh-CN   GitHub 增强
 // @name:en      GitHub Enhancer
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.08.05.3
+// @version      2025.08.05.4
 // @description  GitHub 页面增强：仓库页显示仓库大小、默认分支、创建时间（按仓库缓存 1 小时，API 限流时显示恢复时间；可设置 token 提高限额、查看私有仓库），适配 Turbo 换页。
 // @description:zh-CN  GitHub 页面增强：仓库页显示仓库大小、默认分支、创建时间（按仓库缓存 1 小时，API 限流时显示恢复时间；可设置 token 提高限额、查看私有仓库），适配 Turbo 换页。
 // @description:en  GitHub enhancements: shows repository size, default branch and creation date on repository pages (cached per repository for an hour; shows when the API rate limit resets; an optional token raises the limit and unlocks private repositories), following Turbo navigation.
@@ -130,7 +130,172 @@
             return ctx ? `${ctx.owner}/${ctx.repo}|${ctx.type}|${ctx.ref || ''}|${ctx.path}` : '';
         }
 
-        return { parse, key };
+        // ---------------------------------------------------------------------
+        // ref 消歧
+        // ---------------------------------------------------------------------
+
+        /** refPath 是否以 name 开头（按 `/` 分段对齐，feature/xy 不算 feature/x 开头）。 */
+        function startsWithRef(refPath, name) {
+            return !!name && (refPath === name || refPath.startsWith(name + '/'));
+        }
+
+        function decodePath(p) {
+            return p.split('/').map(decode).join('/');
+        }
+
+        /**
+         * React 代码视图的嵌入数据（<react-app> 里的 script[data-target="react-app.embeddedData"]），
+         * 里面的 refInfo 有确切的分支名、类型和当前提交 SHA。
+         *
+         * 坑：它只描述**首次加载**的那一页。之后 React 自己路由换目录，这段 JSON 原样留在 DOM 里，
+         * 内容还是老页面的。所以只有 <react-app initial-path> 和当前地址一致时才信它。
+         */
+        function fromEmbedded() {
+            const here = decodePath(location.pathname).replace(/\/$/, '');
+            for (const app of document.querySelectorAll('react-app[initial-path]')) {
+                if (decodePath(app.getAttribute('initial-path')).replace(/\/$/, '') !== here) continue;
+                const script = app.querySelector('script[data-target="react-app.embeddedData"]');
+                if (!script) continue;
+                let data;
+                try {
+                    data = JSON.parse(script.textContent);
+                } catch (e) {
+                    continue;
+                }
+                const info = findRefInfo(data && data.payload, 0);
+                if (info) {
+                    return {
+                        name: info.name,
+                        refType: info.refType || null,
+                        sha: FULL_SHA.test(info.currentOid || '') ? info.currentOid.toLowerCase() : null,
+                        source: 'embedded',
+                    };
+                }
+            }
+            return null;
+        }
+
+        /** payload 下各路由的 refInfo 位置不固定（codeViewTreeRoute / codeViewBlobLayoutRoute / …），浅层搜一下。 */
+        function findRefInfo(obj, depth) {
+            if (!obj || typeof obj !== 'object' || depth > 3) return null;
+            if (obj.refInfo && typeof obj.refInfo.name === 'string') return obj.refInfo;
+            for (const v of Object.values(obj)) {
+                const hit = findRefInfo(v, depth + 1);
+                if (hit) return hit;
+            }
+            return null;
+        }
+
+        /**
+         * 分支选择按钮。和嵌入数据不同，它跟着 React 重渲染，换目录后仍然是新的。
+         *   - React 版：button.ref-selector-class，aria-label 是「<名字> branch」/「<名字> tag」
+         *   - 旧版：#branch-select-menu 里的 [data-menu-button]，文字就是名字（太长时 CSS 截断，文字本身是全的）
+         * 显示的名字只作候选，必须是 refPath 的分段前缀才采用。
+         */
+        function fromPicker() {
+            const btn = document.querySelector('button.ref-selector-class[aria-label], #ref-picker-repos-header-ref-selector[aria-label]');
+            if (btn) {
+                const m = btn.getAttribute('aria-label').match(/^(.+) (branch|tag)$/);
+                if (m) return { name: m[1], refType: m[2], sha: null, source: 'picker' };
+            }
+            const legacy = document.querySelector('#branch-select-menu [data-menu-button]');
+            if (legacy && legacy.textContent.trim()) return { name: legacy.textContent.trim(), refType: null, sha: null, source: 'picker' };
+            return null;
+        }
+
+        /**
+         * 本次会话里已经确认存在的 ref（按仓库）。git 里分支 feature 和 feature/x 不能同时存在
+         * （refs/heads/feature 是文件就不能再是目录），所以一个已知分支只要是 refPath 的分段前缀，
+         * 就一定是这个地址里的分支 —— 同一分支下换目录不用再查。
+         */
+        const known = new Map();
+
+        function remember(ctx, name, refType) {
+            const k = `${ctx.owner}/${ctx.repo}`.toLowerCase();
+            const list = known.get(k) || [];
+            if (!list.some((r) => r.name === name)) list.push({ name, refType });
+            known.set(k, list);
+        }
+
+        function fromKnown(ctx) {
+            const list = known.get(`${ctx.owner}/${ctx.repo}`.toLowerCase()) || [];
+            let best = null;
+            for (const r of list) {
+                if (startsWithRef(ctx.refPath, r.name) && (!best || r.name.length > best.name.length)) best = r;
+            }
+            return best && { ...best, sha: null, source: 'known' };
+        }
+
+        const lookups = new Map();
+
+        /**
+         * API 消歧：git/matching-refs/heads/<第一段> 返回所有以它开头的分支（前缀是字符串前缀，
+         * feature 会把 feature-old 也带出来），挑能按分段对上 refPath 的最长那个；分支里没有再查 tag。
+         * 同一个「仓库 + 第一段」只查一次。
+         */
+        function fromApi(ctx) {
+            const first = ctx.refPath.split('/')[0];
+            const k = `${ctx.owner}/${ctx.repo}|${first}`.toLowerCase();
+            if (!lookups.has(k)) {
+                const base = `/repos/${encodeURIComponent(ctx.owner)}/${encodeURIComponent(ctx.repo)}/git/matching-refs/`;
+                const list = (kind) => Api.request(base + kind + '/' + encodeURIComponent(first)).then((r) => {
+                    if (r.status !== 200 || !Array.isArray(r.json)) throw new Error(`HTTP ${r.status}`);
+                    return r.json.map((x) => String(x.ref || '').replace(/^refs\/(heads|tags)\//, ''));
+                });
+                lookups.set(k, (async () => {
+                    if (Store.rateLimit()) return [];
+                    try {
+                        const heads = await list('heads');
+                        heads.forEach((name) => remember(ctx, name, 'branch'));
+                        if (heads.some((name) => startsWithRef(ctx.refPath, name))) return;
+                        const tags = await list('tags');
+                        tags.forEach((name) => remember(ctx, name, 'tag'));
+                    } catch (e) {
+                        // 查不到就按第一段猜；失败不缓存，下次换页再试
+                        lookups.delete(k);
+                        console.warn(TAG, '分支消歧失败，按第一段猜', e.message);
+                    }
+                })());
+            }
+            return lookups.get(k).then(() => fromKnown(ctx));
+        }
+
+        function adopt(ctx, found) {
+            const out = { ...ctx, ref: found.name, refType: found.refType || null, exact: true, source: found.source };
+            out.path = ctx.refPath === found.name ? '' : ctx.refPath.slice(found.name.length + 1);
+            if (found.sha) out.sha = found.sha;
+            return out;
+        }
+
+        /**
+         * 把 parse 的猜测落实成确定的 ref / path（以及能顺带拿到的 SHA）：
+         *   1. 整段 SHA：不用消歧
+         *   2. 嵌入数据（地址一致时）→ 分支选择按钮 → 本次会话已知的 ref
+         *   3. 都没有：调 API 查以第一段开头的分支 / tag
+         *   4. API 也失败：保留「第一段是 ref」的猜测，exact 仍是 false
+         * 仓库首页的 URL 里没有 ref，从嵌入数据补上默认分支和 SHA（没有就留空）。
+         */
+        async function resolve(ctx) {
+            if (!ctx) return ctx;
+            const emb = fromEmbedded();
+            if (ctx.type === 'root') {
+                if (!emb) return { ...ctx, source: 'url' };
+                remember(ctx, emb.name, emb.refType);
+                return { ...ctx, ref: emb.name, refType: emb.refType, sha: emb.sha, source: 'embedded' };
+            }
+            if (!ctx.refPath || (ctx.sha && FULL_SHA.test(ctx.ref))) return { ...ctx, source: 'url' };
+            for (const found of [emb, fromPicker(), fromKnown(ctx)]) {
+                if (found && startsWithRef(ctx.refPath, found.name)) {
+                    remember(ctx, found.name, found.refType);
+                    return adopt(ctx, found);
+                }
+            }
+            if (ctx.exact) return { ...ctx, source: 'url' };
+            const found = await fromApi(ctx);
+            return found ? adopt(ctx, found) : { ...ctx, source: 'guess' };
+        }
+
+        return { parse, key, resolve };
     })();
 
     // =========================================================================
@@ -541,9 +706,13 @@
     // =========================================================================
 
     let lastKey = null;
+    let applySeq = 0;
 
-    function apply() {
-        const ctx = Context.parse(location.pathname);
+    async function apply() {
+        const seq = ++applySeq;
+        const ctx = await Context.resolve(Context.parse(location.pathname));
+        // 消歧要等 API 时，期间又换了页：老结果作废
+        if (seq !== applySeq) return;
         const key = Context.key(ctx);
         if (key !== lastKey) {
             lastKey = key;
@@ -561,18 +730,8 @@
     }
 
     function boot() {
-        try {
-            apply();
-        } catch (e) {
-            console.error(TAG, '启动失败', e);
-        }
-        Nav.start(() => {
-            try {
-                apply();
-            } catch (e) {
-                console.error(TAG, '注入失败', e);
-            }
-        });
+        apply().catch((e) => console.error(TAG, '启动失败', e));
+        Nav.start(() => apply().catch((e) => console.error(TAG, '注入失败', e)));
         Menu.register();
     }
 

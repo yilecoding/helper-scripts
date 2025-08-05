@@ -148,6 +148,76 @@ function pick(ctx, keys = ['owner', 'repo', 'type', 'ref', 'path', 'sha', 'exact
         })
     }
 
+    console.log('分支名带 / 的消歧')
+
+    const refsApi = (heads, tags = []) => api((d) => {
+        const m = d.url.match(/\/git\/matching-refs\/(heads|tags)\/(.+)$/)
+        if (!m) return null
+        const pool = m[1] === 'heads' ? heads.map((n) => 'refs/heads/' + n) : tags.map((n) => 'refs/tags/' + n)
+        const prefix = 'refs/' + m[1] + '/' + decodeURIComponent(m[2])
+        return { status: 200, responseText: JSON.stringify(pool.filter((r) => r.startsWith(prefix)).map((ref) => ({ ref }))) }
+    })
+    const refRequests = (page) => page.requests.filter((d) => d.url.includes('/git/matching-refs/')).map((d) => d.url.replace('https://api.github.com/repos/octo/demo/git/matching-refs/', ''))
+
+    await t.test('React 页：嵌入数据给出 feature/x 和 SHA，不调 API', async () => {
+        const page = await open(browser, GH + '/octo/demo/tree/feature/x/src', { routes: { '/octo/demo/tree/feature/x/src': 'tree-react.html' }, xhr: api() })
+        t.eq(pick(await lastContext(page), ['type', 'ref', 'path', 'sha', 'exact', 'source']), { type: 'tree', ref: 'feature/x', path: 'src', sha: '2222222222222222222222222222222222222222', exact: true, source: 'embedded' })
+        t.eq(refRequests(page), [])
+        await closePage(page)
+    })
+
+    await t.test('React 内部路由换目录后嵌入数据过期：改用分支按钮；按钮也没了就用已知分支，仍不调 API', async () => {
+        const page = await open(browser, GH + '/octo/demo/tree/feature/x/src', { routes: { '/octo/demo/tree/feature/x/src': 'tree-react.html' }, xhr: api() })
+        await lastContext(page, 1)
+        await page.evaluate(() => history.pushState({}, '', '/octo/demo/tree/feature/x/src/lib'))
+        const ctx = await lastContext(page, 2)
+        // 嵌入数据里的 SHA 是老页面的，不能沿用
+        t.eq(pick(ctx, ['ref', 'path', 'sha', 'source']), { ref: 'feature/x', path: 'src/lib', sha: null, source: 'picker' })
+        await page.evaluate(() => {
+            document.querySelector('button.ref-selector-class').remove()
+            history.pushState({}, '', '/octo/demo/blob/feature/x/src/lib/a.js')
+        })
+        t.eq(pick(await lastContext(page, 3), ['type', 'ref', 'path', 'source']), { type: 'blob', ref: 'feature/x', path: 'src/lib/a.js', source: 'known' })
+        t.eq(refRequests(page), [])
+        await closePage(page)
+    })
+
+    await t.test('旧版页面：#branch-select-menu 的分支名消歧', async () => {
+        const page = await open(browser, GH + '/octo/demo/tree/feature/x/src', { routes: { '/octo/demo/tree/feature/x/src': 'tree-legacy.html' }, xhr: api() })
+        t.eq(pick(await lastContext(page), ['ref', 'path', 'exact', 'source']), { ref: 'feature/x', path: 'src', exact: true, source: 'picker' })
+        await closePage(page)
+    })
+
+    await t.test('页面上没有线索：用 matching-refs API 挑按分段对得上的最长分支', async () => {
+        const page = await open(browser, GH + '/octo/demo/tree/feature/x/path', { xhr: refsApi(['feature-old', 'feature/x', 'feature/xy', 'main']) })
+        t.eq(pick(await lastContext(page), ['ref', 'path', 'exact', 'refType', 'source']), { ref: 'feature/x', path: 'path', exact: true, refType: 'branch', source: 'known' })
+        t.eq(refRequests(page), ['heads/feature'])
+        // 同一分支下换页：不再查
+        await page.evaluate(() => history.pushState({}, '', '/octo/demo/blob/feature/x/path/b.md'))
+        t.eq(pick(await lastContext(page, 2), ['ref', 'path']), { ref: 'feature/x', path: 'path/b.md' })
+        t.eq(refRequests(page), ['heads/feature'])
+        await closePage(page)
+    })
+
+    await t.test('分支里没有就查 tag', async () => {
+        const page = await open(browser, GH + '/octo/demo/tree/release/v2/docs', { xhr: refsApi([], ['release/v1', 'release/v2']) })
+        t.eq(pick(await lastContext(page), ['ref', 'path', 'refType']), { ref: 'release/v2', path: 'docs', refType: 'tag' })
+        t.eq(refRequests(page), ['heads/release', 'tags/release'])
+        await closePage(page)
+    })
+
+    await t.test('/tree/main/src/lib 这种普通分支：API 确认是 main', async () => {
+        const page = await open(browser, GH + '/octo/demo/tree/main/src/lib', { xhr: refsApi(['main', 'main-old']) })
+        t.eq(pick(await lastContext(page), ['ref', 'path', 'exact']), { ref: 'main', path: 'src/lib', exact: true })
+        await closePage(page)
+    })
+
+    await t.test('API 失败：退回「第一段是 ref」的猜测，标记 source: guess', async () => {
+        const page = await open(browser, GH + '/octo/demo/tree/feature/x/path', { xhr: api() })
+        t.eq(pick(await lastContext(page), ['ref', 'path', 'exact', 'source']), { ref: 'feature', path: 'x/path', exact: false, source: 'guess' })
+        await closePage(page)
+    })
+
     console.log('导航')
 
     await t.test('pushState / turbo:load / popstate 后重新解析上下文', async () => {

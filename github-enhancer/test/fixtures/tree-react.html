@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<!-- 仿 React 版目录页 /octo/demo/tree/feature/x/src：分支名带 `/`。
+     消歧数据两处：react-app 的嵌入数据（initial-path 必须和当前地址一致才可信）、
+     分支选择按钮 button.ref-selector-class 的 aria-label（「<名字> branch」）。
+     第一行是「..」上级目录（a[data-testid=up-tree]），还有一行子模块（链到别的仓库）。 -->
+<html lang="en" data-color-mode="auto">
+<head><meta charset="utf-8"><title>demo/src at feature/x · octo/demo</title></head>
+<body class="logged-in env-production page-responsive">
+<div class="application-main">
+<main id="js-repo-pjax-container">
+<turbo-frame id="repo-content-turbo-frame" target="_top">
+<div id="repo-content-pjax-container" class="repository-content">
+<react-app app-name="code-view" initial-path="/octo/demo/tree/feature/x/src" data-ssr="true">
+  <script type="application/json" data-target="react-app.embeddedData">{"payload":{"codeViewTreeRoute":{"path":"src","refInfo":{"name":"feature/x","listCacheKey":"v0:2","canEdit":false,"refType":"branch","currentOid":"2222222222222222222222222222222222222222"},"tree":{"items":[{"name":"lib","path":"src/lib","contentType":"directory"},{"name":"sub","path":"src/sub","contentType":"submodule"},{"name":"index.js","path":"src/index.js","contentType":"file"},{"name":"日志 #1.md","path":"src/日志 #1.md","contentType":"file"}],"totalCount":4}},"codeViewLayoutRoute":{"path":"src","refInfo":{"name":"feature/x","listCacheKey":"v0:2","canEdit":false,"currentOid":"2222222222222222222222222222222222222222"}}},"title":"demo/src at feature/x"}</script>
+  <div data-target="react-app.reactRoot">
+    <div class="react-code-view-header-mb--narrow mr-2">
+      <button type="button" aria-haspopup="true" aria-label="feature/x branch" data-testid="anchor-button" class="ref-selector-class" id="ref-picker-repos-header-ref-selector-wide"><span data-component="buttonContent"><span data-component="text"><div class="ref-selector-button-text-container"><span>&nbsp;feature/x</span></div></span></span></button>
+    </div>
+    <nav data-testid="breadcrumbs"><a data-testid="breadcrumbs-repo-link" href="/octo/demo/tree/feature/x">demo</a> / <h1 data-testid="breadcrumbs-filename">src</h1></nav>
+    <div data-testid="latest-commit-details">Latest commit <relative-time datetime="2024-05-06T07:08:09Z" tense="past">last week</relative-time></div>
+    <h2 class="sr-only" id="folders-and-files">Folders and files</h2>
+    <div data-testid="directory-content">
+    <table aria-labelledby="folders-and-files">
+      <thead><tr><th colspan="2">Name</th><th colspan="1">Name</th><th>Last commit message</th><th>Last commit date</th></tr></thead>
+      <tbody>
+        <tr id="folder-row-0"><td colspan="3"><h3 class="sr-only">parent directory</h3><a aria-label="Parent directory" data-testid="up-tree" rel="nofollow" href="/octo/demo/tree/feature/x"><div>..</div></a></td></tr>
+        <tr class="react-directory-row undefined" id="folder-row-1">
+          <td class="react-directory-row-name-cell-small-screen" colspan="2"><div class="react-directory-filename-column"><svg class="octicon octicon-file-directory-fill icon-directory"></svg><div class="overflow-hidden"><div class="react-directory-filename-cell"><div class="react-directory-truncate"><a title="lib" aria-label="lib, (Directory)" class="Link--primary" href="/octo/demo/tree/feature/x/src/lib">lib</a></div></div></div></div></td>
+          <td class="react-directory-row-name-cell-large-screen" colspan="1"><div class="react-directory-filename-column"><svg class="octicon octicon-file-directory-fill icon-directory"></svg><div class="overflow-hidden"><div class="react-directory-filename-cell"><div class="react-directory-truncate"><a title="lib" aria-label="lib, (Directory)" class="Link--primary" href="/octo/demo/tree/feature/x/src/lib">lib</a></div></div></div></div></td>
+          <td class="react-directory-row-commit-cell"><a href="/octo/demo/commit/2222222222222222222222222222222222222222">update lib</a></td>
+          <td><div class="react-directory-commit-age"><relative-time datetime="2024-05-06T07:08:09Z" tense="past">some time ago</relative-time></div></td>
+        </tr>
+        <tr class="react-directory-row undefined" id="folder-row-2">
+          <td class="react-directory-row-name-cell-small-screen" colspan="2"><div class="react-directory-filename-column"><svg class="octicon octicon-file-submodule"></svg><div class="overflow-hidden"><div class="react-directory-filename-cell"><div class="react-directory-truncate"><a title="sub" aria-label="sub, (Submodule)" class="Link--primary" href="https://github.com/other/sub/tree/3333333333333333333333333333333333333333">sub</a></div></div></div></div></td>
+          <td class="react-directory-row-name-cell-large-screen" colspan="1"><div class="react-directory-filename-column"><svg class="octicon octicon-file-submodule"></svg><div class="overflow-hidden"><div class="react-directory-filename-cell"><div class="react-directory-truncate"><a title="sub" aria-label="sub, (Submodule)" class="Link--primary" href="https://github.com/other/sub/tree/3333333333333333333333333333333333333333">sub</a></div></div></div></div></td>
+          <td class="react-directory-row-commit-cell"><a href="/octo/demo/commit/2222222222222222222222222222222222222222">update sub</a></td>
+          <td><div class="react-directory-commit-age"><relative-time datetime="2024-05-06T07:08:09Z" tense="past">some time ago</relative-time></div></td>
+        </tr>
+        <tr class="react-directory-row undefined" id="folder-row-3">
+          <td class="react-directory-row-name-cell-small-screen" colspan="2"><div class="react-directory-filename-column"><svg class="octicon octicon-file color-fg-muted"></svg><div class="overflow-hidden"><div class="react-directory-filename-cell"><div class="react-directory-truncate"><a title="index.js" aria-label="index.js, (File)" class="Link--primary" href="/octo/demo/blob/feature/x/src/index.js">index.js</a></div></div></div></div></td>
+          <td class="react-directory-row-name-cell-large-screen" colspan="1"><div class="react-directory-filename-column"><svg class="octicon octicon-file color-fg-muted"></svg><div class="overflow-hidden"><div class="react-directory-filename-cell"><div class="react-directory-truncate"><a title="index.js" aria-label="index.js, (File)" class="Link--primary" href="/octo/demo/blob/feature/x/src/index.js">index.js</a></div></div></div></div></td>
+          <td class="react-directory-row-commit-cell"><a href="/octo/demo/commit/2222222222222222222222222222222222222222">update index.js</a></td>
+          <td><div class="react-directory-commit-age"><relative-time datetime="2024-05-06T07:08:09Z" tense="past">some time ago</relative-time></div></td>
+        </tr>
+        <tr class="react-directory-row undefined" id="folder-row-4">
+          <td class="react-directory-row-name-cell-small-screen" colspan="2"><div class="react-directory-filename-column"><svg class="octicon octicon-file color-fg-muted"></svg><div class="overflow-hidden"><div class="react-directory-filename-cell"><div class="react-directory-truncate"><a title="日志 #1.md" aria-label="日志 #1.md, (File)" class="Link--primary" href="/octo/demo/blob/feature/x/src/%E6%97%A5%E5%BF%97%20%231.md">日志 #1.md</a></div></div></div></div></td>
+          <td class="react-directory-row-name-cell-large-screen" colspan="1"><div class="react-directory-filename-column"><svg class="octicon octicon-file color-fg-muted"></svg><div class="overflow-hidden"><div class="react-directory-filename-cell"><div class="react-directory-truncate"><a title="日志 #1.md" aria-label="日志 #1.md, (File)" class="Link--primary" href="/octo/demo/blob/feature/x/src/%E6%97%A5%E5%BF%97%20%231.md">日志 #1.md</a></div></div></div></div></td>
+          <td class="react-directory-row-commit-cell"><a href="/octo/demo/commit/2222222222222222222222222222222222222222">update 日志 #1.md</a></td>
+          <td><div class="react-directory-commit-age"><relative-time datetime="2024-05-06T07:08:09Z" tense="past">some time ago</relative-time></div></td>
+        </tr>
+        <tr class="d-none" data-testid="view-all-files-row"><td colspan="3"><div><button>View all files</button></div></td></tr>
+      </tbody>
+    </table>
+    </div>
+  </div>
+</react-app>
+</div>
+</turbo-frame>
+</main>
+</div>
+</body>
+</html>
