@@ -3,17 +3,19 @@
 // @name:zh-CN   GitHub 增强
 // @name:en      GitHub Enhancer
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.08.05.2
-// @description  GitHub 页面增强：仓库页显示仓库大小、默认分支、创建时间（按仓库缓存 1 小时），适配 Turbo 换页。
-// @description:zh-CN  GitHub 页面增强：仓库页显示仓库大小、默认分支、创建时间（按仓库缓存 1 小时），适配 Turbo 换页。
-// @description:en  GitHub enhancements: shows repository size, default branch and creation date on repository pages (cached per repository for an hour), following Turbo navigation.
+// @version      2025.08.05.3
+// @description  GitHub 页面增强：仓库页显示仓库大小、默认分支、创建时间（按仓库缓存 1 小时，API 限流时显示恢复时间；可设置 token 提高限额、查看私有仓库），适配 Turbo 换页。
+// @description:zh-CN  GitHub 页面增强：仓库页显示仓库大小、默认分支、创建时间（按仓库缓存 1 小时，API 限流时显示恢复时间；可设置 token 提高限额、查看私有仓库），适配 Turbo 换页。
+// @description:en  GitHub enhancements: shows repository size, default branch and creation date on repository pages (cached per repository for an hour; shows when the API rate limit resets; an optional token raises the limit and unlocks private repositories), following Turbo navigation.
 // @author       壹樂（V：ita1125）
 // @match        https://github.com/*
 // @noframes
 // @grant        GM_xmlhttpRequest
 // @grant        GM_getValue
 // @grant        GM_setValue
+// @grant        GM_deleteValue
 // @grant        GM_addStyle
+// @grant        GM_registerMenuCommand
 // @grant        unsafeWindow
 // @connect      api.github.com
 // @license      CC BY-NC-SA
@@ -149,7 +151,33 @@
             GM_setValue(CACHE_PREFIX + key, { at: Date.now(), data });
         }
 
-        return { getCache, setCache };
+        /**
+         * token 明文存在管理器的脚本存储里（不进页面 localStorage、不同步到页面）。
+         * 安全含义见 notes.md：能读这份存储的扩展 / 导出备份都能拿到它，所以建议只给只读权限。
+         */
+        function token() {
+            return GM_getValue('token', '') || '';
+        }
+
+        function setToken(value) {
+            if (value) GM_setValue('token', value);
+            else GM_deleteValue('token');
+            // 限流是按「未认证 IP」或「token 所属用户」分别计的，换了身份旧的限流记录就不作数了
+            GM_deleteValue('ratelimit');
+        }
+
+        /** 限流记录：{ reset: 秒级时间戳, authed }。到点之前不再发请求，免得越限越久。 */
+        function rateLimit() {
+            const r = GM_getValue('ratelimit', null);
+            if (!r || r.authed !== !!token() || r.reset * 1000 <= Date.now()) return null;
+            return r;
+        }
+
+        function setRateLimit(reset) {
+            GM_setValue('ratelimit', { reset, authed: !!token() });
+        }
+
+        return { getCache, setCache, token, setToken, rateLimit, setRateLimit };
     })();
 
     // =========================================================================
@@ -173,6 +201,9 @@
          * 超时自己计时：有的管理器不触发 ontimeout，请求就永远挂着、界面一直「加载中」。
          */
         function request(path, { accept = 'application/vnd.github+json' } = {}) {
+            const headers = { Accept: accept, 'X-GitHub-Api-Version': '2022-11-28' };
+            const token = Store.token();
+            if (token) headers.Authorization = `Bearer ${token}`;
             return new Promise((resolve, reject) => {
                 let done = false;
                 const finish = (fn, arg) => {
@@ -185,7 +216,7 @@
                 GM_xmlhttpRequest({
                     method: 'GET',
                     url: CONFIG.apiBase + path,
-                    headers: { Accept: accept, 'X-GitHub-Api-Version': '2022-11-28' },
+                    headers,
                     timeout: CONFIG.requestTimeout,
                     onload: (r) => {
                         let json = null;
@@ -200,6 +231,30 @@
             });
         }
 
+        /**
+         * 限流的两种形态（docs.github.com「Rate limits for the REST API」）：
+         *   - 主限流：403 或 429，x-ratelimit-remaining: 0，x-ratelimit-reset 是恢复时刻（秒级时间戳）
+         *   - 次级限流：403 或 429，带 retry-after（秒）
+         * 403 本身不能当限流：没权限、仓库被封也是 403，要看头。
+         */
+        function rateLimitReset(r) {
+            if (r.status !== 403 && r.status !== 429) return null;
+            const h = r.headers;
+            if (h['x-ratelimit-remaining'] === '0' && h['x-ratelimit-reset']) return Number(h['x-ratelimit-reset']);
+            if (h['retry-after']) return Math.ceil(Date.now() / 1000) + Number(h['retry-after']);
+            return null;
+        }
+
+        /** 统一的失败结果：{ ok: false, status, message, reset? }。 */
+        function failure(r) {
+            const reset = rateLimitReset(r);
+            if (reset) {
+                Store.setRateLimit(reset);
+                return { ok: false, status: r.status, rateLimited: true, reset };
+            }
+            return { ok: false, status: r.status, message: (r.json && r.json.message) || '' };
+        }
+
         const inflight = new Map();
 
         /**
@@ -211,6 +266,8 @@
             const cached = Store.getCache(key);
             if (cached) return Promise.resolve({ ok: true, data: cached, cached: true });
             if (inflight.has(key)) return inflight.get(key);
+            const limited = Store.rateLimit();
+            if (limited) return Promise.resolve({ ok: false, rateLimited: true, reset: limited.reset });
             const p = request(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`)
                 .then((r) => {
                     if (r.status === 200 && r.json) {
@@ -219,7 +276,7 @@
                         Store.setCache(key, data);
                         return { ok: true, data };
                     }
-                    return { ok: false, status: r.status, message: (r.json && r.json.message) || '' };
+                    return failure(r);
                 })
                 .catch((e) => ({ ok: false, status: 0, message: e.message }))
                 .finally(() => inflight.delete(key));
@@ -273,6 +330,7 @@
             font-size: 12px; line-height: 20px; color: var(--fgColor-muted, #59636e); }
         .ghe-repo-info .ghe-item b { font-weight: 600; color: var(--fgColor-default, #1f2328); }
         .ghe-repo-info[data-state="error"] { color: var(--fgColor-danger, #d1242f); }
+        .ghe-repo-info[data-state="ratelimit"] { color: var(--fgColor-attention, #9a6700); }
         .ghe-link-btn { background: none; border: 0; padding: 0; font: inherit; cursor: pointer;
             color: var(--fgColor-accent, #0969da); }
         .ghe-link-btn:hover { text-decoration: underline; }
@@ -311,6 +369,23 @@
             return false;
         }
 
+        function errorText(state) {
+            const hasToken = !!Store.token();
+            if (state.rateLimited) {
+                const when = formatDate(state.reset * 1000, true);
+                return hasToken
+                    ? `GitHub API 已限流，${when} 后恢复`
+                    : `GitHub API 已限流（未设置 token 时每小时 60 次），${when} 后恢复；可在脚本菜单里设置 token`;
+            }
+            if (state.status === 401) return '仓库信息加载失败：token 无效或已过期（脚本菜单里重新设置）';
+            if (state.status === 404) {
+                return hasToken
+                    ? '仓库信息加载失败：仓库不存在，或 token 无权访问'
+                    : '仓库信息加载失败：仓库不存在，或是私有仓库（在脚本菜单里设置 token 后可查看）';
+            }
+            return `仓库信息加载失败（${state.status ? `HTTP ${state.status}` : state.message || '网络错误'}）`;
+        }
+
         function render(node, state, ctx) {
             node.dataset.state = state.kind;
             node.replaceChildren();
@@ -326,8 +401,7 @@
                 );
             } else {
                 // 失败要看得见：吞掉的话用户只会以为脚本没装上
-                const reason = state.status ? `HTTP ${state.status}` : state.message || '网络错误';
-                node.append(`仓库信息加载失败（${reason}）`, ' ', el('button', {
+                node.append(errorText(state), ' ', el('button', {
                     type: 'button', class: 'ghe-link-btn', text: '重试', onclick: () => load(node, ctx),
                 }));
             }
@@ -338,8 +412,15 @@
             Api.repo(ctx.owner, ctx.repo).then((r) => {
                 // 结果回来时可能已经换到别的仓库了
                 if (node.dataset.repo !== `${ctx.owner}/${ctx.repo}`) return;
-                render(node, r.ok ? { kind: 'ready', data: r.data } : { kind: 'error', ...r }, ctx);
+                const kind = r.ok ? 'ready' : r.rateLimited ? 'ratelimit' : 'error';
+                render(node, { kind, ...r }, ctx);
             });
+        }
+
+        /** 换了 token：扔掉现有的条，下一轮注入按新身份重新加载。 */
+        function reset() {
+            const node = document.getElementById(ID);
+            if (node) node.remove();
         }
 
         function apply(ctx) {
@@ -357,7 +438,7 @@
             load(node, ctx);
         }
 
-        return { apply };
+        return { apply, reset };
     })();
 
     // =========================================================================
@@ -423,6 +504,39 @@
     })();
 
     // =========================================================================
+    // 菜单
+    // =========================================================================
+
+    const Menu = (() => {
+        function setToken() {
+            const input = prompt(
+                '输入 GitHub personal access token。\n'
+                + '只存在本机脚本管理器的存储里，只发给 api.github.com；建议用只读权限的 fine-grained token。\n'
+                + '留空并确定 = 清除。',
+                '',
+            );
+            if (input === null) return; // 取消
+            Store.setToken(input.trim());
+            RepoInfo.reset();
+            Nav.schedule();
+        }
+
+        function clearToken() {
+            Store.setToken('');
+            RepoInfo.reset();
+            Nav.schedule();
+        }
+
+        function register() {
+            if (typeof GM_registerMenuCommand !== 'function') return;
+            GM_registerMenuCommand('设置 GitHub token', setToken);
+            GM_registerMenuCommand('清除 GitHub token', clearToken);
+        }
+
+        return { register };
+    })();
+
+    // =========================================================================
     // 主流程
     // =========================================================================
 
@@ -459,6 +573,7 @@
                 console.error(TAG, '注入失败', e);
             }
         });
+        Menu.register();
     }
 
     boot();

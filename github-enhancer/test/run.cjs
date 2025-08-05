@@ -241,6 +241,95 @@ function pick(ctx, keys = ['owner', 'repo', 'type', 'ref', 'path', 'sha', 'exact
         await closePage(page)
     })
 
+    console.log('限流与 token')
+
+    /** 本地（上海）时区的 HH:mm，和脚本的格式一致。 */
+    const hhmm = (sec) => new Date(sec * 1000).toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai', hour: '2-digit', minute: '2-digit', hour12: false })
+
+    await t.test('403 + x-ratelimit-remaining: 0 显示限流和恢复时间；到点前刷新不再请求', async () => {
+        const reset = Math.floor(Date.now() / 1000) + 1800
+        const page = await open(browser, GH + '/octo/demo', {
+            routes: REPO_ROUTES,
+            xhr: () => ({
+                status: 403,
+                responseText: '{"message":"API rate limit exceeded for 1.2.3.4."}',
+                responseHeaders: `x-ratelimit-limit: 60\r\nx-ratelimit-remaining: 0\r\nx-ratelimit-reset: ${reset}\r\n`,
+            }),
+        })
+        let info = await waitRepoInfo(page, 'ratelimit')
+        t.assert(info.text.includes('已限流') && info.text.includes(hhmm(reset)), info.text)
+        t.assert(info.text.includes('token'), '没设 token 时提示可以设置 token')
+        await page.reload()
+        info = await waitRepoInfo(page, 'ratelimit')
+        t.assert(info.text.includes(hhmm(reset)), info.text)
+        t.eq(repoRequests(page), 1)
+        await closePage(page)
+    })
+
+    await t.test('403 但没有限流头（没权限）不当成限流', async () => {
+        const page = await open(browser, GH + '/octo/demo', {
+            routes: REPO_ROUTES,
+            xhr: () => ({ status: 403, responseText: '{"message":"Repository access blocked"}', responseHeaders: 'x-ratelimit-remaining: 55\r\n' }),
+        })
+        const info = await waitRepoInfo(page, 'error')
+        t.assert(info.text.includes('HTTP 403'), info.text)
+        t.eq(await page.evaluate(() => localStorage.getItem('__gm:ratelimit')), null)
+        await closePage(page)
+    })
+
+    await t.test('次级限流：429 + retry-after 也显示恢复时间', async () => {
+        const page = await open(browser, GH + '/octo/demo', {
+            routes: REPO_ROUTES,
+            xhr: () => ({ status: 429, responseText: '{"message":"secondary rate limit"}', responseHeaders: 'retry-after: 120\r\n' }),
+        })
+        const info = await waitRepoInfo(page, 'ratelimit')
+        t.assert(info.text.includes('已限流'), info.text)
+        await closePage(page)
+    })
+
+    await t.test('404 且没设 token：提示可能是私有仓库', async () => {
+        const page = await open(browser, GH + '/octo/demo', { routes: REPO_ROUTES })
+        const info = await waitRepoInfo(page, 'error')
+        t.assert(info.text.includes('私有仓库'), info.text)
+        await closePage(page)
+    })
+
+    await t.test('存了 token 时请求带 Authorization: Bearer', async () => {
+        const page = await open(browser, GH + '/octo/demo', { routes: REPO_ROUTES, xhr: api(), values: { token: 'ghp_saved' } })
+        await waitRepoInfo(page)
+        t.eq(page.requests[0].headers.Authorization, 'Bearer ghp_saved')
+        await closePage(page)
+    })
+
+    await t.test('菜单设置 token：存下来、清掉限流记录、立即按新身份重新加载；清除 token 后不再带头', async () => {
+        const reset = Math.floor(Date.now() / 1000) + 1800
+        const page = await open(browser, GH + '/octo/demo', {
+            routes: REPO_ROUTES,
+            xhr: api((d) => (d.headers.Authorization ? null : { status: 403, responseText: '{}', responseHeaders: `x-ratelimit-remaining: 0\r\nx-ratelimit-reset: ${reset}` })),
+        })
+        await waitRepoInfo(page, 'ratelimit')
+        t.assert((await h.gm(page)).menu.includes('设置 GitHub token'))
+        page.once('dialog', (dlg) => dlg.accept('  ghp_from_menu  '))
+        await h.menu(page, '设置 GitHub token')
+        const info = await waitRepoInfo(page)
+        t.eq(info.items.branch, 'main')
+        t.eq(await page.evaluate(() => JSON.parse(localStorage.getItem('__gm:token'))), 'ghp_from_menu')
+        t.eq(await page.evaluate(() => localStorage.getItem('__gm:ratelimit')), null)
+        t.eq(page.requests[page.requests.length - 1].headers.Authorization, 'Bearer ghp_from_menu')
+        await h.menu(page, '清除 GitHub token')
+        t.eq(await page.evaluate(() => localStorage.getItem('__gm:token')), null)
+        await closePage(page)
+    })
+
+    await t.test('设置 token 时点取消什么都不改', async () => {
+        const page = await open(browser, GH + '/octo/demo', { routes: REPO_ROUTES, xhr: api(), values: { token: 'ghp_keep' } })
+        await waitRepoInfo(page)
+        page.once('dialog', (dlg) => dlg.dismiss())
+        await h.menu(page, '设置 GitHub token')
+        t.eq(await page.evaluate(() => JSON.parse(localStorage.getItem('__gm:token'))), 'ghp_keep')
+        await closePage(page)
+    })
+
     await close()
     t.done()
 })()
