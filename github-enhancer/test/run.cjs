@@ -27,6 +27,9 @@ const t = h.createRunner('github-enhancer')
  * opts.routes  { pathname: fixture 文件名 }，没列到的用 opts.fixture（默认 plain.html）
  * opts.xhr     模拟 API：(details) => { status, responseText, responseHeaders }；默认全部 404
  * opts.values  GM 存储初始值
+ * opts.transform  (html, url) => html，返回前改一下 fixture
+ * opts.harness 透传给 h.install 的其他选项（failDownloads 之类）
+ * 路由挂在 context 上而不是 page 上：脚本用 target=_blank 打开的新标签也要被拦住。
  * 每次新开一个 context：GM 存储（localStorage）互不影响。时区固定成上海，绝对时间断言才稳定。
  */
 async function open(browser, url, opts = {}) {
@@ -39,13 +42,20 @@ async function open(browser, url, opts = {}) {
         if (text.startsWith(TAG)) page.logs.push(text)
         if (m.type() === 'error') console.log('      [page error]', text)
     })
-    await page.route(/.*/, (r) => r.abort())
-    await page.route(/^https:\/\/github\.com\//, (r) => {
+    page.blocked = []
+    await context.route(/.*/, (r) => {
+        page.blocked.push(r.request().url())
+        r.abort()
+    })
+    await context.route(/^https:\/\/github\.com\//, (r) => {
         const u = new URL(r.request().url())
         const file = (opts.routes || {})[decodeURIComponent(u.pathname)] || opts.fixture || 'plain.html'
-        r.fulfill({ contentType: 'text/html; charset=utf-8', body: fs.readFileSync(path.join(FIXTURES, file)) })
+        let html = fs.readFileSync(path.join(FIXTURES, file), 'utf8')
+        if (opts.transform) html = opts.transform(html, u)
+        r.fulfill({ contentType: 'text/html; charset=utf-8', body: html })
     })
     await h.install(page, SCRIPT, {
+        ...opts.harness,
         values: opts.values,
         xhr: async (d) => {
             page.requests.push(d)
@@ -73,6 +83,7 @@ async function closePage(page) {
     await page.context().close()
 }
 
+const REPO_ROUTES = { '/octo/demo': 'repo-react.html' }
 const REPO_JSON = { id: 1, full_name: 'octo/demo', size: 2048, default_branch: 'main', created_at: '2020-01-02T20:04:05Z', private: false }
 
 /** 模拟 API：/repos/octo/demo 返回 REPO_JSON，其余 404。extra(d) 返回非空时优先。 */
@@ -175,10 +186,21 @@ function pick(ctx, keys = ['owner', 'repo', 'type', 'ref', 'path', 'sha', 'exact
         t.eq(pick(ctx, ['ref', 'path', 'sha', 'source']), { ref: 'feature/x', path: 'src/lib', sha: null, source: 'picker' })
         await page.evaluate(() => {
             document.querySelector('button.ref-selector-class').remove()
+            document.querySelector('[data-testid="breadcrumbs-repo-link"]').remove()
             history.pushState({}, '', '/octo/demo/blob/feature/x/src/lib/a.js')
         })
         t.eq(pick(await lastContext(page, 3), ['type', 'ref', 'path', 'source']), { type: 'blob', ref: 'feature/x', path: 'src/lib/a.js', source: 'known' })
         t.eq(refRequests(page), [])
+        await closePage(page)
+    })
+
+    await t.test('旧版页面：面包屑的仓库根链接消歧', async () => {
+        const page = await open(browser, GH + '/octo/demo/tree/feature/x/src', {
+            routes: { '/octo/demo/tree/feature/x/src': 'tree-legacy.html' },
+            xhr: api(),
+            transform: (html) => html.replace(' data-menu-button>', '>'),
+        })
+        t.eq(pick(await lastContext(page), ['ref', 'path', 'exact', 'source']), { ref: 'feature/x', path: 'src', exact: true, source: 'breadcrumb' })
         await closePage(page)
     })
 
@@ -218,6 +240,137 @@ function pick(ctx, keys = ['owner', 'repo', 'type', 'ref', 'path', 'sha', 'exact
         await closePage(page)
     })
 
+    console.log('文件列表按钮')
+
+    /** 每行的按钮：[{ name, buttons: [文字] }]，只列有按钮的行。 */
+    function rowButtons(page) {
+        return page.evaluate(() => Array.from(document.querySelectorAll('.ghe-row-actions')).map((box) => {
+            const row = box.closest('tr, [role="row"]')
+            const a = row.querySelector('.react-directory-row-name-cell-large-screen a, [role="rowheader"] a')
+            return { name: a.textContent.trim(), buttons: Array.from(box.querySelectorAll('button')).map((b) => b.textContent) }
+        }))
+    }
+
+    async function clickRowButton(page, name, text) {
+        await page.evaluate(({ name, text }) => {
+            const box = Array.from(document.querySelectorAll('.ghe-row-actions')).find((b) => {
+                const row = b.closest('tr, [role="row"]')
+                return row.querySelector('.react-directory-row-name-cell-large-screen a, [role="rowheader"] a').textContent.trim() === name
+            })
+            Array.from(box.querySelectorAll('button')).find((b) => b.textContent === text).click()
+        }, { name, text })
+    }
+
+    const waitRows = (page) => page.waitForSelector('.ghe-row-actions')
+
+    await t.test('React 仓库首页：文件给「下载」、目录给「检出命令」，每行一组', async () => {
+        const page = await open(browser, GH + '/octo/demo', { routes: REPO_ROUTES, xhr: api() })
+        await waitRows(page)
+        t.eq(await rowButtons(page), [
+            { name: 'docs', buttons: ['检出命令'] },
+            { name: 'src', buttons: ['检出命令'] },
+            { name: 'README.md', buttons: ['下载'] },
+            { name: 'a b.txt', buttons: ['下载'] },
+        ])
+        await clickRowButton(page, 'README.md', '下载')
+        await clickRowButton(page, 'a b.txt', '下载')
+        t.eq((await h.gm(page)).downloads, [
+            { url: 'https://raw.githubusercontent.com/octo/demo/main/README.md', name: 'README.md' },
+            { url: 'https://raw.githubusercontent.com/octo/demo/main/a%20b.txt', name: 'a b.txt' },
+        ])
+        await clickRowButton(page, 'src', '检出命令')
+        t.eq((await h.gm(page)).clipboard, {
+            text: 'git clone --filter=blob:none --sparse --depth 1 --branch main https://github.com/octo/demo.git && cd demo && git sparse-checkout set src',
+            type: 'text',
+        })
+        await closePage(page)
+    })
+
+    await t.test('React 目录页（分支 feature/x）：raw 链接与命令用完整分支名；子模块和「..」行不加按钮', async () => {
+        const page = await open(browser, GH + '/octo/demo/tree/feature/x/src', { routes: { '/octo/demo/tree/feature/x/src': 'tree-react.html' }, xhr: api() })
+        await waitRows(page)
+        t.eq(await rowButtons(page), [
+            { name: 'lib', buttons: ['检出命令'] },
+            { name: 'index.js', buttons: ['下载'] },
+            { name: '日志 #1.md', buttons: ['下载'] },
+        ])
+        await clickRowButton(page, 'index.js', '下载')
+        await clickRowButton(page, '日志 #1.md', '下载')
+        t.eq((await h.gm(page)).downloads, [
+            { url: 'https://raw.githubusercontent.com/octo/demo/feature/x/src/index.js', name: 'index.js' },
+            { url: 'https://raw.githubusercontent.com/octo/demo/feature/x/src/%E6%97%A5%E5%BF%97%20%231.md', name: '日志 #1.md' },
+        ])
+        await clickRowButton(page, 'lib', '检出命令')
+        t.eq((await h.gm(page)).clipboard.text,
+            'git clone --filter=blob:none --sparse --depth 1 --branch feature/x https://github.com/octo/demo.git && cd demo && git sparse-checkout set src/lib')
+        await closePage(page)
+    })
+
+    await t.test('旧版文件列表（div[role=row]）：同样加按钮，上级目录行不加', async () => {
+        const page = await open(browser, GH + '/octo/demo/tree/feature/x/src', { routes: { '/octo/demo/tree/feature/x/src': 'tree-legacy.html' }, xhr: api() })
+        await waitRows(page)
+        t.eq(await rowButtons(page), [
+            { name: 'lib', buttons: ['检出命令'] },
+            { name: 'index.js', buttons: ['下载'] },
+        ])
+        await closePage(page)
+    })
+
+    await t.test('旧版仓库首页没有嵌入数据：按「根目录 + 文件名」从链接倒推出 ref', async () => {
+        const page = await open(browser, GH + '/octo/demo', {
+            routes: { '/octo/demo': 'tree-legacy.html' },
+            xhr: api(),
+            // 改造成根目录：文件名链接直接挂在 feature/x 下，没有分支按钮和面包屑
+            transform: (html) => html.replace(' data-menu-button>', '>').replace('class="js-repo-root', 'class="x').replace(/\/src\//g, '/'),
+        })
+        t.eq(pick(await lastContext(page), ['type', 'ref']), { type: 'root', ref: null })
+        await waitRows(page)
+        await clickRowButton(page, 'lib', '检出命令')
+        t.eq((await h.gm(page)).clipboard.text,
+            'git clone --filter=blob:none --sparse --depth 1 --branch feature/x https://github.com/octo/demo.git && cd demo && git sparse-checkout set lib')
+        await clickRowButton(page, 'index.js', '下载')
+        t.eq((await h.gm(page)).downloads[0].url, 'https://raw.githubusercontent.com/octo/demo/feature/x/index.js')
+        await closePage(page)
+    })
+
+    await t.test('消歧彻底失败（guess）时 raw 链接仍然正确（ref/path 拼回去不变）', async () => {
+        const page = await open(browser, GH + '/octo/demo/tree/feature/x/src', {
+            routes: { '/octo/demo/tree/feature/x/src': 'tree-legacy.html' },
+            xhr: api(),
+            transform: (html) => html.replace(' data-menu-button>', '>').replace('class="js-repo-root', 'class="x'),
+        })
+        t.eq((await lastContext(page)).source, 'guess')
+        await waitRows(page)
+        await clickRowButton(page, 'index.js', '下载')
+        t.eq((await h.gm(page)).downloads[0].url, 'https://raw.githubusercontent.com/octo/demo/feature/x/src/index.js')
+        await closePage(page)
+    })
+
+    await t.test('ref 是 SHA 时 sparse 命令改成先不检出再 checkout；路径带空格和引号会被转义', async () => {
+        const sha = '5555555555555555555555555555555555555555'
+        const page = await open(browser, GH + `/octo/demo/tree/${sha}/src`, {
+            routes: { [`/octo/demo/tree/${sha}/src`]: 'tree-legacy.html' },
+            xhr: api(),
+            transform: (html) => html.replace(/feature\/x/g, sha).replace('>lib<', ">it's dir<").replace('/src/lib"', '/src/it%27s%20dir"').replace('title="lib"', `title="it's dir"`),
+        })
+        await waitRows(page)
+        await clickRowButton(page, "it's dir", '检出命令')
+        t.eq((await h.gm(page)).clipboard.text,
+            `git clone --filter=blob:none --sparse --no-checkout https://github.com/octo/demo.git && cd demo && git sparse-checkout set 'src/it'\\''s dir' && git checkout ${sha}`)
+        await closePage(page)
+    })
+
+    await t.test('GM_download 失败时退回用浏览器打开 raw 链接', async () => {
+        const page = await open(browser, GH + '/octo/demo', { routes: REPO_ROUTES, xhr: api(), harness: { failDownloads: /README/ } })
+        await waitRows(page)
+        const popup = page.context().waitForEvent('page')
+        await clickRowButton(page, 'README.md', '下载')
+        await popup
+        await page.waitForTimeout(200)
+        t.assert(page.blocked.includes('https://raw.githubusercontent.com/octo/demo/main/README.md'), JSON.stringify(page.blocked))
+        await closePage(page)
+    })
+
     console.log('导航')
 
     await t.test('pushState / turbo:load / popstate 后重新解析上下文', async () => {
@@ -237,8 +390,6 @@ function pick(ctx, keys = ['owner', 'repo', 'type', 'ref', 'path', 'sha', 'exact
     })
 
     console.log('仓库信息')
-
-    const REPO_ROUTES = { '/octo/demo': 'repo-react.html' }
 
     await t.test('仓库首页显示大小（KB 换算）、默认分支、创建日期（本地时区），挂在仓库名后面', async () => {
         const page = await open(browser, GH + '/octo/demo', { routes: REPO_ROUTES, xhr: api() })

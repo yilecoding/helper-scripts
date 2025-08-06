@@ -3,10 +3,10 @@
 // @name:zh-CN   GitHub 增强
 // @name:en      GitHub Enhancer
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.08.05.4
-// @description  GitHub 页面增强：仓库页显示仓库大小、默认分支、创建时间（按仓库缓存 1 小时，API 限流时显示恢复时间；可设置 token 提高限额、查看私有仓库），适配 Turbo 换页。
-// @description:zh-CN  GitHub 页面增强：仓库页显示仓库大小、默认分支、创建时间（按仓库缓存 1 小时，API 限流时显示恢复时间；可设置 token 提高限额、查看私有仓库），适配 Turbo 换页。
-// @description:en  GitHub enhancements: shows repository size, default branch and creation date on repository pages (cached per repository for an hour; shows when the API rate limit resets; an optional token raises the limit and unlocks private repositories), following Turbo navigation.
+// @version      2025.08.06.5
+// @description  GitHub 页面增强：仓库页显示仓库大小、默认分支、创建时间（按仓库缓存 1 小时，API 限流时显示恢复时间；可设置 token 提高限额、查看私有仓库）；文件列表每行一键下载单个文件，目录一键复制 git sparse-checkout 命令；分支名带 / 也能正确识别，适配 Turbo 换页。
+// @description:zh-CN  GitHub 页面增强：仓库页显示仓库大小、默认分支、创建时间（按仓库缓存 1 小时，API 限流时显示恢复时间；可设置 token 提高限额、查看私有仓库）；文件列表每行一键下载单个文件，目录一键复制 git sparse-checkout 命令；分支名带 / 也能正确识别，适配 Turbo 换页。
+// @description:en  GitHub enhancements: shows repository size, default branch and creation date on repository pages (cached per repository for an hour; shows when the API rate limit resets; an optional token raises the limit and unlocks private repositories); adds a one-click download button to every file in the file list and a "copy git sparse-checkout command" button to every directory; handles branch names containing slashes and follows Turbo navigation.
 // @author       壹樂（V：ita1125）
 // @match        https://github.com/*
 // @noframes
@@ -16,8 +16,11 @@
 // @grant        GM_deleteValue
 // @grant        GM_addStyle
 // @grant        GM_registerMenuCommand
+// @grant        GM_download
+// @grant        GM_setClipboard
 // @grant        unsafeWindow
 // @connect      api.github.com
+// @connect      raw.githubusercontent.com
 // @license      CC BY-NC-SA
 // @run-at       document-end
 // @homepageURL  https://github.com/yilecoding/helper-scripts
@@ -44,6 +47,8 @@
         cacheTtl: 60 * 60 * 1000, // 仓库信息按仓库缓存 1 小时
         requestTimeout: 15000,  // API 请求超时
         apiBase: 'https://api.github.com',
+        rawBase: 'https://raw.githubusercontent.com',
+        toastMs: 1800,          // 「已复制」提示停留时间
     };
 
     /**
@@ -204,6 +209,25 @@
         }
 
         /**
+         * 面包屑最左边「仓库名」那一节链到 /owner/repo/tree/<ref>（ref 后面没有路径），
+         * 所以 /tree/ 后面整段就是 ref。React 版是 a[data-testid="breadcrumbs-repo-link"]，
+         * 旧版是 #blob-path .js-repo-root 里的链接。
+         */
+        function fromBreadcrumb(ctx) {
+            const a = document.querySelector('a[data-testid="breadcrumbs-repo-link"][href], .js-repo-root a[href]');
+            if (!a) return null;
+            let target;
+            try {
+                target = parse(new URL(a.getAttribute('href'), location.origin).pathname);
+            } catch (e) {
+                return null;
+            }
+            if (!target || target.type !== 'tree' || !target.refPath) return null;
+            if (target.owner.toLowerCase() !== ctx.owner.toLowerCase() || target.repo.toLowerCase() !== ctx.repo.toLowerCase()) return null;
+            return { name: target.refPath, refType: null, sha: null, source: 'breadcrumb' };
+        }
+
+        /**
          * 本次会话里已经确认存在的 ref（按仓库）。git 里分支 feature 和 feature/x 不能同时存在
          * （refs/heads/feature 是文件就不能再是目录），所以一个已知分支只要是 refPath 的分段前缀，
          * 就一定是这个地址里的分支 —— 同一分支下换目录不用再查。
@@ -270,7 +294,7 @@
         /**
          * 把 parse 的猜测落实成确定的 ref / path（以及能顺带拿到的 SHA）：
          *   1. 整段 SHA：不用消歧
-         *   2. 嵌入数据（地址一致时）→ 分支选择按钮 → 本次会话已知的 ref
+         *   2. 嵌入数据（地址一致时）→ 分支选择按钮 → 面包屑的仓库根链接 → 本次会话已知的 ref
          *   3. 都没有：调 API 查以第一段开头的分支 / tag
          *   4. API 也失败：保留「第一段是 ref」的猜测，exact 仍是 false
          * 仓库首页的 URL 里没有 ref，从嵌入数据补上默认分支和 SHA（没有就留空）。
@@ -284,7 +308,7 @@
                 return { ...ctx, ref: emb.name, refType: emb.refType, sha: emb.sha, source: 'embedded' };
             }
             if (!ctx.refPath || (ctx.sha && FULL_SHA.test(ctx.ref))) return { ...ctx, source: 'url' };
-            for (const found of [emb, fromPicker(), fromKnown(ctx)]) {
+            for (const found of [emb, fromPicker(), fromBreadcrumb(ctx), fromKnown(ctx)]) {
                 if (found && startsWithRef(ctx.refPath, found.name)) {
                     remember(ctx, found.name, found.refType);
                     return adopt(ctx, found);
@@ -295,7 +319,7 @@
             return found ? adopt(ctx, found) : { ...ctx, source: 'guess' };
         }
 
-        return { parse, key, resolve };
+        return { parse, key, resolve, startsWithRef };
     })();
 
     // =========================================================================
@@ -474,6 +498,50 @@
         return `${(kb / 1024 / 1024).toFixed(2)} GB`;
     }
 
+    /** 每段单独 encodeURIComponent，保留 `/`。 */
+    function encodePath(p) {
+        return p.split('/').map(encodeURIComponent).join('/');
+    }
+
+    function rawUrl(owner, repo, ref, path) {
+        return `${CONFIG.rawBase}/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/${encodePath(ref)}/${encodePath(path)}`;
+    }
+
+    /** POSIX shell 单引号转义；只含安全字符时不加引号，命令看起来干净些。 */
+    function shQuote(s) {
+        return /^[\w@%+=:,./-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`;
+    }
+
+    /**
+     * 只取一个目录的 git 命令：blob:none 部分克隆 + sparse 只检出这个目录。
+     * --branch 不接受 SHA，ref 是 SHA 时改成先不检出、设好 sparse 再 checkout 那个提交。
+     */
+    function sparseCommand(owner, repo, ref, path) {
+        const url = `https://github.com/${owner}/${repo}.git`;
+        const dir = shQuote(repo);
+        if (FULL_SHA.test(ref)) {
+            return `git clone --filter=blob:none --sparse --no-checkout ${url} && cd ${dir} && git sparse-checkout set ${shQuote(path)} && git checkout ${ref}`;
+        }
+        return `git clone --filter=blob:none --sparse --depth 1 --branch ${shQuote(ref)} ${url} && cd ${dir} && git sparse-checkout set ${shQuote(path)}`;
+    }
+
+    function copy(text, label) {
+        GM_setClipboard(text, 'text');
+        toast(`已复制${label}`);
+    }
+
+    function toast(msg) {
+        let node = document.getElementById('ghe-toast');
+        if (!node) {
+            node = el('div', { id: 'ghe-toast', role: 'status' });
+            document.documentElement.append(node);
+        }
+        node.textContent = msg;
+        node.dataset.show = '1';
+        clearTimeout(toast.timer);
+        toast.timer = setTimeout(() => { delete node.dataset.show; }, CONFIG.toastMs);
+    }
+
     function el(tag, attrs = {}, children = []) {
         const node = document.createElement(tag);
         for (const [k, v] of Object.entries(attrs)) {
@@ -499,6 +567,15 @@
         .ghe-link-btn { background: none; border: 0; padding: 0; font: inherit; cursor: pointer;
             color: var(--fgColor-accent, #0969da); }
         .ghe-link-btn:hover { text-decoration: underline; }
+        .ghe-row-actions { display: inline-flex; gap: 4px; margin-left: 8px; flex-shrink: 0; vertical-align: middle; }
+        .ghe-btn { font: 12px/18px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; padding: 0 6px;
+            border: 1px solid var(--borderColor-default, #d1d9e0); border-radius: 6px; cursor: pointer;
+            background: var(--bgColor-default, #fff); color: var(--fgColor-muted, #59636e); white-space: nowrap; }
+        .ghe-btn:hover { color: var(--fgColor-accent, #0969da); border-color: var(--fgColor-accent, #0969da); }
+        #ghe-toast { position: fixed; left: 50%; bottom: 32px; transform: translateX(-50%); z-index: 2147483647;
+            padding: 6px 14px; border-radius: 6px; font-size: 13px; pointer-events: none; opacity: 0; transition: opacity .2s;
+            background: var(--bgColor-emphasis, #25292e); color: var(--fgColor-onEmphasis, #fff); }
+        #ghe-toast[data-show] { opacity: 1; }
     `);
 
     // =========================================================================
@@ -669,6 +746,137 @@
     })();
 
     // =========================================================================
+    // 功能：文件列表每行的按钮
+    // =========================================================================
+
+    const FileRows = (() => {
+        const TYPES = new Set(['root', 'tree']);
+
+        /**
+         * 两套文件列表，各给出「行」「行里的文件名链接」「按钮挂在哪」：
+         *   - React 版（2023 起）：table[aria-labelledby="folders-and-files"] 里的 tr.react-directory-row。
+         *     每行有大屏 / 小屏两个文件名单元格（CSS 只显示一个），按钮挂在大屏那个里，
+         *     链接也从同一个单元格取，不然一行会算两次。「..」上级目录行不带这个类。
+         *   - 旧版（pjax 时代）：div[role="grid"] 里的 div[role="row"].js-navigation-item，
+         *     链接是 [role="rowheader"] a.js-navigation-open。
+         */
+        const LAYOUTS = [
+            {
+                rows: 'tr.react-directory-row',
+                link: '.react-directory-row-name-cell-large-screen .react-directory-filename-cell a[href], .react-directory-filename-cell a[href]',
+                mount: '.react-directory-row-name-cell-large-screen .react-directory-filename-column, .react-directory-filename-column',
+            },
+            {
+                rows: '[role="grid"] [role="row"].js-navigation-item',
+                link: '[role="rowheader"] a.js-navigation-open[href]',
+                mount: '[role="rowheader"]',
+            },
+        ];
+
+        /**
+         * 链接 → { kind, ref, path }。不是本仓库的 blob/tree（子模块链到别的仓库）、
+         * 不在当前目录下（「..」上级目录）都返回 null。
+         *
+         * ref / path 的切法：上下文已经确定 ref 时直接用。仓库首页没有嵌入数据（旧版）时 URL 里没有 ref，
+         * 但当前目录确定是根，就用显示的文件名从链接尾部倒推 —— 剩下的前缀就是 ref。
+         * 消歧彻底失败（source: guess）时当前目录本身也是猜的，倒推不成立，只能沿用猜测。
+         * raw 链接其实不在乎怎么切（ref/path 拼回去是一样的），切错只影响 sparse 命令。
+         */
+        function itemOf(a, ctx) {
+            let u;
+            try {
+                u = new URL(a.getAttribute('href'), location.origin);
+            } catch (e) {
+                return null;
+            }
+            if (u.origin !== location.origin) return null;
+            const target = Context.parse(u.pathname);
+            if (!target || (target.type !== 'blob' && target.type !== 'tree') || !target.refPath) return null;
+            if (target.owner.toLowerCase() !== ctx.owner.toLowerCase() || target.repo.toLowerCase() !== ctx.repo.toLowerCase()) return null;
+            const refPath = target.refPath;
+            const name = (a.getAttribute('title') || a.textContent || '').trim();
+            const tail = (ctx.path ? ctx.path + '/' : '') + name;
+
+            let ref = null;
+            if (ctx.ref && Context.startsWithRef(refPath, ctx.ref)) ref = ctx.ref;
+            else if (ctx.exact && name && refPath.endsWith('/' + tail)) ref = refPath.slice(0, -tail.length - 1);
+            if (!ref || refPath.length <= ref.length + 1) return null;
+            const path = refPath.slice(ref.length + 1);
+            if (ctx.path && !path.startsWith(ctx.path + '/')) return null;
+            return { kind: target.type, ref, path };
+        }
+
+        function download(ctx, item) {
+            const url = rawUrl(ctx.owner, ctx.repo, item.ref, item.path);
+            const name = item.path.split('/').pop();
+            // GM_download 能跨域真正「下载」；<a download> 对跨域链接无效，浏览器会直接打开 raw 页面，
+            // 只当兜底（管理器禁用了下载 API、扩展名不在白名单里时 GM_download 会失败）
+            const fallback = () => {
+                const a = el('a', { href: url, download: name, target: '_blank', rel: 'noopener' });
+                document.body.append(a);
+                a.click();
+                a.remove();
+            };
+            if (typeof GM_download !== 'function') return fallback();
+            const token = Store.token();
+            GM_download({
+                url,
+                name,
+                headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+                onerror: (e) => {
+                    console.warn(TAG, 'GM_download 失败，改用浏览器打开 raw 链接', e);
+                    fallback();
+                },
+            });
+        }
+
+        function button(text, title, onClick) {
+            return el('button', {
+                type: 'button', class: 'ghe-btn', title, text,
+                // 旧版的行是 js-navigation-item，点到行里会被当成导航；按钮自己的点击不往外冒
+                onclick: (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    onClick();
+                },
+            });
+        }
+
+        function actionsFor(ctx, item) {
+            if (item.kind === 'blob') {
+                return [button('下载', '下载这个文件（raw）', () => download(ctx, item))];
+            }
+            return [button('检出命令', '复制只检出这个目录的 git sparse-checkout 命令', () => {
+                copy(sparseCommand(ctx.owner, ctx.repo, item.ref, item.path), ' sparse-checkout 命令');
+            })];
+        }
+
+        function apply(ctx) {
+            const off = !ctx || !TYPES.has(ctx.type);
+            for (const layout of LAYOUTS) {
+                for (const row of document.querySelectorAll(layout.rows)) {
+                    const old = row.querySelector('.ghe-row-actions');
+                    if (off) {
+                        if (old) old.remove();
+                        continue;
+                    }
+                    const a = row.querySelector(layout.link);
+                    const href = a && a.getAttribute('href');
+                    // React 换目录时会复用 <tr> 只改链接：按 href 判断按钮是不是这一行的
+                    if (old && old.dataset.href === href) continue;
+                    if (old) old.remove();
+                    const item = a && itemOf(a, ctx);
+                    const mount = item && row.querySelector(layout.mount);
+                    if (!mount) continue;
+                    mount.append(el('span', { class: 'ghe-row-actions', 'data-href': href }, actionsFor(ctx, item)));
+                }
+            }
+        }
+
+        return { apply };
+    })();
+
+    // =========================================================================
     // 菜单
     // =========================================================================
 
@@ -676,7 +884,8 @@
         function setToken() {
             const input = prompt(
                 '输入 GitHub personal access token。\n'
-                + '只存在本机脚本管理器的存储里，只发给 api.github.com；建议用只读权限的 fine-grained token。\n'
+                + '只存在本机脚本管理器的存储里，只发给 api.github.com 和 raw.githubusercontent.com（下载私有仓库文件）；\n'
+                + '建议用只读权限的 fine-grained token。\n'
                 + '留空并确定 = 清除。',
                 '',
             );
@@ -720,7 +929,7 @@
             console.debug(TAG, '上下文', JSON.stringify(ctx));
         }
         // 每项独立 try：某一项的选择器在新版页面上失效，不该连累别的功能
-        for (const [name, feature] of [['仓库信息', RepoInfo]]) {
+        for (const [name, feature] of [['仓库信息', RepoInfo], ['文件列表按钮', FileRows]]) {
             try {
                 feature.apply(ctx);
             } catch (e) {

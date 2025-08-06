@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 <!-- 仿 2022 年前后的服务端渲染目录页（pjax 时代）：没有 react-app 嵌入数据。
-     仓库头 #repository-container-header；分支选择 #branch-select-menu 里的 [data-menu-button]；
+     仓库头 #repository-container-header；分支选择 #branch-select-menu 里的 [data-menu-button]；面包屑 #blob-path .js-repo-root；
      文件列表是 div[role=grid] > div[role=row].Box-row.js-navigation-item，文件名链接 a.js-navigation-open。 -->
 <html lang="en">
 <head><meta charset="utf-8"><title>demo/src at feature/x · octo/demo</title></head>
@@ -25,7 +25,9 @@
           <span class="dropdown-caret"></span>
         </summary>
       </details>
-      <div class="flex-auto"></div>
+      <h2 id="blob-path" class="breadcrumb flex-auto flex-self-center min-width-0 text-normal mx-2">
+        <span class="js-repo-root text-bold"><span class="js-path-segment d-inline-block wb-break-all"><a data-pjax="#repo-content-pjax-container" href="/octo/demo/tree/feature/x"><span>demo</span></a></span></span><span class="separator">/</span><strong class="final-path">src</strong><span class="separator">/</span>
+      </h2>
     </div>
     <div class="Box mb-3">
       <div class="Box-header position-relative">latest commit <relative-time datetime="2023-06-07T08:09:10Z" class="no-wrap">Jun 7, 2023</relative-time></div>
