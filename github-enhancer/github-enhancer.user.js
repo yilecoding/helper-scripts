@@ -3,10 +3,10 @@
 // @name:zh-CN   GitHub 增强
 // @name:en      GitHub Enhancer
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.08.06.6
-// @description  GitHub 页面增强：仓库页显示仓库大小、默认分支、创建时间（按仓库缓存 1 小时，API 限流时显示恢复时间；可设置 token 提高限额、查看私有仓库）；文件列表每行一键下载单个文件，目录一键复制 git sparse-checkout 命令；文件页复制 raw 链接、复制带行号的永久链接（分支名换成提交 SHA）；分支名带 / 也能正确识别，适配 Turbo 换页。
-// @description:zh-CN  GitHub 页面增强：仓库页显示仓库大小、默认分支、创建时间（按仓库缓存 1 小时，API 限流时显示恢复时间；可设置 token 提高限额、查看私有仓库）；文件列表每行一键下载单个文件，目录一键复制 git sparse-checkout 命令；文件页复制 raw 链接、复制带行号的永久链接（分支名换成提交 SHA）；分支名带 / 也能正确识别，适配 Turbo 换页。
-// @description:en  GitHub enhancements: shows repository size, default branch and creation date on repository pages (cached per repository for an hour; shows when the API rate limit resets; an optional token raises the limit and unlocks private repositories); adds a one-click download button to every file in the file list and a "copy git sparse-checkout command" button to every directory; on file pages copies the raw URL or a permalink with line numbers (branch replaced by the commit SHA); handles branch names containing slashes and follows Turbo navigation.
+// @version      2025.08.06.7
+// @description  GitHub 页面增强：仓库页显示仓库大小、默认分支、创建时间（按仓库缓存 1 小时，API 限流时显示恢复时间；可设置 token 提高限额、查看私有仓库）；文件列表每行一键下载单个文件，目录一键复制 git sparse-checkout 命令；文件页复制 raw 链接、复制带行号的永久链接（分支名换成提交 SHA）；「3 天前」这类相对时间旁边显示本地时区的绝对时间；分支名带 / 也能正确识别，适配 Turbo 换页。
+// @description:zh-CN  GitHub 页面增强：仓库页显示仓库大小、默认分支、创建时间（按仓库缓存 1 小时，API 限流时显示恢复时间；可设置 token 提高限额、查看私有仓库）；文件列表每行一键下载单个文件，目录一键复制 git sparse-checkout 命令；文件页复制 raw 链接、复制带行号的永久链接（分支名换成提交 SHA）；「3 天前」这类相对时间旁边显示本地时区的绝对时间；分支名带 / 也能正确识别，适配 Turbo 换页。
+// @description:en  GitHub enhancements: shows repository size, default branch and creation date on repository pages (cached per repository for an hour; shows when the API rate limit resets; an optional token raises the limit and unlocks private repositories); adds a one-click download button to every file in the file list and a "copy git sparse-checkout command" button to every directory; on file pages copies the raw URL or a permalink with line numbers (branch replaced by the commit SHA); shows the absolute local time next to every relative time ("3 days ago"); handles branch names containing slashes and follows Turbo navigation.
 // @author       壹樂（V：ita1125）
 // @match        https://github.com/*
 // @noframes
@@ -329,6 +329,15 @@
     const Store = (() => {
         const CACHE_PREFIX = 'cache:';
 
+        /** 各功能开关，默认全开。 */
+        function settings() {
+            return { absTime: true, ...GM_getValue('settings', {}) };
+        }
+
+        function saveSettings(patch) {
+            GM_setValue('settings', { ...settings(), ...patch });
+        }
+
         /** 缓存条目带写入时间，过期的当不存在（不主动删，下次写入时覆盖）。 */
         function getCache(key) {
             const entry = GM_getValue(CACHE_PREFIX + key, null);
@@ -366,7 +375,7 @@
             GM_setValue('ratelimit', { reset, authed: !!token() });
         }
 
-        return { getCache, setCache, token, setToken, rateLimit, setRateLimit };
+        return { settings, saveSettings, getCache, setCache, token, setToken, rateLimit, setRateLimit };
     })();
 
     // =========================================================================
@@ -591,6 +600,8 @@
             padding: 6px 14px; border-radius: 6px; font-size: 13px; pointer-events: none; opacity: 0; transition: opacity .2s;
             background: var(--bgColor-emphasis, #25292e); color: var(--fgColor-onEmphasis, #fff); }
         #ghe-toast[data-show] { opacity: 1; }
+        .ghe-abs-time { margin-left: 4px; white-space: nowrap; font-size: 12px; font-variant-numeric: tabular-nums;
+            color: var(--fgColor-muted, #59636e); }
     `);
 
     // =========================================================================
@@ -753,8 +764,11 @@
             window.addEventListener('popstate', schedule);
             window.addEventListener('ghe:locationchange', schedule);
             // 观察 <html> 而不是 <body>：Turbo Drive 换页会把整个 <body> 换成新元素，
-            // 挂在旧 body 上的观察者从此再也收不到任何变化
-            new MutationObserver(schedule).observe(document.documentElement, { childList: true, subtree: true });
+            // 挂在旧 body 上的观察者从此再也收不到任何变化。
+            // datetime 属性也看：React 复用 <relative-time> 只改属性时没有任何子节点变化
+            new MutationObserver(schedule).observe(document.documentElement, {
+                childList: true, subtree: true, attributes: true, attributeFilter: ['datetime'],
+            });
         }
 
         return { start, schedule };
@@ -974,6 +988,51 @@
     })();
 
     // =========================================================================
+    // 功能：相对时间旁边显示绝对时间
+    // =========================================================================
+
+    const AbsTime = (() => {
+        const CLS = 'ghe-abs-time';
+        /**
+         * GitHub 的时间都是 <relative-time datetime="ISO">（@github/relative-time-element），
+         * 很老的页面还有 <time-ago>。文字渲染在它自己的 shadow root 里，改不了也不该改，
+         * 所以在它后面插一个兄弟节点。format="datetime" 的本来就是绝对时间，跳过。
+         */
+        const SEL = 'relative-time[datetime], time-ago[datetime]';
+
+        function clear() {
+            document.querySelectorAll('.' + CLS).forEach((n) => n.remove());
+        }
+
+        function apply() {
+            if (!Store.settings().absTime) return clear();
+            for (const rt of document.querySelectorAll(SEL)) {
+                if (rt.getAttribute('format') === 'datetime') continue;
+                const dt = rt.getAttribute('datetime');
+                const text = formatDate(dt, true);
+                if (!text) continue;
+                const next = rt.nextElementSibling;
+                if (next && next.classList.contains(CLS)) {
+                    // React 复用同一个 <relative-time> 只改 datetime：跟着改，不另加
+                    if (next.dataset.datetime !== dt) {
+                        next.dataset.datetime = dt;
+                        next.textContent = `（${text}）`;
+                    }
+                    continue;
+                }
+                rt.insertAdjacentElement('afterend', el('span', { class: CLS, 'data-datetime': dt, text: `（${text}）` }));
+            }
+            // 时间元素被页面删掉 / 换走了，留下的孤儿也删掉
+            for (const span of document.querySelectorAll('.' + CLS)) {
+                const prev = span.previousElementSibling;
+                if (!prev || !prev.matches(SEL)) span.remove();
+            }
+        }
+
+        return { apply };
+    })();
+
+    // =========================================================================
     // 菜单
     // =========================================================================
 
@@ -1026,7 +1085,7 @@
             console.debug(TAG, '上下文', JSON.stringify(ctx));
         }
         // 每项独立 try：某一项的选择器在新版页面上失效，不该连累别的功能
-        for (const [name, feature] of [['仓库信息', RepoInfo], ['文件列表按钮', FileRows], ['文件页按钮', FileActions]]) {
+        for (const [name, feature] of [['仓库信息', RepoInfo], ['文件列表按钮', FileRows], ['文件页按钮', FileActions], ['绝对时间', AbsTime]]) {
             try {
                 feature.apply(ctx);
             } catch (e) {

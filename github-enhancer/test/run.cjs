@@ -450,6 +450,59 @@ function pick(ctx, keys = ['owner', 'repo', 'type', 'ref', 'path', 'sha', 'exact
         await closePage(page)
     })
 
+    console.log('绝对时间')
+
+    /** [{ datetime, abs }]：每个 relative-time 和紧跟着的绝对时间（没有则 null）。 */
+    function absTimes(page) {
+        return page.evaluate(() => Array.from(document.querySelectorAll('relative-time')).map((rt) => {
+            const next = rt.nextElementSibling
+            return { datetime: rt.getAttribute('datetime'), abs: next && next.classList.contains('ghe-abs-time') ? next.textContent : null }
+        }))
+    }
+    const absCount = (page) => page.evaluate(() => document.querySelectorAll('.ghe-abs-time').length)
+
+    await t.test('relative-time 后面显示本地时区（+08:00）的绝对时间', async () => {
+        const page = await open(browser, GH + '/octo/demo', { routes: REPO_ROUTES, xhr: api() })
+        await page.waitForSelector('.ghe-abs-time')
+        t.eq(await absTimes(page), [
+            { datetime: '2024-03-05T06:07:08Z', abs: '（2024-03-05 14:07）' },
+            { datetime: '2024-01-02T03:04:05Z', abs: '（2024-01-02 11:04）' },
+            { datetime: '2024-02-03T23:30:00Z', abs: '（2024-02-04 07:30）' }, // UTC 晚上，本地已经第二天
+            { datetime: '2024-03-05T06:07:08Z', abs: '（2024-03-05 14:07）' },
+            { datetime: '2024-03-05T06:07:08Z', abs: '（2024-03-05 14:07）' },
+        ])
+        await closePage(page)
+    })
+
+    await t.test('非仓库页也生效；动态加进来的时间补上，datetime 被改了跟着改，format="datetime" 跳过', async () => {
+        const page = await open(browser, GH + '/notifications', {
+            transform: (html) => html.replace('<p class="placeholder">plain page</p>',
+                '<ul id="list"><li>updated <relative-time datetime="2025-12-31T16:00:00Z">2 months ago</relative-time></li>'
+                + '<li>at <relative-time format="datetime" datetime="2025-01-01T00:00:00Z">Jan 1</relative-time></li></ul>'),
+        })
+        await page.waitForSelector('.ghe-abs-time')
+        t.eq((await absTimes(page)).map((x) => x.abs), ['（2026-01-01 00:00）', null])
+        await page.evaluate(() => {
+            const li = document.createElement('li')
+            li.innerHTML = 'new <relative-time datetime="2026-10-28T01:02:03Z">yesterday</relative-time>'
+            document.getElementById('list').append(li)
+        })
+        await page.waitForFunction(() => document.querySelectorAll('.ghe-abs-time').length === 2)
+        // 只改属性、不增删节点（React 复用元素时就是这样）
+        await page.evaluate(() => document.querySelector('relative-time').setAttribute('datetime', '2020-06-01T00:00:00Z'))
+        await page.waitForFunction(() => document.querySelectorAll('.ghe-abs-time').length === 2 && document.querySelector('.ghe-abs-time').textContent.includes('2020'))
+        t.eq((await absTimes(page)).map((x) => x.abs), ['（2020-06-01 08:00）', null, '（2026-10-28 09:02）'])
+        await closePage(page)
+    })
+
+    await t.test('设置里关掉就不显示', async () => {
+        const page = await open(browser, GH + '/octo/demo', { routes: REPO_ROUTES, xhr: api(), values: { settings: { absTime: false } } })
+        await waitRows(page)
+        await page.waitForTimeout(300)
+        t.eq(await absCount(page), 0)
+        await closePage(page)
+    })
+
     console.log('导航')
 
     await t.test('pushState / turbo:load / popstate 后重新解析上下文', async () => {
