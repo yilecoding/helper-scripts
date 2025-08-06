@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<!-- 仿 pjax 时代的文件页 /octo/demo/blob/main/docs/guide.md：没有 react-app 嵌入数据。
+     头部 .file-actions 里的 .BtnGroup > a#raw-url；隐藏的 a.js-permalink-shortcut（快捷键 y）链到当前提交 SHA。 -->
+<html lang="en">
+<head><meta charset="utf-8"><title>demo/guide.md at main · octo/demo</title></head>
+<body class="logged-in env-production page-responsive">
+<div class="application-main">
+<main id="js-repo-pjax-container" data-pjax-container>
+  <div id="repository-container-header" class="pt-3 hide-full-screen">
+    <strong itemprop="name"><a href="/octo/demo">demo</a></strong>
+  </div>
+  <turbo-frame id="repo-content-turbo-frame" target="_top">
+  <div id="repo-content-pjax-container" class="repository-content">
+    <a class="d-none js-permalink-shortcut" data-hotkey="y" href="/octo/demo/blob/4444444444444444444444444444444444444444/docs/guide.md">Permalink</a>
+    <div class="d-flex flex-items-start flex-shrink-0 pb-3 flex-wrap flex-md-nowrap flex-justify-between flex-md-justify-start">
+      <details class="details-reset details-overlay mr-0 mb-0" id="branch-select-menu">
+        <summary class="btn css-truncate" data-hotkey="w"><span class="css-truncate-target" data-menu-button>main</span></summary>
+      </details>
+      <h2 id="blob-path" class="breadcrumb flex-auto flex-self-center min-width-0 text-normal mx-2">
+        <span class="js-repo-root text-bold"><span class="js-path-segment d-inline-block wb-break-all"><a data-pjax href="/octo/demo/tree/main"><span>demo</span></a></span></span><span class="separator">/</span><span class="js-path-segment d-inline-block wb-break-all"><a data-pjax href="/octo/demo/tree/main/docs"><span>docs</span></a></span><span class="separator">/</span><strong class="final-path">guide.md</strong>
+      </h2>
+    </div>
+    <div class="Box mt-3 position-relative">
+      <div class="Box-header py-2 pr-2 d-flex flex-shrink-0 flex-md-row flex-items-center">
+        <div class="text-mono f6 flex-auto pr-3 flex-order-2 flex-md-order-1">42 lines (30 sloc) <span class="file-info-divider"></span> 1.2 KB</div>
+        <div class="d-flex py-1 py-md-0 flex-auto flex-order-1 flex-md-order-2 flex-sm-grow-0 flex-justify-between hide-sm hide-md">
+          <div class="BtnGroup">
+            <a href="/octo/demo/raw/main/docs/guide.md" id="raw-url" role="button" class="btn-sm btn BtnGroup-item">Raw</a>
+            <a href="/octo/demo/blame/main/docs/guide.md" data-hotkey="b" role="button" class="js-update-url-with-hash btn-sm btn BtnGroup-item">Blame</a>
+          </div>
+        </div>
+      </div>
+      <div class="Box-body p-0 blob-wrapper data type-markdown">
+        <table class="highlight tab-size js-file-line-container"><tr><td id="L1" class="blob-num js-line-number" data-line-number="1"></td><td id="LC1" class="blob-code blob-code-inner js-file-line"># Guide</td></tr></table>
+      </div>
+    </div>
+  </div>
+  </turbo-frame>
+</main>
+</div>
+</body>
+</html>

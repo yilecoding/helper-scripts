@@ -3,10 +3,10 @@
 // @name:zh-CN   GitHub 增强
 // @name:en      GitHub Enhancer
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.08.06.5
-// @description  GitHub 页面增强：仓库页显示仓库大小、默认分支、创建时间（按仓库缓存 1 小时，API 限流时显示恢复时间；可设置 token 提高限额、查看私有仓库）；文件列表每行一键下载单个文件，目录一键复制 git sparse-checkout 命令；分支名带 / 也能正确识别，适配 Turbo 换页。
-// @description:zh-CN  GitHub 页面增强：仓库页显示仓库大小、默认分支、创建时间（按仓库缓存 1 小时，API 限流时显示恢复时间；可设置 token 提高限额、查看私有仓库）；文件列表每行一键下载单个文件，目录一键复制 git sparse-checkout 命令；分支名带 / 也能正确识别，适配 Turbo 换页。
-// @description:en  GitHub enhancements: shows repository size, default branch and creation date on repository pages (cached per repository for an hour; shows when the API rate limit resets; an optional token raises the limit and unlocks private repositories); adds a one-click download button to every file in the file list and a "copy git sparse-checkout command" button to every directory; handles branch names containing slashes and follows Turbo navigation.
+// @version      2025.08.06.6
+// @description  GitHub 页面增强：仓库页显示仓库大小、默认分支、创建时间（按仓库缓存 1 小时，API 限流时显示恢复时间；可设置 token 提高限额、查看私有仓库）；文件列表每行一键下载单个文件，目录一键复制 git sparse-checkout 命令；文件页复制 raw 链接、复制带行号的永久链接（分支名换成提交 SHA）；分支名带 / 也能正确识别，适配 Turbo 换页。
+// @description:zh-CN  GitHub 页面增强：仓库页显示仓库大小、默认分支、创建时间（按仓库缓存 1 小时，API 限流时显示恢复时间；可设置 token 提高限额、查看私有仓库）；文件列表每行一键下载单个文件，目录一键复制 git sparse-checkout 命令；文件页复制 raw 链接、复制带行号的永久链接（分支名换成提交 SHA）；分支名带 / 也能正确识别，适配 Turbo 换页。
+// @description:en  GitHub enhancements: shows repository size, default branch and creation date on repository pages (cached per repository for an hour; shows when the API rate limit resets; an optional token raises the limit and unlocks private repositories); adds a one-click download button to every file in the file list and a "copy git sparse-checkout command" button to every directory; on file pages copies the raw URL or a permalink with line numbers (branch replaced by the commit SHA); handles branch names containing slashes and follows Turbo navigation.
 // @author       壹樂（V：ita1125）
 // @match        https://github.com/*
 // @noframes
@@ -473,7 +473,22 @@
             return p;
         }
 
-        return { request, repo, parseHeaders };
+        /**
+         * ref 当前指向的提交 SHA。Accept: application/vnd.github.sha 时响应体就是 40 位 SHA 纯文本，
+         * 比拿整个 commit JSON 省流量。ref 里的 `/` 不用转义（实测 /commits/release/1.100 能用）。
+         */
+        function commitSha(owner, name, ref) {
+            if (Store.rateLimit()) return Promise.resolve({ ok: false, rateLimited: true, reset: Store.rateLimit().reset });
+            return request(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/commits/${encodePath(ref)}`, { accept: 'application/vnd.github.sha' })
+                .then((r) => {
+                    const sha = String(r.text || '').trim();
+                    if (r.status === 200 && FULL_SHA.test(sha)) return { ok: true, sha: sha.toLowerCase() };
+                    return failure(r);
+                })
+                .catch((e) => ({ ok: false, status: 0, message: e.message }));
+        }
+
+        return { request, repo, commitSha, parseHeaders };
     })();
 
     // =========================================================================
@@ -877,6 +892,88 @@
     })();
 
     // =========================================================================
+    // 功能：文件页的「复制 raw 链接」「复制永久链接」
+    // =========================================================================
+
+    const FileActions = (() => {
+        const ID = 'ghe-file-actions';
+
+        /**
+         * 挂载点，按顺序找：
+         *   - React 版：a[data-testid="raw-button"] 所在的按钮组（[data-component="ButtonGroup"]）后面
+         *   - 旧版：a#raw-url 所在的 .BtnGroup 后面
+         *   - 都没有：面包屑里的文件名后面（React 的 breadcrumbs-filename / 旧版 #blob-path）
+         */
+        function mountPoint() {
+            const raw = document.querySelector('a[data-testid="raw-button"]');
+            if (raw) return raw.closest('[data-component="ButtonGroup"]') || raw;
+            const legacy = document.querySelector('#raw-url');
+            if (legacy) return legacy.closest('.BtnGroup') || legacy;
+            return document.querySelector('[data-testid="breadcrumbs-filename"], #blob-path');
+        }
+
+        /** #L10、#L10-L20、新版带列号的 #L10C3-L12C8 原样保留；别的 hash（标题锚点）不要。 */
+        function lineHash() {
+            return /^#L\d+(C\d+)?(-L\d+(C\d+)?)?$/.test(location.hash) ? location.hash : '';
+        }
+
+        /**
+         * 永久链接要的 SHA：
+         *   1. 上下文里已有（URL 本身就是 SHA，或首屏的嵌入数据）
+         *   2. 旧版页面隐藏的 a.js-permalink-shortcut（快捷键 y 用的那个），路径要和当前文件一致
+         *   3. 都没有（React 内部路由换过页）：调 API 查 ref 当前指向的提交
+         * 点按钮时才取，不点不花 API 次数。
+         */
+        async function shaFor(ctx) {
+            if (ctx.sha) return { ok: true, sha: ctx.sha };
+            const a = document.querySelector('a.js-permalink-shortcut[href]');
+            if (a) {
+                const target = Context.parse(new URL(a.getAttribute('href'), location.origin).pathname);
+                if (target && target.sha && target.path === ctx.path) return { ok: true, sha: target.sha };
+            }
+            return Api.commitSha(ctx.owner, ctx.repo, ctx.ref);
+        }
+
+        async function copyPermalink(ctx) {
+            const hash = lineHash(); // 先记下来：等 API 期间用户可能又点了别的行
+            const r = await shaFor(ctx);
+            if (!r.ok) {
+                const why = r.rateLimited ? `API 已限流，${formatDate(r.reset * 1000, true)} 后恢复` : r.status ? `HTTP ${r.status}` : r.message || '网络错误';
+                toast(`获取提交 SHA 失败（${why}），没有复制`);
+                return;
+            }
+            copy(`https://github.com/${ctx.owner}/${ctx.repo}/blob/${r.sha}/${encodePath(ctx.path)}${hash}`, '永久链接');
+        }
+
+        function apply(ctx) {
+            const existing = document.getElementById(ID);
+            if (!ctx || ctx.type !== 'blob' || !ctx.path) {
+                if (existing) existing.remove();
+                return;
+            }
+            const key = Context.key(ctx) + '|' + (ctx.sha || '');
+            // React 换文件时头部按钮组常常原地复用，挂在里面的老按钮还在：按上下文判断要不要重建
+            if (existing && existing.dataset.key === key && existing.isConnected) return;
+            if (existing) existing.remove();
+            const anchor = mountPoint();
+            if (!anchor) return;
+            const box = el('span', { id: ID, class: 'ghe-row-actions', 'data-key': key }, [
+                el('button', {
+                    type: 'button', class: 'ghe-btn', text: '复制 raw 链接', title: 'raw.githubusercontent.com 上的原始文件地址',
+                    onclick: () => copy(rawUrl(ctx.owner, ctx.repo, ctx.ref, ctx.path), ' raw 链接'),
+                }),
+                el('button', {
+                    type: 'button', class: 'ghe-btn', text: '复制永久链接', title: '分支名换成当前提交 SHA，带上选中的行号',
+                    onclick: () => copyPermalink(ctx),
+                }),
+            ]);
+            anchor.insertAdjacentElement('afterend', box);
+        }
+
+        return { apply };
+    })();
+
+    // =========================================================================
     // 菜单
     // =========================================================================
 
@@ -929,7 +1026,7 @@
             console.debug(TAG, '上下文', JSON.stringify(ctx));
         }
         // 每项独立 try：某一项的选择器在新版页面上失效，不该连累别的功能
-        for (const [name, feature] of [['仓库信息', RepoInfo], ['文件列表按钮', FileRows]]) {
+        for (const [name, feature] of [['仓库信息', RepoInfo], ['文件列表按钮', FileRows], ['文件页按钮', FileActions]]) {
             try {
                 feature.apply(ctx);
             } catch (e) {

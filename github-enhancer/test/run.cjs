@@ -371,6 +371,85 @@ function pick(ctx, keys = ['owner', 'repo', 'type', 'ref', 'path', 'sha', 'exact
         await closePage(page)
     })
 
+    console.log('文件页按钮')
+
+    const BLOB = '/octo/demo/blob/feature/x/src/index.js'
+    const BLOB_ROUTES = { [BLOB]: 'blob-react.html', '/octo/demo/blob/main/docs/guide.md': 'blob-legacy.html' }
+
+    const clickFileAction = (page, text) => page.evaluate((text) => {
+        Array.from(document.querySelectorAll('#ghe-file-actions button')).find((b) => b.textContent === text).click()
+    }, text)
+
+    async function waitClipboard(page, prev) {
+        await page.waitForFunction((prev) => window.__gm.clipboard && window.__gm.clipboard.text !== prev, prev)
+        return (await h.gm(page)).clipboard.text
+    }
+
+    const commitRequests = (page) => page.requests.filter((d) => d.url.includes('/commits/'))
+
+    await t.test('React 文件页：按钮挂在 Raw 按钮组后面；raw 链接用完整分支名；永久链接用嵌入数据里的 SHA + 行号', async () => {
+        const page = await open(browser, GH + BLOB + '#L3-L5', { routes: BLOB_ROUTES, xhr: api() })
+        await page.waitForSelector('#ghe-file-actions')
+        t.eq(await page.evaluate(() => document.querySelector('[data-component="ButtonGroup"]').nextElementSibling.id), 'ghe-file-actions')
+        await clickFileAction(page, '复制 raw 链接')
+        t.eq(await waitClipboard(page, null), 'https://raw.githubusercontent.com/octo/demo/feature/x/src/index.js')
+        await clickFileAction(page, '复制永久链接')
+        t.eq(await waitClipboard(page, 'https://raw.githubusercontent.com/octo/demo/feature/x/src/index.js'),
+            'https://github.com/octo/demo/blob/2222222222222222222222222222222222222222/src/index.js#L3-L5')
+        t.eq(commitRequests(page), [])
+        await closePage(page)
+    })
+
+    await t.test('旧版文件页：永久链接用 js-permalink-shortcut 的 SHA；非行号的 hash 不带', async () => {
+        const page = await open(browser, GH + '/octo/demo/blob/main/docs/guide.md#readme', { routes: BLOB_ROUTES, xhr: api() })
+        await page.waitForSelector('#ghe-file-actions')
+        t.eq(await page.evaluate(() => document.querySelector('.BtnGroup').nextElementSibling.id), 'ghe-file-actions')
+        await clickFileAction(page, '复制永久链接')
+        t.eq(await waitClipboard(page, null), 'https://github.com/octo/demo/blob/4444444444444444444444444444444444444444/docs/guide.md')
+        await page.evaluate(() => { location.hash = '#L7' })
+        await clickFileAction(page, '复制永久链接')
+        t.eq(await waitClipboard(page, 'https://github.com/octo/demo/blob/4444444444444444444444444444444444444444/docs/guide.md'),
+            'https://github.com/octo/demo/blob/4444444444444444444444444444444444444444/docs/guide.md#L7')
+        t.eq(commitRequests(page), [])
+        await closePage(page)
+    })
+
+    await t.test('React 内部路由换文件后（嵌入数据过期）：永久链接向 API 要 SHA，按钮只有一组', async () => {
+        const sha = '6666666666666666666666666666666666666666'
+        const page = await open(browser, GH + BLOB, {
+            routes: BLOB_ROUTES,
+            xhr: api((d) => (d.url === 'https://api.github.com/repos/octo/demo/commits/feature/x' ? { status: 200, responseText: sha } : null)),
+        })
+        await page.waitForSelector('#ghe-file-actions')
+        await page.evaluate(() => history.pushState({}, '', '/octo/demo/blob/feature/x/src/other.js#L2'))
+        await page.waitForFunction(() => document.getElementById('ghe-file-actions').dataset.key.includes('other.js'))
+        t.eq(await page.evaluate(() => document.querySelectorAll('#ghe-file-actions').length), 1)
+        await clickFileAction(page, '复制永久链接')
+        t.eq(await waitClipboard(page, null), `https://github.com/octo/demo/blob/${sha}/src/other.js#L2`)
+        const reqs = commitRequests(page)
+        t.eq(reqs.length, 1)
+        t.eq(reqs[0].headers.Accept, 'application/vnd.github.sha')
+        await closePage(page)
+    })
+
+    await t.test('拿不到 SHA 时提示失败，不复制半成品', async () => {
+        const page = await open(browser, GH + BLOB, { routes: BLOB_ROUTES, xhr: api() })
+        await page.waitForSelector('#ghe-file-actions')
+        await page.evaluate(() => history.pushState({}, '', '/octo/demo/blob/feature/x/src/other.js'))
+        await page.waitForFunction(() => document.getElementById('ghe-file-actions').dataset.key.includes('other.js'))
+        await clickFileAction(page, '复制永久链接')
+        await page.waitForFunction(() => /获取提交 SHA 失败（HTTP 404）/.test((document.getElementById('ghe-toast') || {}).textContent || ''))
+        t.eq((await h.gm(page)).clipboard, null)
+        await closePage(page)
+    })
+
+    await t.test('目录页、仓库首页没有文件页按钮', async () => {
+        const page = await open(browser, GH + '/octo/demo', { routes: REPO_ROUTES, xhr: api() })
+        await waitRows(page)
+        t.eq(await page.evaluate(() => !!document.getElementById('ghe-file-actions')), false)
+        await closePage(page)
+    })
+
     console.log('导航')
 
     await t.test('pushState / turbo:load / popstate 后重新解析上下文', async () => {
