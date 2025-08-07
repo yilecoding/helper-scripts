@@ -3,7 +3,7 @@
 // @name:zh-CN   GitHub 增强
 // @name:en      GitHub Enhancer
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.08.07.8
+// @version      2025.08.07.9
 // @description  GitHub 页面增强：仓库页显示仓库大小、默认分支、创建时间（按仓库缓存 1 小时，API 限流时显示恢复时间；可设置 token 提高限额、查看私有仓库）；文件列表每行一键下载单个文件，目录一键复制 git sparse-checkout 命令；文件页复制 raw 链接、复制带行号的永久链接（分支名换成提交 SHA）；「3 天前」这类相对时间旁边显示本地时区的绝对时间；各功能可在菜单里单独开关；分支名带 / 也能正确识别，适配 Turbo 换页。
 // @description:zh-CN  GitHub 页面增强：仓库页显示仓库大小、默认分支、创建时间（按仓库缓存 1 小时，API 限流时显示恢复时间；可设置 token 提高限额、查看私有仓库）；文件列表每行一键下载单个文件，目录一键复制 git sparse-checkout 命令；文件页复制 raw 链接、复制带行号的永久链接（分支名换成提交 SHA）；「3 天前」这类相对时间旁边显示本地时区的绝对时间；各功能可在菜单里单独开关；分支名带 / 也能正确识别，适配 Turbo 换页。
 // @description:en  GitHub enhancements: shows repository size, default branch and creation date on repository pages (cached per repository for an hour; shows when the API rate limit resets; an optional token raises the limit and unlocks private repositories); adds a one-click download button to every file in the file list and a "copy git sparse-checkout command" button to every directory; on file pages copies the raw URL or a permalink with line numbers (branch replaced by the commit SHA); shows the absolute local time next to every relative time ("3 days ago"); every feature can be toggled from the menu; handles branch names containing slashes and follows Turbo navigation.
@@ -162,14 +162,7 @@
             for (const app of document.querySelectorAll('react-app[initial-path]')) {
                 if (decodePath(app.getAttribute('initial-path')).replace(/\/$/, '') !== here) continue;
                 const script = app.querySelector('script[data-target="react-app.embeddedData"]');
-                if (!script) continue;
-                let data;
-                try {
-                    data = JSON.parse(script.textContent);
-                } catch (e) {
-                    continue;
-                }
-                const info = findRefInfo(data && data.payload, 0);
+                const info = script && embeddedRefInfo(script);
                 if (info) {
                     return {
                         name: info.name,
@@ -180,6 +173,24 @@
                 }
             }
             return null;
+        }
+
+        /**
+         * 按 <script> 元素缓存解析结果。文件页的嵌入数据里带着整份源码（rawLines），
+         * 大文件有好几 MB；而 apply 在每次 DOM 变化后都会跑（React 虚拟滚动代码行时 DOM 一直在变），
+         * 不缓存就是每 150ms 一次 JSON.parse。嵌入数据是服务端一次写死的，元素在内容就不变。
+         */
+        const parsedEmbedded = new WeakMap();
+
+        function embeddedRefInfo(script) {
+            if (parsedEmbedded.has(script)) return parsedEmbedded.get(script);
+            let info = null;
+            try {
+                const data = JSON.parse(script.textContent);
+                info = findRefInfo(data && data.payload, 0);
+            } catch (e) { /* 坏 JSON 当没有 */ }
+            parsedEmbedded.set(script, info);
+            return info;
         }
 
         /** payload 下各路由的 refInfo 位置不固定（codeViewTreeRoute / codeViewBlobLayoutRoute / …），浅层搜一下。 */
@@ -265,7 +276,8 @@
             if (!lookups.has(k)) {
                 const base = `/repos/${encodeURIComponent(ctx.owner)}/${encodeURIComponent(ctx.repo)}/git/matching-refs/`;
                 const list = (kind) => Api.request(base + kind + '/' + encodeURIComponent(first)).then((r) => {
-                    if (r.status !== 200 || !Array.isArray(r.json)) throw new Error(`HTTP ${r.status}`);
+                    // 经 Api.failure 走一遍：撞上限流要记下来，不然仓库信息紧接着又去撞一次
+                    if (r.status !== 200 || !Array.isArray(r.json)) throw new Error(Api.failure(r).rateLimited ? 'API 已限流' : `HTTP ${r.status}`);
                     return r.json.map((x) => String(x.ref || '').replace(/^refs\/(heads|tags)\//, ''));
                 });
                 lookups.set(k, (async () => {
@@ -512,7 +524,7 @@
                 .catch((e) => ({ ok: false, status: 0, message: e.message }));
         }
 
-        return { request, repo, commitSha, parseHeaders };
+        return { request, repo, commitSha, failure, parseHeaders };
     })();
 
     // =========================================================================
@@ -838,7 +850,8 @@
             if (!target || (target.type !== 'blob' && target.type !== 'tree') || !target.refPath) return null;
             if (target.owner.toLowerCase() !== ctx.owner.toLowerCase() || target.repo.toLowerCase() !== ctx.repo.toLowerCase()) return null;
             const refPath = target.refPath;
-            const name = (a.getAttribute('title') || a.textContent || '').trim();
+            // 链接文字优先：旧版「跳过空目录」的折叠行（lib/core/util 显示成一行）title 是一句说明文字
+            const name = (a.textContent || a.getAttribute('title') || '').trim();
             const tail = (ctx.path ? ctx.path + '/' : '') + name;
 
             let ref = null;

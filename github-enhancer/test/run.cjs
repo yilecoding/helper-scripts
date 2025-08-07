@@ -815,6 +815,62 @@ function pick(ctx, keys = ['owner', 'repo', 'type', 'ref', 'path', 'sha', 'exact
         await closePage(page)
     })
 
+    console.log('边界情况')
+
+    await t.test('消歧请求撞上限流：记下限流，仓库信息直接显示限流、不再自己请求', async () => {
+        const reset = Math.floor(Date.now() / 1000) + 600
+        const page = await open(browser, GH + '/octo/demo/tree/feature/x/path', {
+            routes: { '/octo/demo/tree/feature/x/path': 'tree-legacy.html' },
+            transform: (html) => html.replace(' data-menu-button>', '>').replace('class="js-repo-root', 'class="x'),
+            xhr: () => ({ status: 403, responseText: '{"message":"API rate limit exceeded"}', responseHeaders: `x-ratelimit-remaining: 0\r\nx-ratelimit-reset: ${reset}` }),
+        })
+        t.eq((await lastContext(page)).source, 'guess')
+        const info = await waitRepoInfo(page, 'ratelimit')
+        t.assert(info.text.includes(hhmm(reset)), info.text)
+        t.eq(page.requests.map((d) => d.url.replace('https://api.github.com/repos/octo/demo', '')), ['/git/matching-refs/heads/feature'])
+        await closePage(page)
+    })
+
+    await t.test('旧版「跳过空目录」的折叠行：title 是说明文字，按链接文字倒推 ref', async () => {
+        const page = await open(browser, GH + '/octo/demo', {
+            routes: { '/octo/demo': 'tree-legacy.html' },
+            xhr: api(),
+            transform: (html) => html
+                .replace(' data-menu-button>', '>').replace('class="js-repo-root', 'class="x').replace(/\/src\//g, '/')
+                .replace('title="lib" data-pjax="#repo-content-pjax-container" data-turbo-frame="repo-content-turbo-frame" href="/octo/demo/tree/feature/x/lib">lib</a>',
+                    'title="This path skips through empty directories" data-pjax="#repo-content-pjax-container" data-turbo-frame="repo-content-turbo-frame" href="/octo/demo/tree/feature/x/lib/core/util"><span class="color-fg-muted">lib/core/</span>util</a>'),
+        })
+        await waitRows(page)
+        await page.evaluate(() => document.querySelector('.ghe-row-actions button').click())
+        t.eq((await h.gm(page)).clipboard.text,
+            'git clone --filter=blob:none --sparse --depth 1 --branch feature/x https://github.com/octo/demo.git && cd demo && git sparse-checkout set lib/core/util')
+        await closePage(page)
+    })
+
+    await t.test('嵌入数据（文件页里有整份源码，可能很大）只解析一次，不是 DOM 每变一次就 JSON.parse 一遍', async () => {
+        const big = 'x'.repeat(200000)
+        const page = await open(browser, GH + BLOB, {
+            routes: BLOB_ROUTES,
+            xhr: api(),
+            transform: (html) => html.replace('"codeViewBlobRoute":{"csv":null,', `"codeViewBlobRoute":{"rawLines":["${big}"],"csv":null,`),
+        })
+        await page.waitForSelector('#ghe-file-actions')
+        await page.evaluate(() => {
+            const orig = JSON.parse
+            window.__bigParses = 0
+            JSON.parse = function (text, ...rest) {
+                if (typeof text === 'string' && text.length > 100000) window.__bigParses++
+                return orig.call(this, text, ...rest)
+            }
+        })
+        for (let i = 0; i < 6; i++) {
+            await page.evaluate(() => document.body.append(document.createElement('div')))
+            await page.waitForTimeout(200)
+        }
+        t.eq(await page.evaluate(() => window.__bigParses), 0)
+        await closePage(page)
+    })
+
     await close()
     t.done()
 })()
