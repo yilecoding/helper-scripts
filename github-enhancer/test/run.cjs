@@ -683,6 +683,138 @@ function pick(ctx, keys = ['owner', 'repo', 'type', 'ref', 'path', 'sha', 'exact
         await closePage(page)
     })
 
+    console.log('菜单')
+
+    await t.test('菜单列出各功能开关、token、清除缓存；文字带当前状态', async () => {
+        const page = await open(browser, GH + '/octo/demo', { routes: REPO_ROUTES, xhr: api(), values: { settings: { absTime: false } } })
+        await waitRepoInfo(page)
+        t.eq((await h.gm(page)).menu, [
+            '关闭仓库信息（大小 / 默认分支 / 创建时间）',
+            '关闭文件列表的下载 / 检出命令按钮',
+            '关闭文件页的复制链接按钮',
+            '开启绝对时间',
+            '设置 GitHub token',
+            '清除 GitHub token',
+            '清除缓存',
+        ])
+        await closePage(page)
+    })
+
+    await t.test('开关立即生效：关掉收走已插入的东西，再开又回来；状态存进 settings', async () => {
+        const page = await open(browser, GH + '/octo/demo', { routes: REPO_ROUTES, xhr: api() })
+        await waitRepoInfo(page)
+        await waitRows(page)
+        await page.waitForSelector('.ghe-abs-time')
+        const counts = () => page.evaluate(() => ({
+            info: document.querySelectorAll('#ghe-repo-info').length,
+            rows: document.querySelectorAll('.ghe-row-actions').length,
+            abs: document.querySelectorAll('.ghe-abs-time').length,
+        }))
+        await h.menu(page, '关闭仓库信息')
+        await h.menu(page, '关闭文件列表')
+        await h.menu(page, '关闭绝对时间')
+        await page.waitForFunction(() => !document.querySelector('#ghe-repo-info, .ghe-row-actions, .ghe-abs-time'))
+        t.eq(await counts(), { info: 0, rows: 0, abs: 0 })
+        t.eq(await page.evaluate(() => JSON.parse(localStorage.getItem('__gm:settings'))), { repoInfo: false, fileRows: false, fileActions: true, absTime: false })
+        t.assert((await h.gm(page)).menu.includes('开启绝对时间'))
+        await h.menu(page, '开启仓库信息')
+        await h.menu(page, '开启文件列表')
+        await h.menu(page, '开启绝对时间')
+        await page.waitForFunction(() => document.querySelectorAll('.ghe-abs-time').length === 5 && document.querySelectorAll('.ghe-row-actions').length === 4)
+        t.eq(await counts(), { info: 1, rows: 4, abs: 5 })
+        t.eq(repoRequests(page), 1) // 重新打开走缓存
+        await closePage(page)
+    })
+
+    await t.test('清除缓存：删掉 cache:* 和已知分支，重新请求；token 保留', async () => {
+        const page = await open(browser, GH + '/octo/demo/tree/feature/x/path', {
+            xhr: refsApi(['feature/x']),
+            values: { token: 'ghp_keep', 'cache:repo:other/thing': { at: Date.now(), data: {} } },
+        })
+        await lastContext(page)
+        t.eq(refRequests(page), ['heads/feature'])
+        await h.menu(page, '清除缓存')
+        await page.waitForFunction(() => /已清除 \d+ 条缓存/.test((document.getElementById('ghe-toast') || {}).textContent || ''))
+        t.eq(await page.evaluate(() => Object.keys(localStorage).filter((k) => k.startsWith('__gm:cache:'))), [])
+        t.eq(await page.evaluate(() => JSON.parse(localStorage.getItem('__gm:token'))), 'ghp_keep')
+        // 忘掉了已知分支：同一分支下换页要重新查
+        await page.evaluate(() => history.pushState({}, '', '/octo/demo/tree/feature/x/path/sub'))
+        await lastContext(page, 2)
+        t.eq(refRequests(page), ['heads/feature', 'heads/feature'])
+        await closePage(page)
+    })
+
+    console.log('Turbo 换页幂等')
+
+    async function injected(page) {
+        return page.evaluate(() => ({
+            info: document.querySelectorAll('#ghe-repo-info').length,
+            rows: Array.from(document.querySelectorAll('table[aria-labelledby="folders-and-files"] tbody tr, [role="grid"] [role="row"]')).map((r) => r.querySelectorAll('.ghe-row-actions').length),
+            abs: document.querySelectorAll('.ghe-abs-time').length,
+            relTimes: document.querySelectorAll('relative-time').length,
+            fileActions: document.querySelectorAll('#ghe-file-actions').length,
+        }))
+    }
+
+    /** 模拟 Turbo Drive 换页：拉新页面的 HTML，pushState，整个 <body> 换掉，再发 turbo:render / turbo:load。 */
+    async function turboVisit(page, url) {
+        await page.evaluate(async (url) => {
+            const html = await (await fetch(url)).text()
+            const doc = new DOMParser().parseFromString(html, 'text/html')
+            History.prototype.pushState.call(history, {}, '', url) // 绕开挂钩：只靠 turbo 事件和 DOM 变化
+            document.body.replaceWith(document.adoptNode(doc.body))
+            document.dispatchEvent(new Event('turbo:render'))
+            document.dispatchEvent(new Event('turbo:load'))
+        }, url)
+    }
+
+    await t.test('同一页反复触发 turbo:load / turbo:render / pjax:end / pushState，不会多加按钮', async () => {
+        const page = await open(browser, GH + '/octo/demo', { routes: REPO_ROUTES, xhr: api() })
+        await waitRepoInfo(page)
+        await waitRows(page)
+        const before = await injected(page)
+        for (let i = 0; i < 5; i++) {
+            await page.evaluate(() => {
+                document.dispatchEvent(new Event('turbo:load'))
+                document.dispatchEvent(new Event('turbo:render'))
+                document.dispatchEvent(new Event('pjax:end'))
+                history.replaceState({}, '', location.pathname)
+            })
+            await page.waitForTimeout(220)
+        }
+        const after = await injected(page)
+        t.eq(after, before)
+        t.eq(after, { info: 1, rows: [1, 1, 1, 1, 0], abs: 5, relTimes: 5, fileActions: 0 })
+        await closePage(page)
+    })
+
+    await t.test('Turbo 换整个 body：仓库首页 → 目录页 → 文件页 → 回首页，每页恰好一组', async () => {
+        const page = await open(browser, GH + '/octo/demo', { routes: { ...REPO_ROUTES, ...BLOB_ROUTES, '/octo/demo/tree/feature/x/src': 'tree-react.html' }, xhr: api() })
+        await waitRepoInfo(page)
+        await waitRows(page)
+
+        await turboVisit(page, '/octo/demo/tree/feature/x/src')
+        await page.waitForFunction(() => document.querySelectorAll('.ghe-row-actions').length === 3 && document.getElementById('ghe-repo-info'))
+        await page.waitForTimeout(300)
+        let s = await injected(page)
+        t.eq(s.info, 1)
+        t.eq(s.rows, [0, 1, 0, 1, 1, 0]) // ..、lib、子模块、index.js、日志 #1.md、View all
+        t.eq(s.abs, s.relTimes)
+
+        await turboVisit(page, BLOB)
+        await page.waitForSelector('#ghe-file-actions')
+        await page.waitForTimeout(300)
+        s = await injected(page)
+        t.eq({ info: s.info, fileActions: s.fileActions, abs: s.abs === s.relTimes }, { info: 1, fileActions: 1, abs: true })
+
+        await turboVisit(page, '/octo/demo')
+        await page.waitForFunction(() => document.querySelectorAll('.ghe-row-actions').length === 4)
+        await page.waitForTimeout(300)
+        t.eq(await injected(page), { info: 1, rows: [1, 1, 1, 1, 0], abs: 5, relTimes: 5, fileActions: 0 })
+        t.eq(repoRequests(page), 1)
+        await closePage(page)
+    })
+
     await close()
     t.done()
 })()

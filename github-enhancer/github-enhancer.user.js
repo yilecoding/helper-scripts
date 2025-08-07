@@ -3,10 +3,10 @@
 // @name:zh-CN   GitHub 增强
 // @name:en      GitHub Enhancer
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.08.06.7
-// @description  GitHub 页面增强：仓库页显示仓库大小、默认分支、创建时间（按仓库缓存 1 小时，API 限流时显示恢复时间；可设置 token 提高限额、查看私有仓库）；文件列表每行一键下载单个文件，目录一键复制 git sparse-checkout 命令；文件页复制 raw 链接、复制带行号的永久链接（分支名换成提交 SHA）；「3 天前」这类相对时间旁边显示本地时区的绝对时间；分支名带 / 也能正确识别，适配 Turbo 换页。
-// @description:zh-CN  GitHub 页面增强：仓库页显示仓库大小、默认分支、创建时间（按仓库缓存 1 小时，API 限流时显示恢复时间；可设置 token 提高限额、查看私有仓库）；文件列表每行一键下载单个文件，目录一键复制 git sparse-checkout 命令；文件页复制 raw 链接、复制带行号的永久链接（分支名换成提交 SHA）；「3 天前」这类相对时间旁边显示本地时区的绝对时间；分支名带 / 也能正确识别，适配 Turbo 换页。
-// @description:en  GitHub enhancements: shows repository size, default branch and creation date on repository pages (cached per repository for an hour; shows when the API rate limit resets; an optional token raises the limit and unlocks private repositories); adds a one-click download button to every file in the file list and a "copy git sparse-checkout command" button to every directory; on file pages copies the raw URL or a permalink with line numbers (branch replaced by the commit SHA); shows the absolute local time next to every relative time ("3 days ago"); handles branch names containing slashes and follows Turbo navigation.
+// @version      2025.08.07.8
+// @description  GitHub 页面增强：仓库页显示仓库大小、默认分支、创建时间（按仓库缓存 1 小时，API 限流时显示恢复时间；可设置 token 提高限额、查看私有仓库）；文件列表每行一键下载单个文件，目录一键复制 git sparse-checkout 命令；文件页复制 raw 链接、复制带行号的永久链接（分支名换成提交 SHA）；「3 天前」这类相对时间旁边显示本地时区的绝对时间；各功能可在菜单里单独开关；分支名带 / 也能正确识别，适配 Turbo 换页。
+// @description:zh-CN  GitHub 页面增强：仓库页显示仓库大小、默认分支、创建时间（按仓库缓存 1 小时，API 限流时显示恢复时间；可设置 token 提高限额、查看私有仓库）；文件列表每行一键下载单个文件，目录一键复制 git sparse-checkout 命令；文件页复制 raw 链接、复制带行号的永久链接（分支名换成提交 SHA）；「3 天前」这类相对时间旁边显示本地时区的绝对时间；各功能可在菜单里单独开关；分支名带 / 也能正确识别，适配 Turbo 换页。
+// @description:en  GitHub enhancements: shows repository size, default branch and creation date on repository pages (cached per repository for an hour; shows when the API rate limit resets; an optional token raises the limit and unlocks private repositories); adds a one-click download button to every file in the file list and a "copy git sparse-checkout command" button to every directory; on file pages copies the raw URL or a permalink with line numbers (branch replaced by the commit SHA); shows the absolute local time next to every relative time ("3 days ago"); every feature can be toggled from the menu; handles branch names containing slashes and follows Turbo navigation.
 // @author       壹樂（V：ita1125）
 // @match        https://github.com/*
 // @noframes
@@ -14,8 +14,10 @@
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_deleteValue
+// @grant        GM_listValues
 // @grant        GM_addStyle
 // @grant        GM_registerMenuCommand
+// @grant        GM_unregisterMenuCommand
 // @grant        GM_download
 // @grant        GM_setClipboard
 // @grant        unsafeWindow
@@ -319,7 +321,13 @@
             return found ? adopt(ctx, found) : { ...ctx, source: 'guess' };
         }
 
-        return { parse, key, resolve, startsWithRef };
+        /** 清缓存时一起忘掉：分支可能被删了又建成别的名字。 */
+        function forget() {
+            known.clear();
+            lookups.clear();
+        }
+
+        return { parse, key, resolve, startsWithRef, forget };
     })();
 
     // =========================================================================
@@ -331,7 +339,7 @@
 
         /** 各功能开关，默认全开。 */
         function settings() {
-            return { absTime: true, ...GM_getValue('settings', {}) };
+            return { repoInfo: true, fileRows: true, fileActions: true, absTime: true, ...GM_getValue('settings', {}) };
         }
 
         function saveSettings(patch) {
@@ -347,6 +355,13 @@
 
         function setCache(key, data) {
             GM_setValue(CACHE_PREFIX + key, { at: Date.now(), data });
+        }
+
+        /** 删掉所有缓存条目，返回删了几条。token、开关、限流记录不算缓存。 */
+        function clearCache() {
+            const keys = GM_listValues().filter((k) => k.startsWith(CACHE_PREFIX));
+            keys.forEach((k) => GM_deleteValue(k));
+            return keys.length;
         }
 
         /**
@@ -375,7 +390,7 @@
             GM_setValue('ratelimit', { reset, authed: !!token() });
         }
 
-        return { settings, saveSettings, getCache, setCache, token, setToken, rateLimit, setRateLimit };
+        return { settings, saveSettings, getCache, setCache, clearCache, token, setToken, rateLimit, setRateLimit };
     })();
 
     // =========================================================================
@@ -1004,8 +1019,8 @@
             document.querySelectorAll('.' + CLS).forEach((n) => n.remove());
         }
 
-        function apply() {
-            if (!Store.settings().absTime) return clear();
+        function apply(ctx, on) {
+            if (!on) return clear();
             for (const rt of document.querySelectorAll(SEL)) {
                 if (rt.getAttribute('format') === 'datetime') continue;
                 const dt = rt.getAttribute('datetime');
@@ -1036,7 +1051,36 @@
     // 菜单
     // =========================================================================
 
+    /**
+     * 菜单文字带当前状态（「关闭 xx」/「开启 xx」），切换后注销重注册。
+     * 没有 GM_unregisterMenuCommand 的管理器上重注册会越点越多，
+     * 那种情况退化成固定文字、只注册一次。
+     */
     const Menu = (() => {
+        const canUnregister = typeof GM_unregisterMenuCommand === 'function';
+        let ids = [];
+
+        const TOGGLES = [
+            ['repoInfo', '仓库信息（大小 / 默认分支 / 创建时间）'],
+            ['fileRows', '文件列表的下载 / 检出命令按钮'],
+            ['fileActions', '文件页的复制链接按钮'],
+            ['absTime', '绝对时间'],
+        ];
+
+        function toggle(key) {
+            Store.saveSettings({ [key]: !Store.settings()[key] });
+            refresh();
+            Nav.schedule();
+        }
+
+        function clearCache() {
+            const n = Store.clearCache();
+            Context.forget();
+            RepoInfo.reset();
+            Nav.schedule();
+            toast(`已清除 ${n} 条缓存`);
+        }
+
         function setToken() {
             const input = prompt(
                 '输入 GitHub personal access token。\n'
@@ -1057,13 +1101,23 @@
             Nav.schedule();
         }
 
-        function register() {
+        function refresh() {
             if (typeof GM_registerMenuCommand !== 'function') return;
-            GM_registerMenuCommand('设置 GitHub token', setToken);
-            GM_registerMenuCommand('清除 GitHub token', clearToken);
+            if (ids.length && !canUnregister) return;
+            ids.forEach((id) => GM_unregisterMenuCommand(id));
+            const settings = Store.settings();
+            ids = TOGGLES.map(([key, label]) => GM_registerMenuCommand(
+                canUnregister ? `${settings[key] ? '关闭' : '开启'}${label}` : `开关${label}`,
+                () => toggle(key),
+            ));
+            ids.push(
+                GM_registerMenuCommand('设置 GitHub token', setToken),
+                GM_registerMenuCommand('清除 GitHub token', clearToken),
+                GM_registerMenuCommand('清除缓存', clearCache),
+            );
         }
 
-        return { register };
+        return { refresh };
     })();
 
     // =========================================================================
@@ -1084,10 +1138,17 @@
             // 调试用：上下文一变就打一条，测试也靠它核对解析结果
             console.debug(TAG, '上下文', JSON.stringify(ctx));
         }
-        // 每项独立 try：某一项的选择器在新版页面上失效，不该连累别的功能
-        for (const [name, feature] of [['仓库信息', RepoInfo], ['文件列表按钮', FileRows], ['文件页按钮', FileActions], ['绝对时间', AbsTime]]) {
+        // 每项独立 try：某一项的选择器在新版页面上失效，不该连累别的功能。
+        // 关掉的功能也调一次（传 ctx = null），让它把已经插进去的东西收走
+        const settings = Store.settings();
+        for (const [name, key, feature] of [
+            ['仓库信息', 'repoInfo', RepoInfo],
+            ['文件列表按钮', 'fileRows', FileRows],
+            ['文件页按钮', 'fileActions', FileActions],
+            ['绝对时间', 'absTime', AbsTime],
+        ]) {
             try {
-                feature.apply(ctx);
+                feature.apply(settings[key] ? ctx : null, settings[key]);
             } catch (e) {
                 console.error(TAG, name + '注入失败', e);
             }
@@ -1097,7 +1158,7 @@
     function boot() {
         apply().catch((e) => console.error(TAG, '启动失败', e));
         Nav.start(() => apply().catch((e) => console.error(TAG, '注入失败', e)));
-        Menu.register();
+        Menu.refresh();
     }
 
     boot();
