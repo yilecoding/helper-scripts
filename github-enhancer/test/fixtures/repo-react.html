@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<!-- 仿 2026 年 React 版仓库首页（未登录 SSR 输出精简而来）：仓库头 #repo-title-component、
+     文件列表 table[aria-labelledby=folders-and-files] > tr.react-directory-row（每行有大屏/小屏两个文件名单元格）、
+     react-app 的嵌入数据（initial-path + refInfo）。 -->
+<html lang="en" data-color-mode="auto">
+<head><meta charset="utf-8"><title>GitHub - octo/demo</title></head>
+<body class="logged-in env-production page-responsive">
+<div class="application-main">
+<main id="js-repo-pjax-container">
+<turbo-frame id="repo-content-turbo-frame" target="_top">
+<div id="repo-content-pjax-container" class="repository-content">
+<react-app app-name="code-view" initial-path="/octo/demo" data-ssr="true">
+  <script type="application/json" data-target="react-app.embeddedData">{"payload":{"codeViewRepoRoute":{"path":"/","refInfo":{"name":"main","listCacheKey":"v0:1","canEdit":false,"refType":"branch","currentOid":"1111111111111111111111111111111111111111"},"tree":{"items":[{"name":"docs","path":"docs","contentType":"directory"},{"name":"src","path":"src","contentType":"directory"},{"name":"README.md","path":"README.md","contentType":"file"},{"name":"a b.txt","path":"a b.txt","contentType":"file"}],"totalCount":4}},"codeViewLayoutRoute":{"path":"/","refInfo":{"name":"main","listCacheKey":"v0:1","canEdit":false,"currentOid":"1111111111111111111111111111111111111111"}}},"title":"octo/demo"}</script>
+  <div data-target="react-app.reactRoot">
+    <header data-component="SplitPageLayout.Header">
+      <div class="d-flex flex-wrap flex-items-center gapx-3 gapy-1">
+        <div class="TitleWrapper"><div id="repo-title-component"><div class="d-flex flex-items-center f3 text-normal min-width-0">
+          <img data-component="Avatar" alt="octo" width="24" height="24" data-testid="github-avatar">
+          <div itemprop="name" data-testid="repo-name-wrapper"><strong><a data-testid="repo-name-link" href="/octo/demo">demo</a></strong></div>
+          <span data-testid="repo-visibility-label">Public</span>
+        </div></div></div>
+        <div data-testid="repo-header-actions"><button data-testid="star-button">Star</button></div>
+      </div>
+    </header>
+    <div data-testid="latest-commit-details">Latest commit <relative-time datetime="2024-03-05T06:07:08Z" tense="past">3 days ago</relative-time></div>
+    <h2 class="sr-only" id="folders-and-files">Folders and files</h2>
+    <div data-testid="directory-content">
+    <table aria-labelledby="folders-and-files">
+      <thead><tr><th colspan="2">Name</th><th colspan="1">Name</th><th>Last commit message</th><th>Last commit date</th></tr></thead>
+      <tbody>
+        <tr class="react-directory-row undefined" id="folder-row-0">
+          <td class="react-directory-row-name-cell-small-screen" colspan="2"><div class="react-directory-filename-column"><svg class="octicon octicon-file-directory-fill icon-directory"></svg><div class="overflow-hidden"><div class="react-directory-filename-cell"><div class="react-directory-truncate"><a title="docs" aria-label="docs, (Directory)" class="Link--primary" href="/octo/demo/tree/main/docs">docs</a></div></div></div></div></td>
+          <td class="react-directory-row-name-cell-large-screen" colspan="1"><div class="react-directory-filename-column"><svg class="octicon octicon-file-directory-fill icon-directory"></svg><div class="overflow-hidden"><div class="react-directory-filename-cell"><div class="react-directory-truncate"><a title="docs" aria-label="docs, (Directory)" class="Link--primary" href="/octo/demo/tree/main/docs">docs</a></div></div></div></div></td>
+          <td class="react-directory-row-commit-cell"><a href="/octo/demo/commit/1111111111111111111111111111111111111111">docs: init</a></td>
+          <td><div class="react-directory-commit-age"><relative-time datetime="2024-01-02T03:04:05Z" tense="past">Jan 2, 2024</relative-time></div></td>
+        </tr>
+        <tr class="react-directory-row undefined" id="folder-row-1">
+          <td class="react-directory-row-name-cell-small-screen" colspan="2"><div class="react-directory-filename-column"><svg class="octicon octicon-file-directory-fill icon-directory"></svg><div class="overflow-hidden"><div class="react-directory-filename-cell"><div class="react-directory-truncate"><a title="src" aria-label="src, (Directory)" class="Link--primary" href="/octo/demo/tree/main/src">src</a></div></div></div></div></td>
+          <td class="react-directory-row-name-cell-large-screen" colspan="1"><div class="react-directory-filename-column"><svg class="octicon octicon-file-directory-fill icon-directory"></svg><div class="overflow-hidden"><div class="react-directory-filename-cell"><div class="react-directory-truncate"><a title="src" aria-label="src, (Directory)" class="Link--primary" href="/octo/demo/tree/main/src">src</a></div></div></div></div></td>
+          <td class="react-directory-row-commit-cell"><a href="/octo/demo/commit/1111111111111111111111111111111111111111">feat: src</a></td>
+          <td><div class="react-directory-commit-age"><relative-time datetime="2024-02-03T23:30:00Z" tense="past">Feb 3, 2024</relative-time></div></td>
+        </tr>
+        <tr class="react-directory-row undefined" id="folder-row-2">
+          <td class="react-directory-row-name-cell-small-screen" colspan="2"><div class="react-directory-filename-column"><svg class="octicon octicon-file color-fg-muted"></svg><div class="overflow-hidden"><div class="react-directory-filename-cell"><div class="react-directory-truncate"><a title="README.md" aria-label="README.md, (File)" class="Link--primary" href="/octo/demo/blob/main/README.md">README.md</a></div></div></div></div></td>
+          <td class="react-directory-row-name-cell-large-screen" colspan="1"><div class="react-directory-filename-column"><svg class="octicon octicon-file color-fg-muted"></svg><div class="overflow-hidden"><div class="react-directory-filename-cell"><div class="react-directory-truncate"><a title="README.md" aria-label="README.md, (File)" class="Link--primary" href="/octo/demo/blob/main/README.md">README.md</a></div></div></div></div></td>
+          <td class="react-directory-row-commit-cell"><a href="/octo/demo/commit/1111111111111111111111111111111111111111">docs: readme</a></td>
+          <td><div class="react-directory-commit-age"><relative-time datetime="2024-03-05T06:07:08Z" tense="past">3 days ago</relative-time></div></td>
+        </tr>
+        <tr class="react-directory-row undefined" id="folder-row-3">
+          <td class="react-directory-row-name-cell-small-screen" colspan="2"><div class="react-directory-filename-column"><svg class="octicon octicon-file color-fg-muted"></svg><div class="overflow-hidden"><div class="react-directory-filename-cell"><div class="react-directory-truncate"><a title="a b.txt" aria-label="a b.txt, (File)" class="Link--primary" href="/octo/demo/blob/main/a%20b.txt">a b.txt</a></div></div></div></div></td>
+          <td class="react-directory-row-name-cell-large-screen" colspan="1"><div class="react-directory-filename-column"><svg class="octicon octicon-file color-fg-muted"></svg><div class="overflow-hidden"><div class="react-directory-filename-cell"><div class="react-directory-truncate"><a title="a b.txt" aria-label="a b.txt, (File)" class="Link--primary" href="/octo/demo/blob/main/a%20b.txt">a b.txt</a></div></div></div></div></td>
+          <td class="react-directory-row-commit-cell"><a href="/octo/demo/commit/1111111111111111111111111111111111111111">chore: space</a></td>
+          <td><div class="react-directory-commit-age"><relative-time datetime="2024-03-05T06:07:08Z" tense="past">3 days ago</relative-time></div></td>
+        </tr>
+        <tr class="d-none" data-testid="view-all-files-row"><td colspan="3"><div><button>View all files</button></div></td></tr>
+      </tbody>
+    </table>
+    </div>
+  </div>
+</react-app>
+</div>
+</turbo-frame>
+</main>
+</div>
+</body>
+</html>

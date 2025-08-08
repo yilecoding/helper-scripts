@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<!-- 仿 React 版文件页 /octo/demo/blob/feature/x/src/index.js：
+     头部按钮组 [data-component=ButtonGroup] 里的 a[data-testid=raw-button]（GitHub 自己的 Raw 链接用 refs/heads/ 形式）、
+     嵌入数据 codeViewBlobLayoutRoute.refInfo.currentOid 是当前提交 SHA、分支按钮、面包屑。 -->
+<html lang="en" data-color-mode="auto">
+<head><meta charset="utf-8"><title>demo/src/index.js at feature/x · octo/demo</title></head>
+<body class="logged-in env-production page-responsive">
+<div class="application-main">
+<main id="js-repo-pjax-container">
+<turbo-frame id="repo-content-turbo-frame" target="_top">
+<div id="repo-content-pjax-container" class="repository-content">
+<react-app app-name="code-view" initial-path="/octo/demo/blob/feature/x/src/index.js" data-ssr="true">
+  <script type="application/json" data-target="react-app.embeddedData">{"payload":{"codeViewBlobRoute":{"csv":null,"headerInfo":{"toc":null}},"codeViewLayoutRoute":{"path":"src/index.js","refInfo":{"name":"feature/x","listCacheKey":"v0:2","canEdit":false,"currentOid":"2222222222222222222222222222222222222222"}},"codeViewBlobLayoutRoute":{"refInfo":{"name":"feature/x","listCacheKey":"v0:2","canEdit":false,"refType":"branch","currentOid":"2222222222222222222222222222222222222222"},"path":"src/index.js"}},"title":"demo/src/index.js at feature/x"}</script>
+  <div data-target="react-app.reactRoot">
+    <div class="react-code-view-header-mb--narrow mr-2">
+      <button type="button" aria-haspopup="true" aria-label="feature/x branch" data-testid="anchor-button" class="ref-selector-class" id="ref-picker-repos-header-ref-selector"><span>feature/x</span></button>
+    </div>
+    <nav data-testid="breadcrumbs"><a data-testid="breadcrumbs-repo-link" href="/octo/demo/tree/feature/x">demo</a> / <a href="/octo/demo/tree/feature/x/src">src</a> / <h1 data-testid="breadcrumbs-filename">index.js</h1></nav>
+    <div data-testid="latest-commit-details">Latest commit <relative-time datetime="2024-05-06T07:08:09Z" tense="past">last week</relative-time></div>
+    <div class="react-blob-view-header-sticky">
+      <div class="react-code-size-details-in-header"><div data-testid="blob-size"><span>12 lines (10 loc) · 300 Bytes</span></div></div>
+      <div class="react-blob-header-edit-and-raw-actions">
+        <div class="prc-ButtonGroup-ButtonGroup-vFUrY" data-component="ButtonGroup">
+          <div class="prc-ButtonGroup-Item-PqvDl"><a data-component="LinkButton" href="https://github.com/octo/demo/raw/refs/heads/feature/x/src/index.js" data-testid="raw-button">Raw</a></div>
+          <div class="prc-ButtonGroup-Item-PqvDl"><button type="button" data-testid="copy-raw-button" aria-label="Copy raw file">copy</button></div>
+          <div class="prc-ButtonGroup-Item-PqvDl"><button type="button" data-testid="download-raw-button" aria-label="Download raw file">dl</button></div>
+        </div>
+        <button type="button" data-testid="more-file-actions-button">...</button>
+      </div>
+    </div>
+    <section aria-labelledby="file-name-id-wide">
+      <div class="react-code-lines">
+        <div data-line-number="1" class="react-line-number">1</div><div class="react-code-text">const a = 1</div>
+        <div data-line-number="2" class="react-line-number">2</div><div class="react-code-text">export default a</div>
+      </div>
+    </section>
+  </div>
+</react-app>
+</div>
+</turbo-frame>
+</main>
+</div>
+</body>
+</html>

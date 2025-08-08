@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<!-- 仿 2022 年前后的服务端渲染目录页（pjax 时代）：没有 react-app 嵌入数据。
+     仓库头 #repository-container-header；分支选择 #branch-select-menu 里的 [data-menu-button]；面包屑 #blob-path .js-repo-root；
+     文件列表是 div[role=grid] > div[role=row].Box-row.js-navigation-item，文件名链接 a.js-navigation-open。 -->
+<html lang="en">
+<head><meta charset="utf-8"><title>demo/src at feature/x · octo/demo</title></head>
+<body class="logged-in env-production page-responsive">
+<div class="application-main">
+<main id="js-repo-pjax-container" data-pjax-container>
+  <div id="repository-container-header" class="pt-3 hide-full-screen" data-turbo-replace>
+    <div class="d-flex flex-wrap flex-justify-end mb-3 px-3 px-md-4 px-lg-5">
+      <div class="flex-auto min-width-0 width-fit mr-3"><h2 class="d-flex flex-wrap flex-items-center wb-break-word f3 text-normal">
+        <span class="author flex-self-stretch" itemprop="author"><a class="url fn" rel="author" href="/octo">octo</a></span><span class="mx-1 flex-self-stretch color-fg-muted">/</span>
+        <strong itemprop="name" class="mr-2 flex-self-stretch"><a data-pjax="#repo-content-pjax-container" href="/octo/demo">demo</a></strong>
+      </h2></div>
+    </div>
+  </div>
+  <turbo-frame id="repo-content-turbo-frame" target="_top" data-turbo-action="advance">
+  <div id="repo-content-pjax-container" class="repository-content">
+    <div class="file-navigation mb-3 d-flex flex-items-start">
+      <details class="details-reset details-overlay mr-0 mb-0" id="branch-select-menu">
+        <summary class="btn css-truncate" data-hotkey="w" title="Switch branches or tags">
+          <svg class="octicon octicon-git-branch"></svg>
+          <span class="css-truncate-target" data-menu-button>feature/x</span>
+          <span class="dropdown-caret"></span>
+        </summary>
+      </details>
+      <h2 id="blob-path" class="breadcrumb flex-auto flex-self-center min-width-0 text-normal mx-2">
+        <span class="js-repo-root text-bold"><span class="js-path-segment d-inline-block wb-break-all"><a data-pjax="#repo-content-pjax-container" href="/octo/demo/tree/feature/x"><span>demo</span></a></span></span><span class="separator">/</span><strong class="final-path">src</strong><span class="separator">/</span>
+      </h2>
+    </div>
+    <div class="Box mb-3">
+      <div class="Box-header position-relative">latest commit <relative-time datetime="2023-06-07T08:09:10Z" class="no-wrap">Jun 7, 2023</relative-time></div>
+      <h2 id="files" class="sr-only">Files</h2>
+      <div role="grid" aria-labelledby="files" class="Details-content--hidden-not-important js-navigation-container js-active-navigation-container d-block">
+      <div class="sr-only" role="row"><div role="columnheader">Type</div><div role="columnheader">Name</div></div>
+      <div role="row" class="Box-row Box-row--focus-gray p-0 d-flex js-navigation-item">
+        <div role="rowheader" class="flex-auto min-width-0 d-flex px-3 py-2"><a rel="nofollow" title="Go to parent directory" class="js-navigation-open Link--primary" href="/octo/demo/tree/feature/x"><span class="text-bold text-center d-inline-block">. .</span></a></div>
+      </div>
+      <div role="row" class="Box-row Box-row--focus-gray py-2 d-flex position-relative js-navigation-item">
+        <div role="gridcell" class="mr-3 flex-shrink-0" style="width: 16px;"><svg aria-label="Directory" class="octicon"></svg></div>
+        <div role="rowheader" class="flex-auto min-width-0 col-md-2 mr-3"><span class="css-truncate css-truncate-target d-block width-fit"><a class="js-navigation-open Link--primary" title="lib" data-pjax="#repo-content-pjax-container" data-turbo-frame="repo-content-turbo-frame" href="/octo/demo/tree/feature/x/src/lib">lib</a></span></div>
+        <div role="gridcell" class="flex-auto min-width-0 d-none d-md-block col-5 mr-3"><span class="css-truncate css-truncate-target d-block width-fit"><a data-pjax="true" title="update" class="Link--secondary" href="/octo/demo/commit/4444444444444444444444444444444444444444">update</a></span></div>
+        <div role="gridcell" class="color-fg-muted text-right" style="width:100px;"><relative-time datetime="2023-06-07T08:09:10Z" class="no-wrap">2023-06-07T08:09:10Z</relative-time></div>
+      </div>
+      <div role="row" class="Box-row Box-row--focus-gray py-2 d-flex position-relative js-navigation-item">
+        <div role="gridcell" class="mr-3 flex-shrink-0" style="width: 16px;"><svg aria-label="File" class="octicon"></svg></div>
+        <div role="rowheader" class="flex-auto min-width-0 col-md-2 mr-3"><span class="css-truncate css-truncate-target d-block width-fit"><a class="js-navigation-open Link--primary" title="index.js" data-pjax="#repo-content-pjax-container" data-turbo-frame="repo-content-turbo-frame" href="/octo/demo/blob/feature/x/src/index.js">index.js</a></span></div>
+        <div role="gridcell" class="flex-auto min-width-0 d-none d-md-block col-5 mr-3"><span class="css-truncate css-truncate-target d-block width-fit"><a data-pjax="true" title="update" class="Link--secondary" href="/octo/demo/commit/4444444444444444444444444444444444444444">update</a></span></div>
+        <div role="gridcell" class="color-fg-muted text-right" style="width:100px;"><relative-time datetime="2023-06-07T08:09:10Z" class="no-wrap">2023-06-07T08:09:10Z</relative-time></div>
+      </div>
+      </div>
+    </div>
+  </div>
+  </turbo-frame>
+</main>
+</div>
+</body>
+</html>
