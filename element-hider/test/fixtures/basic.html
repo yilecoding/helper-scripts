@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>新闻首页</title>
+<style>
+    body { margin: 0; font: 14px/1.6 sans-serif; }
+    .wrap { width: 960px; margin: 0 auto; }
+    .ad-banner { height: 90px; background: #fc0; }
+    .news li { margin: 4px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+    <header id="site-header"><h1>新闻首页</h1></header>
+    <div class="ad-banner" id="top-ad">广告位</div>
+    <script>
+        // 解析到这里时还在 loading，DOMContentLoaded 远没到：记下广告此刻的样子，测「不闪烁」
+        window.__early = { state: document.readyState, display: getComputedStyle(document.getElementById('top-ad')).display };
+    </script>
+    <ul class="news">
+        <li><a href="/a/1">第一条新闻</a></li>
+        <li><a href="/a/2">第二条新闻</a></li>
+    </ul>
+    <div id="feed"></div>
+</div>
+<script>
+    // 模拟信息流晚到的广告
+    setTimeout(() => {
+        const ad = document.createElement('div');
+        ad.className = 'ad-banner';
+        ad.id = 'late-ad';
+        ad.textContent = '晚到的广告';
+        document.getElementById('feed').appendChild(ad);
+        window.__lateInserted = true;
+    }, 300);
+</script>
+</body>
+</html>
