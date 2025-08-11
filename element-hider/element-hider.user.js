@@ -3,7 +3,7 @@
 // @name:zh-CN   网页元素屏蔽
 // @name:en      Element Hider — Pick and Hide Annoying Page Elements
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.08.11.2
+// @version      2025.08.11.3
 // @description  点选网页上的广告、浮窗、推荐栏等元素一键隐藏：按站点（或整个主域名）记住规则，页面加载第一刻就用样式表隐藏，不闪烁，对之后动态插入的元素同样生效。
 // @description:zh-CN  点选网页上的广告、浮窗、推荐栏等元素一键隐藏：按站点（或整个主域名）记住规则，页面加载第一刻就用样式表隐藏，不闪烁，对之后动态插入的元素同样生效。
 // @description:en  Point at an ad, popup or recommendation box and hide it for good: rules are remembered per site (or for the whole registrable domain) and applied as a stylesheet from the very first moment of page load, so there is no flash, and elements inserted later are hidden too.
@@ -15,6 +15,7 @@
 // @grant        GM_setValue
 // @grant        GM_deleteValue
 // @grant        GM_addStyle
+// @grant        GM_registerMenuCommand
 // @grant        unsafeWindow
 // @license      CC BY-NC-SA
 // @run-at       document-start
@@ -265,8 +266,14 @@
 
             const path = [step(el)];
             for (let cur = el.parentElement; cur && cur !== document.documentElement; cur = cur.parentElement) {
-                // 开头一级只有标签 + 序号时（div:nth-of-type(3) > span）碰巧唯一也不收：页面上任何地方多一个 div 就指错，继续往上找锚点
-                if (/[.[#]/.test(path[0]) && isUniqueFor(path.join(' > '), el)) return path.join(' > ');
+                /*
+                 * 不带锚点的路径只在开头一级「有类名、没有序号」时才收（div.promo > span）。
+                 * div:nth-of-type(3) > span、div.widget:nth-of-type(2) 碰巧唯一也不收：
+                 * 页面别处多一个同样的结构就指错，继续往上找有 id / 稳定属性的锚点。
+                 */
+                if (/[.[#]/.test(path[0]) && !path[0].includes(':nth-of-type') && isUniqueFor(path.join(' > '), el)) {
+                    return path.join(' > ');
+                }
                 if (cur === document.body) break;
                 for (const c of selfCandidates(cur)) {
                     if (c.generic) continue;
@@ -367,7 +374,314 @@
         return { apply };
     })();
 
+    // =========================================================================
+    // 界面宿主（shadow DOM）
+    // =========================================================================
+
+    /*
+     * 一个铺满视口、自身 pointer-events: none 的宿主：高亮框画在里面，不拦截鼠标，
+     * 拾取时 elementFromPoint 打得到下面的页面元素；只有面板、提示条这些要点的东西单独开 pointer-events。
+     */
+    const UI = (() => {
+        let host = null;
+        let root = null;
+        let boxes = null;
+        let tracked = [];       // 正在高亮的元素：滚动 / 缩放时重算位置
+        let raf = 0;
+
+        const CSS = `
+            :host { all: initial; }
+            * { box-sizing: border-box; }
+            .boxes, .box { position: fixed; pointer-events: none; }
+            .boxes { inset: 0; }
+            .box { border: 2px solid #e5484d; background: rgba(229, 72, 77, .18); border-radius: 2px; }
+            .box.match { border-color: #f5a524; background: rgba(245, 165, 36, .16); }
+            .box .label {
+                position: absolute; left: -2px; bottom: 100%; margin-bottom: 2px; padding: 1px 6px; white-space: nowrap;
+                font: 12px/18px ui-monospace, Menlo, Consolas, monospace; color: #fff; background: #e5484d; border-radius: 3px;
+                max-width: 60vw; overflow: hidden; text-overflow: ellipsis;
+            }
+            .box.flip .label { bottom: auto; top: 100%; margin: 2px 0 0; }
+            .tip {
+                position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); pointer-events: none;
+                padding: 6px 14px; border-radius: 6px; background: rgba(24, 24, 27, .92); color: #fafafa;
+                font: 13px/20px system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; white-space: nowrap;
+            }
+            .card {
+                position: fixed; right: 16px; bottom: 16px; width: 420px; max-width: calc(100vw - 32px); pointer-events: auto;
+                padding: 12px 14px; border-radius: 8px; background: #fff; color: #18181b; border: 1px solid #e4e4e7;
+                box-shadow: 0 8px 28px rgba(0, 0, 0, .18);
+                font: 13px/1.5 system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+            }
+            .card h3 { margin: 0 0 8px; font-size: 14px; }
+            .card .row { display: flex; gap: 8px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
+            .card .grow { flex: 1; }
+            .card code, .card textarea {
+                font: 12px/1.5 ui-monospace, Menlo, Consolas, monospace; word-break: break-all;
+            }
+            button {
+                font: inherit; padding: 3px 10px; border-radius: 5px; cursor: pointer;
+                border: 1px solid #d4d4d8; background: #fafafa; color: inherit;
+            }
+            button.primary { background: #e5484d; border-color: #e5484d; color: #fff; }
+            button:disabled { opacity: .5; cursor: not-allowed; }
+            @media (prefers-color-scheme: dark) {
+                .card { background: #18181b; color: #fafafa; border-color: #3f3f46; }
+                button { background: #27272a; border-color: #3f3f46; }
+            }
+        `;
+
+        function ensure() {
+            if (host && host.isConnected) return root;
+            host = document.createElement('element-hider-ui');
+            // 内联 !important：用户自己的规则（比如 `html > *`）或页面样式都盖不过，界面不会把自己藏起来
+            host.style.cssText = 'all:initial!important;display:block!important;position:fixed!important;inset:0!important;'
+                + 'z-index:2147483647!important;pointer-events:none!important;';
+            root = host.attachShadow({ mode: 'open' });
+            const style = document.createElement('style');
+            style.textContent = CSS;
+            boxes = document.createElement('div');
+            boxes.className = 'boxes';
+            root.append(style, boxes);
+            document.documentElement.appendChild(host);
+            addEventListener('scroll', schedule, { capture: true, passive: true });
+            addEventListener('resize', schedule, { passive: true });
+            return root;
+        }
+
+        function el(tag, props, children) {
+            const n = document.createElement(tag);
+            Object.assign(n, props || {});
+            for (const c of children || []) n.append(c);
+            return n;
+        }
+
+        /** 页面坐标处的页面元素：界面自己（面板、提示条）不算。 */
+        function pageElementAt(x, y) {
+            const t = document.elementFromPoint(x, y);
+            return !t || t === host ? null : t;
+        }
+
+        function isOwn(e) {
+            return !!host && e.composedPath().includes(host);
+        }
+
+        function describe(node) {
+            const cls = [...node.classList].slice(0, 3).map(c => '.' + c).join('');
+            const r = node.getBoundingClientRect();
+            return `${node.localName}${node.id ? '#' + node.id : ''}${cls}  ${Math.round(r.width)}×${Math.round(r.height)}`;
+        }
+
+        /** 高亮一组元素。kind: 'hover'（拾取中的那个，带标签）/ 'match'（选择器匹配到的）。 */
+        function highlight(list, kind) {
+            ensure();
+            tracked = list.map(node => ({ node, kind }));
+            draw();
+        }
+
+        function draw() {
+            raf = 0;
+            if (!boxes) return;
+            boxes.textContent = '';
+            for (const { node, kind } of tracked) {
+                if (!node.isConnected) continue;
+                const r = node.getBoundingClientRect();
+                const b = el('div', { className: 'box ' + kind });
+                b.style.cssText = `left:${r.left}px;top:${r.top}px;width:${r.width}px;height:${r.height}px;`;
+                if (kind === 'hover') {
+                    if (r.top < 24) b.classList.add('flip');
+                    b.append(el('div', { className: 'label', textContent: describe(node) }));
+                }
+                boxes.append(b);
+            }
+        }
+
+        function schedule() {
+            if (!raf && tracked.length) raf = requestAnimationFrame(draw);
+        }
+
+        function clear() {
+            tracked = [];
+            if (boxes) boxes.textContent = '';
+        }
+
+        /** 挂一个带 class 的浮层（同 class 的旧的先移除），返回它。 */
+        function mount(className, children) {
+            ensure();
+            unmount(className);
+            const node = el('div', { className }, children);
+            root.append(node);
+            return node;
+        }
+
+        /* 不能写 root.querySelectorAll(':scope > .x')：shadow root 是 DocumentFragment，:scope 在它上面什么都不匹配 */
+        function unmount(className) {
+            if (root) [...root.children].filter(n => n.classList.contains(className)).forEach(n => n.remove());
+        }
+
+        return { ensure, el, pageElementAt, isOwn, highlight, clear, mount, unmount, get host() { return host; } };
+    })();
+
+    // =========================================================================
+    // 拾取模式
+    // =========================================================================
+
+    const Picker = (() => {
+        let active = false;
+        let base = null;        // 鼠标下的元素
+        let cur = null;         // 当前选中的层级（滚轮 / 方向键会在 base 的祖先间移动）
+        let trail = [];         // 往上走过的层级，往下走时原路返回
+
+        function start() {
+            if (active) return;
+            Confirm.close();
+            active = true;
+            base = cur = null;
+            trail = [];
+            UI.mount('tip', [UI.el('span', { textContent: '拾取模式：点击选中 · 滚轮 / ↑↓ 切换父子层级 · Esc 退出' })]);
+            log('进入拾取模式');
+        }
+
+        function stop() {
+            active = false;
+            base = cur = null;
+            UI.clear();
+            UI.unmount('tip');
+        }
+
+        function setCurrent(node) {
+            cur = node;
+            UI.highlight([node], 'hover');
+        }
+
+        function up() {
+            if (!cur || cur === document.documentElement || !cur.parentElement) return;
+            trail.push(cur);
+            setCurrent(cur.parentElement);
+        }
+
+        function down() {
+            if (!cur) return;
+            if (trail.length) return setCurrent(trail.pop());
+            const child = [...cur.children].find(c => c !== UI.host && c.getBoundingClientRect().width > 0);
+            if (child) setCurrent(child);
+        }
+
+        function choose() {
+            const node = cur;
+            stop();
+            if (node) Confirm.open(node);
+        }
+
+        function onMove(e) {
+            if (!active) return;
+            const node = UI.pageElementAt(e.clientX, e.clientY);
+            if (!node || node === base) return;
+            base = node;
+            trail = [];
+            setCurrent(node);
+        }
+
+        /*
+         * 拾取时按下的鼠标不能让页面收到：链接会跳转、按钮会提交，mousedown 上挂的菜单会弹出来。
+         * 这些监听在 document-start 时就挂在 window 的捕获阶段，比页面自己的任何监听都早，
+         * 等进了拾取模式再挂就排在页面的捕获监听后面，拦不住。
+         */
+        function onPointer(e) {
+            if (!active || UI.isOwn(e)) return;
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            if (e.type === 'click') {
+                if (!cur) onMove(e);
+                choose();
+            }
+        }
+
+        function onWheel(e) {
+            if (!active || !cur || UI.isOwn(e)) return;
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            if (e.deltaY < 0) up();
+            else if (e.deltaY > 0) down();
+        }
+
+        function onKey(e) {
+            if (!active) return false;
+            const act = { Escape: stop, ArrowUp: up, ArrowDown: down, Enter: choose }[e.key];
+            if (!act) return false;
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            act();
+            return true;
+        }
+
+        function install() {
+            addEventListener('mousemove', onMove, true);
+            for (const type of ['pointerdown', 'pointerup', 'mousedown', 'mouseup', 'click', 'dblclick', 'auxclick', 'contextmenu']) {
+                addEventListener(type, onPointer, true);
+            }
+            addEventListener('wheel', onWheel, { capture: true, passive: false });
+        }
+
+        return { start, stop, install, onKey, get active() { return active; } };
+    })();
+
+    // =========================================================================
+    // 确认面板
+    // =========================================================================
+
+    const Confirm = (() => {
+        function open(node) {
+            const sel = Gen.selectorFor(node);
+            const code = UI.el('code', { className: 'sel', textContent: sel });
+            const hideBtn = UI.el('button', { className: 'primary', textContent: '隐藏' });
+            hideBtn.dataset.act = 'hide';
+            const cancelBtn = UI.el('button', { textContent: '取消' });
+            cancelBtn.dataset.act = 'cancel';
+            hideBtn.addEventListener('click', () => {
+                Store.add(SCOPE_SITE, sel);
+                Styler.apply();
+                close();
+            });
+            cancelBtn.addEventListener('click', close);
+            UI.mount('card confirm', [
+                UI.el('h3', { textContent: '隐藏这个元素？' }),
+                code,
+                UI.el('div', { className: 'row' }, [UI.el('span', { className: 'grow' }), cancelBtn, hideBtn]),
+            ]);
+            UI.highlight([node], 'match');
+        }
+
+        function close() {
+            UI.unmount('confirm');
+            UI.clear();
+        }
+
+        return { open, close };
+    })();
+
+    // =========================================================================
+    // 启动
+    // =========================================================================
+
     Styler.apply();
+    Picker.install();
+
+    /*
+     * 快捷键按 e.code 认：macOS 上 Alt+Shift+H 的 e.key 是「Ó」，按 e.key 判断永远不触发。
+     * 拾取模式里的 Esc / 方向键也在这里分发，同样要抢在页面之前（页面的 Esc 会关它自己的弹窗）。
+     */
+    addEventListener('keydown', e => {
+        if (Picker.onKey(e)) return;
+        if (e.altKey && e.shiftKey && !e.ctrlKey && !e.metaKey && e.code === 'KeyH') {
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            if (Picker.active) Picker.stop();
+            else Picker.start();
+        }
+    }, true);
+
+    GM_registerMenuCommand('🎯 拾取要隐藏的元素（Alt+Shift+H）', () => Picker.start());
 
     /*
      * 调试钩子：GM 存储里 debug 为 true 时，把选择器生成器挂到页面上，

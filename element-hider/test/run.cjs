@@ -48,6 +48,59 @@ function rule(selector) {
     return { selector, created: 1 }
 }
 
+/** 鼠标移到元素中心（拾取靠真实的 mousemove → elementFromPoint）。 */
+async function hover(page, sel) {
+    const b = await page.locator(sel).first().boundingBox()
+    await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2)
+}
+
+/** 悬停高亮框：{ label, 对应元素的矩形是否吻合 }。没有框为 null。 */
+function hoverBox(page) {
+    return page.evaluate(() => {
+        const host = document.querySelector('element-hider-ui')
+        const box = host && host.shadowRoot.querySelector('.box.hover')
+        if (!box) return null
+        const n = v => Math.round(parseFloat(v))
+        return { label: box.querySelector('.label').textContent, left: n(box.style.left), top: n(box.style.top), width: n(box.style.width) }
+    })
+}
+
+function rect(page, sel) {
+    return page.evaluate(s => {
+        const r = document.querySelector(s).getBoundingClientRect()
+        return { left: Math.round(r.left), top: Math.round(r.top), width: Math.round(r.width) }
+    }, sel)
+}
+
+/** 界面里某个浮层（.tip / .confirm ...）在不在。 */
+function shown(page, cls) {
+    return page.evaluate(c => {
+        const host = document.querySelector('element-hider-ui')
+        return !!(host && host.shadowRoot.querySelector('.' + c))
+    }, cls)
+}
+
+/** 确认面板上的选择器。 */
+function confirmSelector(page) {
+    return page.evaluate(() => {
+        const el = document.querySelector('element-hider-ui').shadowRoot.querySelector('.confirm .sel')
+        return el.value !== undefined ? el.value : el.textContent
+    })
+}
+
+/** 本源 GM 存储里的某个键（harness 存在 localStorage 的 __gm: 前缀下）。 */
+function gmValue(page, key) {
+    return page.evaluate(k => JSON.parse(localStorage.getItem('__gm:' + k)), key)
+}
+
+/** 走一遍拾取：进入 → 悬停 → 点击，停在确认面板。 */
+async function pick(page, sel) {
+    await h.menu(page, '拾取')
+    await hover(page, sel)
+    await page.mouse.down()
+    await page.mouse.up()
+}
+
 async function main() {
     const { browser, close } = await h.setup(FIXTURES)
 
@@ -87,6 +140,74 @@ async function main() {
         })
         t.eq(await display(page, '#top-ad'), 'none')
         t.eq(await display(page, '.news'), 'block', '未闭合注释没有吞掉后面的东西，也没有误伤')
+        await page.close()
+    })
+
+    console.log('拾取')
+    await t.test('菜单进入拾取：悬停高亮、点击选中，页面收不到点击、链接不跳转', async () => {
+        const page = await open(browser, 'pick.html')
+        await h.menu(page, '拾取')
+        t.assert(await shown(page, 'tip'), '有拾取提示条')
+        await hover(page, '#inline-link')
+        const box = await hoverBox(page)
+        t.assert(box && box.label.startsWith('a#inline-link'), JSON.stringify(box))
+        t.eq({ left: box.left, top: box.top, width: box.width }, await rect(page, '#inline-link'), '高亮框贴着元素')
+        await page.mouse.down()
+        await page.mouse.up()
+        await page.waitForTimeout(100)
+        t.eq(page.url(), SITE + '/pick.html', '链接没有跳转')
+        t.eq(await page.evaluate(() => [window.__pageClicks, window.__pageDowns]), [0, 0], '页面的点击 / mousedown 监听没收到')
+        t.eq(await shown(page, 'tip'), false, '选中后退出拾取')
+        t.eq(await confirmSelector(page), '#inline-link')
+        t.eq(h.errors(page).map(String), [])
+        await page.close()
+    })
+
+    await t.test('快捷键进入；滚轮往上选父级、↓ 原路返回、再 ↓ 进子级；Esc 退出', async () => {
+        const page = await open(browser, 'pick.html')
+        await page.keyboard.press('Alt+Shift+H')
+        t.assert(await shown(page, 'tip'), '快捷键进入拾取')
+        await hover(page, '.promo-link img')
+        t.assert((await hoverBox(page)).label.startsWith('img.sc-dkPtRN'))
+        await page.mouse.wheel(0, -100)
+        t.assert((await hoverBox(page)).label.startsWith('a.promo-link'), '滚轮上 → 父级')
+        await page.keyboard.press('ArrowUp')
+        t.assert((await hoverBox(page)).label.startsWith('div.widget.sc-gsDKAQ'), '↑ → 再上一级')
+        t.eq(await page.evaluate(() => window.scrollY), 0, '滚轮没有滚动页面')
+        await page.keyboard.press('ArrowDown')
+        await page.keyboard.press('ArrowDown')
+        t.assert((await hoverBox(page)).label.startsWith('img'), '原路回到最初的元素')
+        await page.keyboard.press('Escape')
+        t.eq(await shown(page, 'tip'), false)
+        t.eq(await hoverBox(page), null, 'Esc 后高亮清掉')
+        await page.mouse.click(5, 5)
+        t.eq(await shown(page, 'confirm'), false, '退出后点击不再拾取')
+        await page.close()
+    })
+
+    await t.test('选父级后点击：生成的选择器指向父级，只匹配它', async () => {
+        const page = await open(browser, 'pick.html')
+        await h.menu(page, '拾取')
+        await hover(page, '.promo-link img')
+        await page.mouse.wheel(0, -100)
+        await page.mouse.wheel(0, -100)
+        await page.mouse.down()
+        await page.mouse.up()
+        const sel = await confirmSelector(page)
+        t.eq(sel, 'div.side > div.widget:nth-of-type(2)')
+        t.eq(await page.evaluate(s => document.querySelectorAll(s).length, sel), 1)
+        await page.close()
+    })
+
+    await t.test('确认隐藏：元素消失、规则入库；刷新后在 DOMContentLoaded 之前就已隐藏', async () => {
+        const page = await open(browser, 'basic.html')
+        await pick(page, '#top-ad')
+        t.eq(await confirmSelector(page), '#top-ad')
+        await page.locator('element-hider-ui [data-act=hide]').click()
+        t.eq(await display(page, '#top-ad'), 'none')
+        t.eq((await gmValue(page, 'rules:www.example.com')).map(r => r.selector), ['#top-ad'])
+        await page.reload()
+        t.eq(await page.evaluate(() => window.__early), { state: 'loading', display: 'none' })
         await page.close()
     })
 
@@ -130,7 +251,7 @@ async function main() {
         t.eq(await gen('[data-testid]'), { sel: '[data-testid="close-ad"]', onlyTarget: true })
         t.eq(await gen('[aria-label]'), { sel: 'button[aria-label="关闭弹窗"]', onlyTarget: true })
         t.eq(await gen('a[href="https://github.com/yilecoding"]'), { sel: 'a[href="https://github.com/yilecoding"]', onlyTarget: true })
-        t.eq(await gen('#div-gpt-ad-1690000000001-0'), { sel: 'div.gpt-slot:nth-of-type(2)', onlyTarget: true })
+        t.eq(await gen('#div-gpt-ad-1690000000001-0'), { sel: 'div.slots > div.gpt-slot:nth-of-type(2)', onlyTarget: true })
         t.eq(await gen('aside ._9kLm2nOp'), { sel: '#sidebar > div:nth-of-type(2)', onlyTarget: true })
         t.eq(await gen('aside .jss123'), { sel: '#sidebar > div:nth-of-type(3) > span', onlyTarget: true })
         t.eq(await gen('body > div:last-child span'), { sel: 'body > div:nth-of-type(3) > div > span', onlyTarget: true })
