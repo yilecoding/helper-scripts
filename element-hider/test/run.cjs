@@ -90,6 +90,78 @@ async function main() {
         await page.close()
     })
 
+    console.log('随机 id / 类名判据')
+    await t.test('真实风格样例：生成的判为随机，人写的判为稳定', async () => {
+        const random = [
+            // CSS-in-JS
+            'css-1x2y3z', 'css-dev-only-do-not-override-1x2y3z', 'css-9kq1ab-Button', 'sc-bdVaJa', 'sc-1a2b3c4d-0',
+            'kZRDVx', 'iVXCSc', 'hGkUyx', 'bCDiOn', 'c-dhzjXW', 'c-PJLV', 'jss123', 'makeStyles-root-12',
+            'svelte-1xyz2ab', 'astro-J7PV25F6',
+            // CSS Modules
+            'Header_title__3xYz1', 'styles_button__1hiof570', 'Button__root___2X3yZ', '_3xYz1aBc', 'title-module--title--3xYz1',
+            // id
+            ':r1:', '«r2»', '_r_3_', 'radix-:r3:', 'ember123', 'mui-38291', 'react-select-2-input', 'j_id12',
+            '12345', '8f14e45f-ceea-4e7a-9f3c-1b2c3d4e5f60', 'div-gpt-ad-1690000000000-0', 'a3f9c01bd2', 'V1StGXR8Z5jdHi6B',
+            'x-1a2b3c',
+        ]
+        const stable = [
+            'ad-banner', 'sidebar', 'promo-box', 'card__title', 'btn--primary', 'MuiButton-root', 'ant-btn', 'navBarItem',
+            'userName', 'NavBar', 'col-md-6', 'mt-4', 'grid-cols-12', 'v2-header', 'top-ad', 'promo_box', 'header', 'h1',
+            'main-content', 'ad_slot_top', 'comments', 'gpt-slot', 'feed-item', 'is-sticky', 'hover:bg-red-500', 'w-1/2',
+            'video-card', 'bili-video-card', 'Post', 'RichText', 'Card-section',
+        ]
+        const page = await open(browser, 'basic.html', { values: { debug: true } })
+        const got = await page.evaluate(list => list.map(s => window.__elementHider.looksRandom(s)), [...random, ...stable])
+        const wrong = [...random, ...stable].filter((s, i) => got[i] !== i < random.length)
+        t.eq(wrong, [], '判错的样例')
+        await page.close()
+    })
+
+    console.log('选择器生成')
+    await t.test('稳定属性优先，随机类名 / id 被跳过，生成结果只匹配目标', async () => {
+        const page = await open(browser, 'gen.html', { values: { debug: true } })
+        const gen = sel => page.evaluate(s => {
+            const el = document.querySelector(s)
+            const out = window.__elementHider.selectorFor(el)
+            const all = [...document.querySelectorAll(out)]
+            return { sel: out, onlyTarget: all.length === 1 && all[0] === el }
+        }, sel)
+        t.eq(await gen('.promo-box'), { sel: 'div.promo-box', onlyTarget: true })
+        t.eq(await gen('[data-testid]'), { sel: '[data-testid="close-ad"]', onlyTarget: true })
+        t.eq(await gen('[aria-label]'), { sel: 'button[aria-label="关闭弹窗"]', onlyTarget: true })
+        t.eq(await gen('a[href="https://github.com/yilecoding"]'), { sel: 'a[href="https://github.com/yilecoding"]', onlyTarget: true })
+        t.eq(await gen('#div-gpt-ad-1690000000001-0'), { sel: 'div.gpt-slot:nth-of-type(2)', onlyTarget: true })
+        t.eq(await gen('aside ._9kLm2nOp'), { sel: '#sidebar > div:nth-of-type(2)', onlyTarget: true })
+        t.eq(await gen('aside .jss123'), { sel: '#sidebar > div:nth-of-type(3) > span', onlyTarget: true })
+        t.eq(await gen('body > div:last-child span'), { sel: 'body > div:nth-of-type(3) > div > span', onlyTarget: true })
+        await page.close()
+    })
+
+    await t.test('广告联盟链接：生成 href 前缀规则，匹配同类广告、不碰站内链接', async () => {
+        const page = await open(browser, 'gen.html', { values: { debug: true } })
+        const r = await page.evaluate(() => {
+            const sel = window.__elementHider.selectorFor(document.querySelector('a[href*="id=2"]'))
+            return { sel, texts: [...document.querySelectorAll(sel)].map(a => a.textContent) }
+        })
+        t.eq(r, { sel: 'a[href^="https://ads.adnet.example/"]', texts: ['广告一', '广告二', '广告三'] })
+        await page.close()
+    })
+
+    await t.test('选择器合法性：非法的给出原因而不是抛错', async () => {
+        const page = await open(browser, 'basic.html', { values: { debug: true } })
+        const r = await page.evaluate(() => ['div', 'div[', '.a{}', 'a/*', '', 'div:has(> img)'].map(s => window.__elementHider.selectorError(s)))
+        t.eq(r.map(Boolean), [false, true, true, true, true, false])
+        await page.close()
+    })
+
+    await t.test('主域名：常见二级后缀取三段，IP / localhost 原样', async () => {
+        const page = await open(browser, 'basic.html', { values: { debug: true } })
+        const hosts = ['www.example.com', 'example.com', 'a.b.example.co.uk', 'news.sina.com.cn', 'localhost', '192.168.1.10']
+        const r = await page.evaluate(list => list.map(x => window.__elementHider.mainDomain(x)), hosts)
+        t.eq(r, ['example.com', 'example.com', 'example.co.uk', 'sina.com.cn', 'localhost', '192.168.1.10'])
+        await page.close()
+    })
+
     await close()
     t.done()
 }

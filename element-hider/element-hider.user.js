@@ -3,7 +3,7 @@
 // @name:zh-CN   网页元素屏蔽
 // @name:en      Element Hider — Pick and Hide Annoying Page Elements
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.08.08.1
+// @version      2025.08.11.2
 // @description  点选网页上的广告、浮窗、推荐栏等元素一键隐藏：按站点（或整个主域名）记住规则，页面加载第一刻就用样式表隐藏，不闪烁，对之后动态插入的元素同样生效。
 // @description:zh-CN  点选网页上的广告、浮窗、推荐栏等元素一键隐藏：按站点（或整个主域名）记住规则，页面加载第一刻就用样式表隐藏，不闪烁，对之后动态插入的元素同样生效。
 // @description:en  Point at an ad, popup or recommendation box and hide it for good: rules are remembered per site (or for the whole registrable domain) and applied as a stylesheet from the very first moment of page load, so there is no flash, and elements inserted later are hidden too.
@@ -15,6 +15,7 @@
 // @grant        GM_setValue
 // @grant        GM_deleteValue
 // @grant        GM_addStyle
+// @grant        unsafeWindow
 // @license      CC BY-NC-SA
 // @run-at       document-start
 // @homepageURL  https://github.com/yilecoding/helper-scripts
@@ -55,6 +56,13 @@
             'co.jp', 'ne.jp', 'or.jp', 'co.kr', 'com.au', 'net.au', 'co.nz', 'com.br', 'co.in', 'com.sg',
         ],
     };
+
+    /*
+     * 链接指向这些主机时，生成 a[href^="https://主机/"] 这种「同类广告」规则：
+     * 允许它匹配多个元素 —— 一页上同一个广告联盟的链接通常不止一条，一起隐藏正是想要的。
+     * 别的外链必须精确到选中的那一个，免得点掉一个 GitHub 链接，全页的 GitHub 链接都没了。
+     */
+    const AD_HOST = /(^|[.-])(ads?|adserver|adservice|adx|adnxs|doubleclick|googlesyndication|googleads|banner|promo|track|tracking|click|affiliate|union|cpro|pos)\d*([.-]|$)/i;
 
     const HOST = location.hostname;
 
@@ -98,6 +106,180 @@
         }
         return '';
     }
+
+    // =========================================================================
+    // 随机 id / 类名判据
+    // =========================================================================
+
+    /*
+     * 构建工具生成的类名、组件库的自增 id，下次发版或下次渲染就变了，写进规则等于一次性规则。
+     * 判据宁严勿松：误判「稳定」→ 规则悄悄失效；误判「随机」→ 只是退回到结构路径，仍然能用。
+     */
+    const RANDOM_TOKEN = [
+        /^\d/,                                          // 纯数字 / 数字开头（类名本来就不该这样，多半是生成的）
+        /\d{4,}/,                                       // 长数字串：ember1234、mui-38291、div-gpt-ad-1690000000000-0
+        /^css-(?=[\w-]*\d)/i,                           // emotion / antd cssinjs：css-1x2y3z、css-dev-only-do-not-override-1x2y3z
+        /^sc-[\w-]{4,}$/,                               // styled-components 的组件类：sc-bdVaJa、sc-1a2b3c4d-0
+        /^(jss|svelte-|astro-|makeStyles-|emotion-|tw-)[\w-]*\d/i,  // JSS / Svelte / Astro 的作用域类
+        /^c-[a-zA-Z]*[A-Z][a-zA-Z]*$/,                  // Stitches：c-dhzjXW、c-PJLV
+        /^_[\w-]*\d[\w-]*$/,                            // CSS Modules 只留哈希：_3xYz1aBc
+        /(__|--)_?(?=[\w-]*\d)[a-zA-Z0-9_]{5,}$/,       // CSS Modules：Header_title__3xYz1、Button__root___2X3yZ、module--x--3xYz1
+        /[0-9a-f]{8}-[0-9a-f]{4}-/i,                    // uuid
+        // 十六进制串：8 位以上、字母数字都有（a3f9c01bd2）
+        /(^|[^0-9a-z])(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{8,}($|[^0-9a-z])/i,
+        // nanoid 一类：8 位以上的一段，同时有大写、小写、数字
+        /(^|[-_])(?=[a-zA-Z0-9]*\d)(?=[a-zA-Z0-9]*[a-z])(?=[a-zA-Z0-9]*[A-Z])[a-zA-Z0-9]{8,}($|[-_])/,
+        // 字母数字穿插：1x2y3z、a1b2c3（至少三处字母数字交替）
+        /(?:[a-z]\d|\d[a-z]){3,}/i,
+        /(^|-)[:«][a-zA-Z0-9]+[:»]$/,                   // React useId：:r1: / «r1» / radix-:r3:（不能只看冒号，Tailwind 的 hover:bg-red-500 也有）
+        /^_r_[0-9a-z]+_$/i,                             // React 19.2 的 useId
+        /^(ember|ext-gen|yui_|j_id|mui-|react-select-|radix-|headlessui-|downshift-|rc-tabs-|rc_select_)/i,
+    ];
+
+    /**
+     * styled-components / goober 的哈希类：5~8 个纯字母、大小写乱序（kZRDVx、iVXCSc、hGkUyx）。
+     * 和驼峰命名（navBarItem、userName）的区别：驼峰是「小写词 + 若干个首字母大写的词」。
+     */
+    function looksMixedCaseHash(s) {
+        if (!/^[a-zA-Z]{5,8}$/.test(s)) return false;
+        if ((s.match(/[A-Z]/g) || []).length < 2) return false;
+        return !/^[a-z]{2,}([A-Z][a-z]{2,})+$/.test(s) && !/^([A-Z][a-z]{2,})+$/.test(s);
+    }
+
+    function looksRandom(s) {
+        return !!s && (RANDOM_TOKEN.some(re => re.test(s)) || looksMixedCaseHash(s));
+    }
+
+    /** 状态类：悬停、展开、选中时才有，拾取那一刻在、平时不在。 */
+    const STATE_CLASS = /^(is-|has-)?(active|hover|hovered|focus|focused|open|opened|selected|current|show|shown|visible|in|fade|collapsed|expanded|checked|disabled|loading|loaded)$/i;
+
+    // =========================================================================
+    // 选择器生成
+    // =========================================================================
+
+    const Gen = (() => {
+        /** data-testid 这类本来就是给自动化定位用的，最稳；不带标签名。 */
+        const TEST_ATTRS = ['data-testid', 'data-test-id', 'data-test', 'data-qa', 'data-cy'];
+        /** 语义属性：带标签名用（button[aria-label="关闭"]）。 */
+        const SEMANTIC_ATTRS = ['aria-label', 'name', 'alt'];
+
+        const q = s => JSON.stringify(s);   // 属性值加引号，JSON 的转义规则在 CSS 字符串里同样成立
+        const tagOf = el => el.localName;
+
+        function count(sel) {
+            try {
+                return document.querySelectorAll(sel).length;
+            } catch (e) {
+                return -1;
+            }
+        }
+
+        function isUniqueFor(sel, el) {
+            try {
+                const all = document.querySelectorAll(sel);
+                return all.length === 1 && all[0] === el;
+            } catch (e) {
+                return false;
+            }
+        }
+
+        function stableValue(v) {
+            return !!v && v.length <= 60 && !looksRandom(v) && !/[\n\r]/.test(v);
+        }
+
+        /** 稳定类名，按在页面上出现的次数从少到多排（越少越能区分）。 */
+        function stableClasses(el) {
+            const cls = [...el.classList].filter(c => !looksRandom(c) && !STATE_CLASS.test(c));
+            const freq = new Map(cls.map(c => [c, count('.' + CSS.escape(c))]));
+            return cls.sort((a, b) => freq.get(a) - freq.get(b));
+        }
+
+        /**
+         * 只描述元素自己的候选选择器，按稳定程度排：
+         * 稳定 id → 测试属性 → 语义属性 / 链接 → role → 标签 + 类名。
+         * generic: true 表示允许匹配多个（同类广告）。
+         */
+        function selfCandidates(el) {
+            const tag = tagOf(el);
+            const out = [];
+            if (el.id && !looksRandom(el.id)) out.push({ sel: '#' + CSS.escape(el.id) });
+            for (const a of TEST_ATTRS) {
+                const v = el.getAttribute(a);
+                if (stableValue(v)) out.push({ sel: `[${a}=${q(v)}]` });
+            }
+            for (const a of SEMANTIC_ATTRS) {
+                const v = el.getAttribute(a);
+                if (stableValue(v)) out.push({ sel: `${tag}[${a}=${q(v)}]` });
+            }
+            if (tag === 'a' && el.href) {
+                let u = null;
+                try { u = new URL(el.href); } catch (e) { /* javascript: 之类 */ }
+                if (u && /^https?:$/.test(u.protocol)) {
+                    if (u.hostname !== location.hostname && AD_HOST.test(u.hostname)) {
+                        out.push({ sel: `a[href^=${q(u.origin + '/')}]`, generic: true });
+                    }
+                    const raw = el.getAttribute('href');
+                    if (raw.length <= 120 && !looksRandom(u.pathname + u.search)) out.push({ sel: `a[href=${q(raw)}]` });
+                }
+            }
+            const role = el.getAttribute('role');
+            if (stableValue(role)) out.push({ sel: `${tag}[role=${q(role)}]` });
+            const cls = stableClasses(el).slice(0, 2);
+            if (cls.length) {
+                for (const c of cls) out.push({ sel: tag + '.' + CSS.escape(c) });
+                if (cls.length > 1) out.push({ sel: tag + cls.map(c => '.' + CSS.escape(c)).join('') });
+            }
+            return out;
+        }
+
+        /** 路径上的一级：标签 + 最多两个稳定类名，同级有同样的兄弟时加 :nth-of-type。 */
+        function step(el) {
+            let s = tagOf(el) + stableClasses(el).slice(0, 2).map(c => '.' + CSS.escape(c)).join('');
+            const parent = el.parentElement;
+            if (parent) {
+                const same = [...parent.children].filter(c => c.matches(s));
+                if (same.length > 1) {
+                    const n = [...parent.children].filter(c => c.localName === el.localName).indexOf(el) + 1;
+                    s += `:nth-of-type(${n})`;
+                }
+            }
+            return s;
+        }
+
+        function accept(c, el) {
+            if (c.generic) {
+                const n = count(c.sel);
+                return n >= 1 && n <= 50 && el.matches(c.sel);
+            }
+            return isUniqueFor(c.sel, el);
+        }
+
+        /**
+         * 为元素生成选择器：先看自己能不能单独定位；不能就往上找一个能单独定位的祖先，
+         * 用 `>` 连起来的路径从那里走下来；到 body 都没有就从 body 起写全路径。
+         */
+        function selectorFor(el) {
+            if (el === document.documentElement) return 'html';
+            if (el === document.body) return 'body';
+            for (const c of selfCandidates(el)) if (accept(c, el)) return c.sel;
+
+            const path = [step(el)];
+            for (let cur = el.parentElement; cur && cur !== document.documentElement; cur = cur.parentElement) {
+                // 开头一级只有标签 + 序号时（div:nth-of-type(3) > span）碰巧唯一也不收：页面上任何地方多一个 div 就指错，继续往上找锚点
+                if (/[.[#]/.test(path[0]) && isUniqueFor(path.join(' > '), el)) return path.join(' > ');
+                if (cur === document.body) break;
+                for (const c of selfCandidates(cur)) {
+                    if (c.generic) continue;
+                    const s = c.sel + ' > ' + path.join(' > ');
+                    if (isUniqueFor(c.sel, cur) && isUniqueFor(s, el)) return s;
+                }
+                path.unshift(step(cur));
+            }
+            return 'body > ' + path.join(' > ');
+        }
+
+        return { selectorFor, count };
+    })();
 
     // =========================================================================
     // 规则存储（GM，按作用域分键：rules:<作用域>）
@@ -186,4 +368,13 @@
     })();
 
     Styler.apply();
+
+    /*
+     * 调试钩子：GM 存储里 debug 为 true 时，把选择器生成器挂到页面上，
+     * 控制台里 __elementHider.selectorFor($0) 就能看某个元素会生成什么。测试也走这里做单测。
+     */
+    if (GM_getValue('debug', false)) {
+        CONFIG.debug = true;
+        unsafeWindow.__elementHider = { looksRandom, selectorFor: Gen.selectorFor, selectorError, mainDomain };
+    }
 })();
