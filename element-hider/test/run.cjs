@@ -93,6 +93,19 @@ function gmValue(page, key) {
     return page.evaluate(k => JSON.parse(localStorage.getItem('__gm:' + k)), key)
 }
 
+/** 确认面板的提示行、匹配高亮框数、隐藏按钮是否可点。 */
+function confirmState(page) {
+    return page.evaluate(() => {
+        const r = document.querySelector('element-hider-ui').shadowRoot
+        return {
+            info: r.querySelector('.confirm .info').textContent,
+            error: r.querySelector('.confirm .info').classList.contains('error'),
+            boxes: r.querySelectorAll('.box.match').length,
+            canHide: !r.querySelector('.confirm [data-act=hide]').disabled,
+        }
+    })
+}
+
 /** 走一遍拾取：进入 → 悬停 → 点击，停在确认面板。 */
 async function pick(page, sel) {
     await h.menu(page, '拾取')
@@ -208,6 +221,51 @@ async function main() {
         t.eq((await gmValue(page, 'rules:www.example.com')).map(r => r.selector), ['#top-ad'])
         await page.reload()
         t.eq(await page.evaluate(() => window.__early), { state: 'loading', display: 'none' })
+        await page.close()
+    })
+
+    console.log('确认面板')
+    await t.test('实时显示匹配数并高亮全部；手改选择器跟着变；父级按钮重新生成', async () => {
+        const page = await open(browser, 'pick.html')
+        await pick(page, '.hot-list h3')
+        t.eq(await confirmSelector(page), 'div.hot-list > h3')
+        t.eq(await confirmState(page), { info: '当前选择器会匹配 1 个元素', error: false, boxes: 1, canHide: true })
+        await page.locator('element-hider-ui .confirm textarea').fill('.side .widget')
+        t.eq(await confirmState(page), { info: '当前选择器会匹配 3 个元素（已全部高亮）', error: false, boxes: 3, canHide: true })
+        await page.locator('element-hider-ui .confirm textarea').fill('.nothing-here')
+        t.eq(await confirmState(page), { info: '当前选择器没有匹配到任何元素', error: true, boxes: 0, canHide: false })
+        await page.locator('element-hider-ui [data-act=parent]').click()
+        t.eq(await confirmSelector(page), 'div.hot-list')
+        t.eq((await confirmState(page)).info, '当前选择器会匹配 1 个元素', '换层级后重新计数')
+        await page.locator('element-hider-ui [data-act=child]').click()
+        t.eq(await confirmSelector(page), 'div.hot-list > h3', '子级按钮原路返回')
+        await page.close()
+    })
+
+    await t.test('非法选择器：提示原因、不能保存、不抛错', async () => {
+        const page = await open(browser, 'pick.html')
+        await pick(page, '.hot-list h3')
+        for (const bad of ['div[', 'h3{color:red}', 'a/*']) {
+            await page.locator('element-hider-ui .confirm textarea').fill(bad)
+            const st = await confirmState(page)
+            t.assert(st.error && st.info.startsWith('⚠') && !st.canHide, bad + ' → ' + JSON.stringify(st))
+        }
+        await page.locator('element-hider-ui [data-act=hide]').click({ force: true })
+        t.eq(await gmValue(page, 'rules:www.example.com'), null, '没有存进去')
+        t.eq(h.errors(page).map(String), [])
+        await page.close()
+    })
+
+    await t.test('作用域选「整个主域名」：规则存到 *.example.com', async () => {
+        const page = await open(browser, 'pick.html')
+        await pick(page, '.hot-list h3')
+        await page.locator('element-hider-ui [data-act=parent]').click()
+        await page.locator('element-hider-ui .confirm select').selectOption('*.example.com')
+        await page.locator('element-hider-ui [data-act=hide]').click()
+        t.eq((await gmValue(page, 'rules:*.example.com')).map(r => r.selector), ['div.hot-list'])
+        t.eq(await gmValue(page, 'rules:www.example.com'), null)
+        t.eq(await display(page, '.hot-list'), 'none')
+        t.eq(await shown(page, 'confirm'), false, '保存后面板关闭')
         await page.close()
     })
 

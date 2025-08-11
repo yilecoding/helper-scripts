@@ -3,7 +3,7 @@
 // @name:zh-CN   网页元素屏蔽
 // @name:en      Element Hider — Pick and Hide Annoying Page Elements
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.08.11.3
+// @version      2025.08.11.4
 // @description  点选网页上的广告、浮窗、推荐栏等元素一键隐藏：按站点（或整个主域名）记住规则，页面加载第一刻就用样式表隐藏，不闪烁，对之后动态插入的元素同样生效。
 // @description:zh-CN  点选网页上的广告、浮窗、推荐栏等元素一键隐藏：按站点（或整个主域名）记住规则，页面加载第一刻就用样式表隐藏，不闪烁，对之后动态插入的元素同样生效。
 // @description:en  Point at an ad, popup or recommendation box and hide it for good: rules are remembered per site (or for the whole registrable domain) and applied as a stylesheet from the very first moment of page load, so there is no flash, and elements inserted later are hidden too.
@@ -416,6 +416,9 @@
             .card h3 { margin: 0 0 8px; font-size: 14px; }
             .card .row { display: flex; gap: 8px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
             .card .grow { flex: 1; }
+            .card .info { margin-top: 4px; color: #52525b; }
+            .card .info.error { color: #e5484d; }
+            .card select { font: inherit; max-width: 220px; }
             .card code, .card textarea {
                 font: 12px/1.5 ui-monospace, Menlo, Consolas, monospace; word-break: break-all;
             }
@@ -427,6 +430,8 @@
             button:disabled { opacity: .5; cursor: not-allowed; }
             @media (prefers-color-scheme: dark) {
                 .card { background: #18181b; color: #fafafa; border-color: #3f3f46; }
+                .card .info { color: #a1a1aa; }
+                .card textarea, .card select { background: #27272a; color: inherit; border: 1px solid #3f3f46; }
                 button { background: #27272a; border-color: #3f3f46; }
             }
         `;
@@ -631,30 +636,94 @@
     // =========================================================================
 
     const Confirm = (() => {
-        function open(node) {
-            const sel = Gen.selectorFor(node);
-            const code = UI.el('code', { className: 'sel', textContent: sel });
-            const hideBtn = UI.el('button', { className: 'primary', textContent: '隐藏' });
-            hideBtn.dataset.act = 'hide';
-            const cancelBtn = UI.el('button', { textContent: '取消' });
-            cancelBtn.dataset.act = 'cancel';
-            hideBtn.addEventListener('click', () => {
-                Store.add(SCOPE_SITE, sel);
-                Styler.apply();
-                close();
+        let node = null;        // 拾取到的元素（父级 / 子级按钮在它的祖先链上移动）
+        let trail = [];
+        let input = null;
+        let info = null;
+        let hideBtn = null;
+
+        /** 选择器当前匹配到的页面元素；非法时返回 null。界面自己不算。 */
+        function matches(sel) {
+            if (selectorError(sel)) return null;
+            return [...document.querySelectorAll(sel)].filter(n => n !== UI.host);
+        }
+
+        /** 输入框每次变化都重算：匹配数、全部高亮、非法提示。 */
+        function refresh() {
+            const sel = input.value.trim();
+            const err = selectorError(sel);
+            const list = err ? null : matches(sel);
+            info.classList.toggle('error', !!err || !list.length);
+            if (err) info.textContent = '⚠ ' + err + '，改好之前不能保存';
+            else if (!list.length) info.textContent = '当前选择器没有匹配到任何元素';
+            else info.textContent = `当前选择器会匹配 ${list.length} 个元素` + (list.length > 1 ? '（已全部高亮）' : '');
+            hideBtn.disabled = !!err || !list || !list.length;
+            UI.highlight(list || [], 'match');
+        }
+
+        function setNode(n) {
+            node = n;
+            input.value = Gen.selectorFor(n);
+            refresh();
+        }
+
+        function button(act, text, primary) {
+            const b = UI.el('button', { textContent: text, className: primary ? 'primary' : '' });
+            b.dataset.act = act;
+            return b;
+        }
+
+        function open(picked) {
+            trail = [];
+            input = UI.el('textarea', { className: 'sel', rows: 2, spellcheck: false });
+            input.style.cssText = 'width:100%;resize:vertical;';
+            info = UI.el('div', { className: 'info' });
+            hideBtn = button('hide', '隐藏', true);
+            const upBtn = button('parent', '↑ 父级');
+            const downBtn = button('child', '↓ 子级');
+            const cancelBtn = button('cancel', '取消');
+
+            const scopeSel = UI.el('select', { className: 'scope' }, [
+                UI.el('option', { value: SCOPE_SITE, textContent: '仅本站 ' + SCOPE_SITE }),
+                UI.el('option', { value: SCOPE_DOMAIN, textContent: '整个主域名 ' + SCOPE_DOMAIN }),
+            ]);
+            // 本站就是主域名本身（example.com）时两个选项含义几乎一样，仍然保留：*.example.com 还管所有子域名
+
+            input.addEventListener('input', refresh);
+            upBtn.addEventListener('click', () => {
+                if (node.parentElement && node !== document.body) {
+                    trail.push(node);
+                    setNode(node.parentElement);
+                }
+            });
+            downBtn.addEventListener('click', () => {
+                if (trail.length) setNode(trail.pop());
             });
             cancelBtn.addEventListener('click', close);
+            hideBtn.addEventListener('click', () => save(input.value.trim(), scopeSel.value));
+
             UI.mount('card confirm', [
-                UI.el('h3', { textContent: '隐藏这个元素？' }),
-                code,
+                UI.el('h3', { textContent: '隐藏元素' }),
+                input,
+                info,
+                UI.el('div', { className: 'row' }, [upBtn, downBtn, UI.el('span', { className: 'grow' }), scopeSel]),
                 UI.el('div', { className: 'row' }, [UI.el('span', { className: 'grow' }), cancelBtn, hideBtn]),
             ]);
-            UI.highlight([node], 'match');
+            setNode(picked);
+        }
+
+        function save(sel, scope) {
+            if (selectorError(sel)) return;
+            Store.add(scope, sel);
+            Styler.apply();
+            log('已隐藏', scope, sel);
+            close();
         }
 
         function close() {
             UI.unmount('confirm');
             UI.clear();
+            node = null;
         }
 
         return { open, close };
