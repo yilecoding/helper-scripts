@@ -106,6 +106,27 @@ function confirmState(page) {
     })
 }
 
+/** 管理面板：统计行 + 每条规则 { sel, scope, count, previewing }。 */
+function managerState(page) {
+    return page.evaluate(() => {
+        const r = document.querySelector('element-hider-ui').shadowRoot
+        return {
+            stats: r.querySelector('.manager .stats').textContent,
+            rules: [...r.querySelectorAll('.manager .rule:not(.editing)')].map(n => ({
+                sel: n.dataset.selector,
+                scope: n.querySelector('.tag').textContent,
+                count: n.querySelector('.count').textContent,
+                previewing: n.classList.contains('previewing'),
+            })),
+        }
+    })
+}
+
+/** 管理面板里某条规则的按钮。 */
+function ruleButton(page, sel, act) {
+    return page.locator(`element-hider-ui .manager .rule[data-selector="${sel}"] [data-act=${act}]`)
+}
+
 /** 走一遍拾取：进入 → 悬停 → 点击，停在确认面板。 */
 async function pick(page, sel) {
     await h.menu(page, '拾取')
@@ -299,6 +320,62 @@ async function main() {
         await page.locator('element-hider-ui .confirm textarea').fill('#inline-link')
         await page.locator('element-hider-ui [data-act=hide]').click()
         t.eq(await page.locator('element-hider-ui .toast').textContent(), '这条规则已经存在')
+        await page.close()
+    })
+
+    console.log('管理面板')
+    const SEEDED = {
+        'rules:www.example.com': [rule('.hot-list'), rule('#inline-link')],
+        'rules:*.example.com': [rule('.side .widget p')],
+    }
+    await t.test('列出本站规则（两个作用域）、匹配数与统计', async () => {
+        const page = await open(browser, 'pick.html', { values: SEEDED })
+        await h.menu(page, '管理')
+        t.eq(await managerState(page), {
+            stats: '共 3 条（本站 2 · 主域名 1），当前隐藏 3 个元素',
+            rules: [
+                { sel: '.hot-list', scope: '本站', count: '匹配 1 个', previewing: false },
+                { sel: '#inline-link', scope: '本站', count: '匹配 1 个', previewing: false },
+                { sel: '.side .widget p', scope: '主域名', count: '匹配 1 个', previewing: false },
+            ],
+        })
+        await page.close()
+    })
+
+    await t.test('预览：取消隐藏并描边；关闭面板后恢复隐藏', async () => {
+        const page = await open(browser, 'pick.html', { values: SEEDED })
+        await h.menu(page, '管理')
+        await ruleButton(page, '.hot-list', 'preview').click()
+        t.eq(await display(page, '.hot-list'), 'block')
+        t.eq(await page.evaluate(() => getComputedStyle(document.querySelector('.hot-list')).outlineStyle), 'dashed')
+        t.eq(await display(page, '#inline-link'), 'none', '别的规则不受影响')
+        t.assert((await managerState(page)).rules[0].previewing)
+        t.eq((await managerState(page)).stats, '共 3 条（本站 2 · 主域名 1），当前隐藏 2 个元素')
+        await page.locator('element-hider-ui .manager [data-act=close]').click()
+        t.eq(await display(page, '.hot-list'), 'none')
+        t.eq((await gmValue(page, 'rules:www.example.com')).length, 2, '预览不改存储')
+        await page.close()
+    })
+
+    await t.test('删除与编辑：立即生效并写回存储；编辑成非法选择器给提示、不保存', async () => {
+        const page = await open(browser, 'pick.html', { values: SEEDED })
+        await h.menu(page, '管理')
+        await ruleButton(page, '#inline-link', 'delete').click()
+        t.eq(await display(page, '#inline-link'), 'inline')
+        t.eq((await gmValue(page, 'rules:www.example.com')).map(r => r.selector), ['.hot-list'])
+
+        await ruleButton(page, '.hot-list', 'edit').click()
+        const box = page.locator('element-hider-ui .manager .rule.editing textarea')
+        await box.fill('.hot-list[')
+        t.assert((await page.locator('element-hider-ui .manager .editing .info').textContent()).startsWith('⚠'))
+        t.eq(await page.locator('element-hider-ui .manager .editing [data-act=save]').isDisabled(), true)
+        await box.fill('.side h3')
+        await page.locator('element-hider-ui .manager .editing [data-act=save]').click()
+        t.eq((await gmValue(page, 'rules:www.example.com')).map(r => r.selector), ['.side h3'])
+        t.eq(await display(page, '.hot-list'), 'block')
+        t.eq(await display(page, '.hot-list h3'), 'none')
+        t.eq((await managerState(page)).rules.map(r => r.sel), ['.side h3', '.side .widget p'])
+        t.eq(h.errors(page).map(String), [])
         await page.close()
     })
 

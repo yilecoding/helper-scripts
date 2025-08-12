@@ -3,7 +3,7 @@
 // @name:zh-CN   网页元素屏蔽
 // @name:en      Element Hider — Pick and Hide Annoying Page Elements
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.08.12.5
+// @version      2025.08.12.6
 // @description  点选网页上的广告、浮窗、推荐栏等元素一键隐藏：按站点（或整个主域名）记住规则，页面加载第一刻就用样式表隐藏，不闪烁，对之后动态插入的元素同样生效。
 // @description:zh-CN  点选网页上的广告、浮窗、推荐栏等元素一键隐藏：按站点（或整个主域名）记住规则，页面加载第一刻就用样式表隐藏，不闪烁，对之后动态插入的元素同样生效。
 // @description:en  Point at an ad, popup or recommendation box and hide it for good: rules are remembered per site (or for the whole registrable domain) and applied as a stylesheet from the very first moment of page load, so there is no flash, and elements inserted later are hidden too.
@@ -331,7 +331,18 @@
             set(scope, get(scope).filter(r => r.selector !== selector));
         }
 
-        return { get, set, here, add, remove };
+        /** 改一条规则的选择器，保持原来的位置和创建时间。新选择器和别的规则重复时返回 false。 */
+        function update(scope, from, to) {
+            const list = get(scope);
+            if (from !== to && list.some(r => r.selector === to)) return false;
+            const r = list.find(x => x.selector === from);
+            if (!r) return false;
+            r.selector = to;
+            set(scope, list);
+            return true;
+        }
+
+        return { get, set, here, add, remove, update };
     })();
 
     // =========================================================================
@@ -340,6 +351,9 @@
 
     const Styler = (() => {
         let style = null;
+        const previews = new Set();     // 正在预览的规则（作用域 + 选择器）：不隐藏，改成描边
+
+        const keyOf = (scope, sel) => scope + '\n' + sel;
 
         /*
          * 每条规则单独一行，不合并成 `a, b, c { ... }`：
@@ -350,9 +364,29 @@
             const lines = [];
             for (const r of Store.here()) {
                 if (selectorError(r.selector)) continue;
-                lines.push(`${r.selector} { display: none !important; }`);
+                if (previews.has(keyOf(r.scope, r.selector))) {
+                    lines.push(`${r.selector} { outline: 2px dashed #e5484d !important; outline-offset: -2px !important; }`);
+                } else {
+                    lines.push(`${r.selector} { display: none !important; }`);
+                }
             }
             return lines.join('\n');
+        }
+
+        function setPreview(scope, sel, on) {
+            if (on) previews.add(keyOf(scope, sel));
+            else previews.delete(keyOf(scope, sel));
+            apply();
+        }
+
+        function isPreview(scope, sel) {
+            return previews.has(keyOf(scope, sel));
+        }
+
+        function clearPreviews() {
+            if (!previews.size) return;
+            previews.clear();
+            apply();
         }
 
         function apply() {
@@ -372,7 +406,7 @@
             log('样式已更新，规则数', text ? text.split('\n').length : 0);
         }
 
-        return { apply };
+        return { apply, setPreview, isPreview, clearPreviews };
     })();
 
     // =========================================================================
@@ -427,6 +461,16 @@
             .card .info { margin-top: 4px; color: #52525b; }
             .card .info.error { color: #e5484d; }
             .card select { font: inherit; max-width: 220px; }
+            .manager { top: 16px; bottom: auto; max-height: calc(100vh - 32px); display: flex; flex-direction: column; }
+            .manager .head { margin: 0; }
+            .manager .head h3 { margin: 0; }
+            .manager .stats { color: #52525b; margin: 4px 0 8px; }
+            .manager .list { overflow: auto; min-height: 0; }
+            .manager .rule { padding: 8px 0; border-top: 1px solid #e4e4e7; }
+            .manager .rule.previewing code { color: #e5484d; }
+            .manager .rule .meta { margin-top: 4px; }
+            .manager .tag { padding: 0 6px; border-radius: 3px; background: #f4f4f5; font-size: 12px; }
+            .manager .count.zero { color: #a1a1aa; }
             .card code, .card textarea {
                 font: 12px/1.5 ui-monospace, Menlo, Consolas, monospace; word-break: break-all;
             }
@@ -438,7 +482,9 @@
             button:disabled { opacity: .5; cursor: not-allowed; }
             @media (prefers-color-scheme: dark) {
                 .card { background: #18181b; color: #fafafa; border-color: #3f3f46; }
-                .card .info { color: #a1a1aa; }
+                .card .info, .manager .stats { color: #a1a1aa; }
+                .manager .rule { border-color: #3f3f46; }
+                .manager .tag { background: #27272a; }
                 .card textarea, .card select { background: #27272a; color: inherit; border: 1px solid #3f3f46; }
                 button { background: #27272a; border-color: #3f3f46; }
             }
@@ -728,9 +774,11 @@
             Styler.apply();
             log('已隐藏', scope, sel);
             close();
+            Manager.render();
             Toast.show(added ? `已隐藏 ${n} 个元素` : '这条规则已经存在', added ? () => {
                 Store.remove(scope, sel);
                 Styler.apply();
+                Manager.render();
             } : null);
         }
 
@@ -776,6 +824,139 @@
     })();
 
     // =========================================================================
+    // 管理面板
+    // =========================================================================
+
+    const Manager = (() => {
+        let card = null;
+        let list = null;
+        let stats = null;
+
+        const SCOPE_LABEL = { [SCOPE_SITE]: '本站', [SCOPE_DOMAIN]: '主域名' };
+
+        function count(sel) {
+            return selectorError(sel) ? 0 : Gen.count(sel);
+        }
+
+        function button(act, text) {
+            const b = UI.el('button', { textContent: text });
+            b.dataset.act = act;
+            return b;
+        }
+
+        function open() {
+            Picker.stop();
+            Confirm.close();
+            const closeBtn = button('close', '关闭');
+            closeBtn.addEventListener('click', close);
+            stats = UI.el('div', { className: 'stats' });
+            list = UI.el('div', { className: 'list' });
+            card = UI.mount('card manager', [
+                UI.el('div', { className: 'row head' }, [
+                    UI.el('h3', { className: 'grow', textContent: '本站屏蔽规则' }),
+                    closeBtn,
+                ]),
+                stats,
+                list,
+            ]);
+            render();
+        }
+
+        function close() {
+            Styler.clearPreviews();
+            UI.unmount('manager');
+            card = null;
+        }
+
+        function render() {
+            if (!card) return;
+            const rules = Store.here();
+            const site = rules.filter(r => r.scope === SCOPE_SITE).length;
+            const hiddenNow = new Set();
+            for (const r of rules) {
+                if (selectorError(r.selector) || Styler.isPreview(r.scope, r.selector)) continue;
+                document.querySelectorAll(r.selector).forEach(n => hiddenNow.add(n));
+            }
+            stats.textContent = rules.length
+                ? `共 ${rules.length} 条（本站 ${site} · 主域名 ${rules.length - site}），当前隐藏 ${hiddenNow.size} 个元素`
+                : '本站还没有规则。用菜单或 Alt+Shift+H 拾取要隐藏的元素。';
+            list.textContent = '';
+            for (const r of rules) list.append(row(r));
+        }
+
+        function row(r) {
+            const n = count(r.selector);
+            const previewing = Styler.isPreview(r.scope, r.selector);
+            const node = UI.el('div', { className: 'rule' + (previewing ? ' previewing' : '') });
+            node.dataset.scope = r.scope;
+            node.dataset.selector = r.selector;
+
+            const preview = button('preview', previewing ? '取消预览' : '预览');
+            const edit = button('edit', '编辑');
+            const del = button('delete', '删除');
+            preview.addEventListener('click', () => {
+                Styler.setPreview(r.scope, r.selector, !previewing);
+                render();
+            });
+            edit.addEventListener('click', () => node.replaceWith(editor(r)));
+            del.addEventListener('click', () => {
+                Styler.setPreview(r.scope, r.selector, false);
+                Store.remove(r.scope, r.selector);
+                Styler.apply();
+                render();
+            });
+            node.append(
+                UI.el('code', { className: 'sel', textContent: r.selector }),
+                UI.el('div', { className: 'row meta' }, [
+                    UI.el('span', { className: 'tag', textContent: SCOPE_LABEL[r.scope] || r.scope, title: r.scope }),
+                    UI.el('span', { className: 'grow count' + (n ? '' : ' zero'), textContent: n ? `匹配 ${n} 个` : '当前页没有匹配' }),
+                    preview, edit, del,
+                ]),
+            );
+            return node;
+        }
+
+        function editor(r) {
+            const node = UI.el('div', { className: 'rule editing' });
+            const input = UI.el('textarea', { className: 'sel', rows: 2, spellcheck: false, value: r.selector });
+            input.style.cssText = 'width:100%;resize:vertical;';
+            const msg = UI.el('div', { className: 'info' });
+            const save = button('save', '保存');
+            save.classList.add('primary');
+            const cancel = button('cancel', '取消');
+            const check = () => {
+                const sel = input.value.trim();
+                const err = selectorError(sel);
+                msg.classList.toggle('error', !!err);
+                msg.textContent = err ? '⚠ ' + err : `匹配 ${count(sel)} 个元素`;
+                save.disabled = !!err;
+                return err ? null : sel;
+            };
+            input.addEventListener('input', check);
+            cancel.addEventListener('click', render);
+            save.addEventListener('click', () => {
+                const sel = check();
+                if (!sel) return;
+                const wasPreview = Styler.isPreview(r.scope, r.selector);
+                if (!Store.update(r.scope, r.selector, sel)) {
+                    msg.classList.add('error');
+                    msg.textContent = '⚠ 本站已有一样的规则';
+                    return;
+                }
+                Styler.setPreview(r.scope, r.selector, false);
+                if (wasPreview) Styler.setPreview(r.scope, sel, true);
+                Styler.apply();
+                render();
+            });
+            node.append(input, msg, UI.el('div', { className: 'row' }, [UI.el('span', { className: 'grow' }), cancel, save]));
+            check();
+            return node;
+        }
+
+        return { open, close, render };
+    })();
+
+    // =========================================================================
     // 启动
     // =========================================================================
 
@@ -797,6 +978,7 @@
     }, true);
 
     GM_registerMenuCommand('🎯 拾取要隐藏的元素（Alt+Shift+H）', () => Picker.start());
+    GM_registerMenuCommand('📋 管理本站屏蔽规则', () => Manager.open());
 
     /*
      * 调试钩子：GM 存储里 debug 为 true 时，把选择器生成器挂到页面上，
