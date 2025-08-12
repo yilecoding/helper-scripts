@@ -269,6 +269,39 @@ async function main() {
         await page.close()
     })
 
+    console.log('撤销')
+    await t.test('隐藏后浮出「已隐藏 · 撤销」，点撤销元素回来、规则删掉', async () => {
+        const page = await open(browser, 'pick.html')
+        await pick(page, '.hot-list h3')
+        await page.locator('element-hider-ui .confirm textarea').fill('.side .widget')
+        await page.locator('element-hider-ui [data-act=hide]').click()
+        t.eq(await page.locator('element-hider-ui .toast').textContent(), '已隐藏 3 个元素 · 撤销')
+        t.eq(await display(page, '.hot-list'), 'none')
+        await page.locator('element-hider-ui [data-act=undo]').click()
+        t.eq(await display(page, '.hot-list'), 'block')
+        t.eq(await gmValue(page, 'rules:www.example.com'), null)
+        t.eq(await shown(page, 'toast'), false)
+        await page.close()
+    })
+
+    await t.test('撤销提示 5 秒后自动消失，规则保留；重复的规则不给撤销（免得把原有的删掉）', async () => {
+        const page = await open(browser, 'pick.html', { values: { 'rules:www.example.com': [rule('#inline-link')] } })
+        await pick(page, '.hot-list h3')
+        await page.locator('element-hider-ui [data-act=hide]').click()
+        t.assert(await shown(page, 'toast'))
+        await page.waitForTimeout(4500)
+        t.assert(await shown(page, 'toast'), '4.5 秒时还在')
+        await page.waitForTimeout(800)
+        t.eq(await shown(page, 'toast'), false, '5 秒后消失')
+        t.eq((await gmValue(page, 'rules:www.example.com')).map(r => r.selector), ['#inline-link', 'div.hot-list > h3'])
+
+        await pick(page, '.side .widget:nth-child(3) p')
+        await page.locator('element-hider-ui .confirm textarea').fill('#inline-link')
+        await page.locator('element-hider-ui [data-act=hide]').click()
+        t.eq(await page.locator('element-hider-ui .toast').textContent(), '这条规则已经存在')
+        await page.close()
+    })
+
     console.log('随机 id / 类名判据')
     await t.test('真实风格样例：生成的判为随机，人写的判为稳定', async () => {
         const random = [

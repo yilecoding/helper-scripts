@@ -3,7 +3,7 @@
 // @name:zh-CN   网页元素屏蔽
 // @name:en      Element Hider — Pick and Hide Annoying Page Elements
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.08.11.4
+// @version      2025.08.12.5
 // @description  点选网页上的广告、浮窗、推荐栏等元素一键隐藏：按站点（或整个主域名）记住规则，页面加载第一刻就用样式表隐藏，不闪烁，对之后动态插入的元素同样生效。
 // @description:zh-CN  点选网页上的广告、浮窗、推荐栏等元素一键隐藏：按站点（或整个主域名）记住规则，页面加载第一刻就用样式表隐藏，不闪烁，对之后动态插入的元素同样生效。
 // @description:en  Point at an ad, popup or recommendation box and hide it for good: rules are remembered per site (or for the whole registrable domain) and applied as a stylesheet from the very first moment of page load, so there is no flash, and elements inserted later are hidden too.
@@ -46,6 +46,7 @@
     const CONFIG = {
         debug: false,
         maxSelectorLength: 1000,    // 单条选择器最长字符数，导入时超长的视为非法
+        undoMs: 5000,               // 隐藏后「撤销」提示停留多久
 
         /*
          * 「整个主域名」的作用域需要知道注册域名。不带公共后缀表（太大），
@@ -407,6 +408,13 @@
                 padding: 6px 14px; border-radius: 6px; background: rgba(24, 24, 27, .92); color: #fafafa;
                 font: 13px/20px system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; white-space: nowrap;
             }
+            .toast {
+                position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); pointer-events: auto;
+                display: flex; align-items: center; gap: 4px; padding: 6px 8px 6px 14px; border-radius: 6px;
+                background: rgba(24, 24, 27, .94); color: #fafafa; box-shadow: 0 6px 20px rgba(0, 0, 0, .25);
+                font: 13px/20px system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; white-space: nowrap;
+            }
+            .toast button { background: transparent; border-color: transparent; color: #f5a524; font-weight: 600; }
             .card {
                 position: fixed; right: 16px; bottom: 16px; width: 420px; max-width: calc(100vw - 32px); pointer-events: auto;
                 padding: 12px 14px; border-radius: 8px; background: #fff; color: #18181b; border: 1px solid #e4e4e7;
@@ -714,10 +722,16 @@
 
         function save(sel, scope) {
             if (selectorError(sel)) return;
-            Store.add(scope, sel);
+            // 先数再隐藏：隐藏之后元素还在，但数字要在提示里告诉用户「刚才藏了几个」
+            const n = matches(sel).length;
+            const added = Store.add(scope, sel);
             Styler.apply();
             log('已隐藏', scope, sel);
             close();
+            Toast.show(added ? `已隐藏 ${n} 个元素` : '这条规则已经存在', added ? () => {
+                Store.remove(scope, sel);
+                Styler.apply();
+            } : null);
         }
 
         function close() {
@@ -727,6 +741,38 @@
         }
 
         return { open, close };
+    })();
+
+    // =========================================================================
+    // 撤销提示
+    // =========================================================================
+
+    const Toast = (() => {
+        let timer = 0;
+
+        /** 底部浮出一条提示，带「撤销」时点了就执行 undo；CONFIG.undoMs 后自动消失。 */
+        function show(text, undo) {
+            clearTimeout(timer);
+            const children = [UI.el('span', { textContent: text })];
+            if (undo) {
+                const b = UI.el('button', { textContent: '撤销' });
+                b.dataset.act = 'undo';
+                b.addEventListener('click', () => {
+                    undo();
+                    hide();
+                });
+                children.push(UI.el('span', { textContent: ' · ' }), b);
+            }
+            UI.mount('toast', children);
+            timer = setTimeout(hide, CONFIG.undoMs);
+        }
+
+        function hide() {
+            clearTimeout(timer);
+            UI.unmount('toast');
+        }
+
+        return { show, hide };
     })();
 
     // =========================================================================
