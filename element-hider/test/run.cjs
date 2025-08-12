@@ -379,6 +379,63 @@ async function main() {
         await page.close()
     })
 
+    console.log('导出 / 导入')
+    await t.test('导出全部：所有站点的规则（不只本站）', async () => {
+        const page = await open(browser, 'pick.html', { values: { ...SEEDED, 'rules:other.org': [rule('.banner')], debug: true } })
+        await h.menu(page, '管理')
+        await page.locator('element-hider-ui .manager [data-act=export]').click()
+        const data = JSON.parse(await page.locator('element-hider-ui .manager .io-text').inputValue())
+        t.eq([data.format, data.version], ['element-hider', 1])
+        t.eq(Object.keys(data.rules), ['*.example.com', 'other.org', 'www.example.com'])
+        t.eq(data.rules['www.example.com'].map(r => r.selector), ['.hot-list', '#inline-link'])
+        t.eq(await page.locator('element-hider-ui .manager .io-msg').textContent(), '已导出所有站点的 4 条规则，复制保存即可')
+        await page.close()
+    })
+
+    await t.test('导入非法 JSON / 结构不对：整份拒绝并指出位置，存储不变', async () => {
+        const page = await open(browser, 'pick.html', { values: SEEDED })
+        await h.menu(page, '管理')
+        const ok = { format: 'element-hider', version: 1 }
+        const cases = [
+            ['{ rules: 1', '不是合法的 JSON'],
+            ['[]', '顶层应该是一个对象'],
+            [JSON.stringify({ rules: {} }), '不是本脚本导出的文件'],
+            [JSON.stringify({ ...ok, rules: [] }), 'rules 应该是'],
+            [JSON.stringify({ ...ok, rules: { 'bad host!': [] } }), 'rules["bad host!"]：不是合法的站点名'],
+            [JSON.stringify({ ...ok, rules: { 'a.com': {} } }), 'rules["a.com"]：应该是数组'],
+            [JSON.stringify({ ...ok, rules: { 'a.com': [{ selector: '.x' }, { sel: '.y' }] } }), 'rules["a.com"][1]：缺少 selector'],
+            [JSON.stringify({ ...ok, rules: { 'a.com': [{ selector: 'body{} *' }] } }), 'rules["a.com"][0]：选择器里不能有花括号'],
+            [JSON.stringify({ ...ok, rules: { 'www.example.com': [{ selector: '.ok' }, { selector: 'div[' }] } }), 'rules["www.example.com"][1]：选择器语法错误'],
+        ]
+        for (const [text, expect] of cases) {
+            await page.locator('element-hider-ui .manager .io-text').fill(text)
+            await page.locator('element-hider-ui .manager [data-act=import]').click()
+            const msg = await page.locator('element-hider-ui .manager .io-msg').textContent()
+            t.assert(msg.startsWith('⚠ 导入被拒绝：') && msg.includes(expect), `${text} → ${msg}`)
+        }
+        t.eq(await gmValue(page, 'rules:www.example.com'), SEEDED['rules:www.example.com'], '一条都没进去（包括前面合法的 .ok）')
+        t.eq(await gmValue(page, 'rules:a.com'), null)
+        t.eq(h.errors(page).map(String), [])
+        await page.close()
+    })
+
+    await t.test('导入合法文件：合并、跳过重复，本站规则立即生效', async () => {
+        const page = await open(browser, 'pick.html', { values: SEEDED })
+        await h.menu(page, '管理')
+        const text = JSON.stringify({
+            format: 'element-hider', version: 1,
+            rules: { 'www.example.com': [{ selector: '.hot-list', created: 5 }, { selector: '.post h1', created: 6 }], 'b.org': [{ selector: '.x' }] },
+        })
+        await page.locator('element-hider-ui .manager .io-text').fill(text)
+        await page.locator('element-hider-ui .manager [data-act=import]').click()
+        t.eq(await page.locator('element-hider-ui .manager .io-msg').textContent(), '导入了 2 条规则，跳过重复的 1 条')
+        t.eq((await gmValue(page, 'rules:www.example.com')).map(r => r.selector), ['.hot-list', '#inline-link', '.post h1'])
+        t.eq((await gmValue(page, 'rules:b.org')).map(r => r.selector), ['.x'])
+        t.eq(await display(page, '.post h1'), 'none')
+        t.eq((await managerState(page)).rules.length, 4, '列表刷新')
+        await page.close()
+    })
+
     console.log('随机 id / 类名判据')
     await t.test('真实风格样例：生成的判为随机，人写的判为稳定', async () => {
         const random = [

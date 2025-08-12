@@ -3,7 +3,7 @@
 // @name:zh-CN   网页元素屏蔽
 // @name:en      Element Hider — Pick and Hide Annoying Page Elements
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.08.12.6
+// @version      2025.08.12.7
 // @description  点选网页上的广告、浮窗、推荐栏等元素一键隐藏：按站点（或整个主域名）记住规则，页面加载第一刻就用样式表隐藏，不闪烁，对之后动态插入的元素同样生效。
 // @description:zh-CN  点选网页上的广告、浮窗、推荐栏等元素一键隐藏：按站点（或整个主域名）记住规则，页面加载第一刻就用样式表隐藏，不闪烁，对之后动态插入的元素同样生效。
 // @description:en  Point at an ad, popup or recommendation box and hide it for good: rules are remembered per site (or for the whole registrable domain) and applied as a stylesheet from the very first moment of page load, so there is no flash, and elements inserted later are hidden too.
@@ -14,6 +14,7 @@
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_deleteValue
+// @grant        GM_listValues
 // @grant        GM_addStyle
 // @grant        GM_registerMenuCommand
 // @grant        unsafeWindow
@@ -342,7 +343,17 @@
             return true;
         }
 
-        return { get, set, here, add, remove, update };
+        /** 所有站点的规则：{ 作用域: [规则] }，导出用。 */
+        function all() {
+            const out = {};
+            for (const k of GM_listValues().filter(k => k.startsWith('rules:')).sort()) {
+                const list = get(k.slice('rules:'.length));
+                if (list.length) out[k.slice('rules:'.length)] = list;
+            }
+            return out;
+        }
+
+        return { get, set, here, add, remove, update, all };
     })();
 
     // =========================================================================
@@ -471,6 +482,7 @@
             .manager .rule .meta { margin-top: 4px; }
             .manager .tag { padding: 0 6px; border-radius: 3px; background: #f4f4f5; font-size: 12px; }
             .manager .count.zero { color: #a1a1aa; }
+            .manager .io { padding-top: 8px; border-top: 1px solid #e4e4e7; }
             .card code, .card textarea {
                 font: 12px/1.5 ui-monospace, Menlo, Consolas, monospace; word-break: break-all;
             }
@@ -824,6 +836,77 @@
     })();
 
     // =========================================================================
+    // 导出 / 导入
+    // =========================================================================
+
+    const Backup = (() => {
+        const FORMAT = 'element-hider';
+        // 主机名（可带 *. 前缀表示整个主域名）或 IPv6 字面量
+        const SCOPE_RE = /^(\*\.)?[a-z0-9_]([a-z0-9_-]*[a-z0-9_])?(\.[a-z0-9_]([a-z0-9_-]*[a-z0-9_])?)*$|^\[[0-9a-f:.]+\]$/i;
+
+        function exportText() {
+            return JSON.stringify({ format: FORMAT, version: 1, exported: new Date().toISOString(), rules: Store.all() }, null, 2);
+        }
+
+        /**
+         * 校验整份导入，任何一处不对就整份拒绝并指出位置 —— 只导一半比全不导更难收拾：
+         * 用户不知道哪些进去了，再导一次又会撞上重复。
+         * 返回 { rules } 或 { error }。
+         */
+        function parse(text) {
+            let data;
+            try {
+                data = JSON.parse(text);
+            } catch (e) {
+                return { error: '不是合法的 JSON' };
+            }
+            if (!data || typeof data !== 'object' || Array.isArray(data)) return { error: '顶层应该是一个对象' };
+            if (data.format !== FORMAT || data.version !== 1) return { error: '不是本脚本导出的文件（format / version 不对）' };
+            const rules = data.rules;
+            if (!rules || typeof rules !== 'object' || Array.isArray(rules)) return { error: 'rules 应该是「作用域 → 规则列表」的对象' };
+            const out = {};
+            for (const [scope, list] of Object.entries(rules)) {
+                const where = `rules[${JSON.stringify(scope)}]`;
+                if (!SCOPE_RE.test(scope)) return { error: `${where}：不是合法的站点名` };
+                if (!Array.isArray(list)) return { error: `${where}：应该是数组` };
+                out[scope] = [];
+                for (let i = 0; i < list.length; i++) {
+                    const r = list[i];
+                    if (!r || typeof r !== 'object' || typeof r.selector !== 'string') return { error: `${where}[${i}]：缺少 selector` };
+                    const err = selectorError(r.selector.trim());
+                    if (err) return { error: `${where}[${i}]：${err}` };
+                    if (r.created !== undefined && !Number.isFinite(r.created)) return { error: `${where}[${i}]：created 应该是时间戳` };
+                    out[scope].push({ selector: r.selector.trim(), created: r.created || Date.now() });
+                }
+            }
+            return { rules: out };
+        }
+
+        /** 合并进现有规则，重复的跳过。返回 { added, skipped } 或 { error }。 */
+        function importText(text) {
+            const r = parse(text);
+            if (r.error) return r;
+            let added = 0;
+            let skipped = 0;
+            for (const [scope, list] of Object.entries(r.rules)) {
+                const cur = Store.get(scope);
+                for (const rule of list) {
+                    if (cur.some(x => x.selector === rule.selector)) skipped++;
+                    else {
+                        cur.push(rule);
+                        added++;
+                    }
+                }
+                Store.set(scope, cur);
+            }
+            Styler.apply();
+            return { added, skipped };
+        }
+
+        return { exportText, importText, parse };
+    })();
+
+    // =========================================================================
     // 管理面板
     // =========================================================================
 
@@ -858,8 +941,56 @@
                 ]),
                 stats,
                 list,
+                ioSection(),
             ]);
             render();
+        }
+
+        /** 底部的导出 / 导入：同一个文本框，导出时填进去，导入时从里面读（也可以选文件填进去）。 */
+        function ioSection() {
+            const box = UI.el('textarea', { className: 'io-text', rows: 4, spellcheck: false, placeholder: '导出的 JSON 会出现在这里；导入时把 JSON 粘贴进来，或选择文件' });
+            box.style.cssText = 'width:100%;resize:vertical;';
+            const msg = UI.el('div', { className: 'info io-msg' });
+            const exportBtn = button('export', '导出全部');
+            const download = button('download', '下载文件');
+            const file = UI.el('input', { type: 'file', accept: '.json,application/json' });
+            file.style.display = 'none';
+            const pickFile = button('pick-file', '选择文件…');
+            const importBtn = button('import', '导入');
+            const say = (text, bad) => {
+                msg.textContent = text;
+                msg.classList.toggle('error', !!bad);
+            };
+
+            exportBtn.addEventListener('click', () => {
+                box.value = Backup.exportText();
+                box.select();
+                const n = Object.values(Store.all()).reduce((a, l) => a + l.length, 0);
+                say(`已导出所有站点的 ${n} 条规则，复制保存即可`);
+            });
+            download.addEventListener('click', () => {
+                const url = URL.createObjectURL(new Blob([Backup.exportText()], { type: 'application/json' }));
+                const a = UI.el('a', { href: url, download: `element-hider-${new Date().toISOString().slice(0, 10)}.json` });
+                a.click();
+                setTimeout(() => URL.revokeObjectURL(url), 1000);
+            });
+            pickFile.addEventListener('click', () => file.click());
+            file.addEventListener('change', async () => {
+                if (file.files[0]) box.value = await file.files[0].text();
+                file.value = '';
+            });
+            importBtn.addEventListener('click', () => {
+                const r = Backup.importText(box.value);
+                if (r.error) return say('⚠ 导入被拒绝：' + r.error, true);
+                render();
+                say(`导入了 ${r.added} 条规则` + (r.skipped ? `，跳过重复的 ${r.skipped} 条` : ''));
+            });
+
+            return UI.el('div', { className: 'io' }, [
+                box,
+                msg,
+                UI.el('div', { className: 'row' }, [exportBtn, download, UI.el('span', { className: 'grow' }), pickFile, importBtn, file]),
+            ]);
         }
 
         function close() {
