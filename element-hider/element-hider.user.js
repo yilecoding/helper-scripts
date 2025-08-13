@@ -3,7 +3,7 @@
 // @name:zh-CN   网页元素屏蔽
 // @name:en      Element Hider — Pick and Hide Annoying Page Elements
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.08.12.7
+// @version      2025.08.13.8
 // @description  点选网页上的广告、浮窗、推荐栏等元素一键隐藏：按站点（或整个主域名）记住规则，页面加载第一刻就用样式表隐藏，不闪烁，对之后动态插入的元素同样生效。
 // @description:zh-CN  点选网页上的广告、浮窗、推荐栏等元素一键隐藏：按站点（或整个主域名）记住规则，页面加载第一刻就用样式表隐藏，不闪烁，对之后动态插入的元素同样生效。
 // @description:en  Point at an ad, popup or recommendation box and hide it for good: rules are remembered per site (or for the whole registrable domain) and applied as a stylesheet from the very first moment of page load, so there is no flash, and elements inserted later are hidden too.
@@ -17,6 +17,7 @@
 // @grant        GM_listValues
 // @grant        GM_addStyle
 // @grant        GM_registerMenuCommand
+// @grant        GM_unregisterMenuCommand
 // @grant        unsafeWindow
 // @license      CC BY-NC-SA
 // @run-at       document-start
@@ -48,6 +49,7 @@
         debug: false,
         maxSelectorLength: 1000,    // 单条选择器最长字符数，导入时超长的视为非法
         undoMs: 5000,               // 隐藏后「撤销」提示停留多久
+        mainCoverRatio: 0.9,        // 匹配到的元素盖住视口这么大比例，就当成页面主体容器，保存前要再确认一次
 
         /*
          * 「整个主域名」的作用域需要知道注册域名。不带公共后缀表（太大），
@@ -357,6 +359,37 @@
     })();
 
     // =========================================================================
+    // 本站临时停用
+    // =========================================================================
+
+    /*
+     * 存在 sessionStorage 而不是 GM 存储：「临时」= 只管这个标签页，关掉就恢复。
+     * 规则把页面弄坏了想看一眼原样时用，不用一条条删再一条条加回来。
+     */
+    const Pause = (() => {
+        const KEY = 'element-hider:paused';
+
+        function on() {
+            try {
+                return sessionStorage.getItem(KEY) === '1';
+            } catch (e) {
+                return false;
+            }
+        }
+
+        function toggle() {
+            try {
+                if (on()) sessionStorage.removeItem(KEY);
+                else sessionStorage.setItem(KEY, '1');
+            } catch (e) { /* 存储被禁用时只能不停用 */ }
+            Styler.apply();
+            Manager.render();
+        }
+
+        return { on, toggle };
+    })();
+
+    // =========================================================================
     // 生效：一张样式表
     // =========================================================================
 
@@ -372,6 +405,7 @@
          * 一条坏规则会让本站所有规则一起失效。
          */
         function css() {
+            if (Pause.on()) return '';
             const lines = [];
             for (const r of Store.here()) {
                 if (selectorError(r.selector)) continue;
@@ -415,9 +449,22 @@
                 style.textContent = text;
             }
             log('样式已更新，规则数', text ? text.split('\n').length : 0);
+            Menu.refresh();
         }
 
-        return { apply, setPreview, isPreview, clearPreviews };
+        /** 暂时关掉整张样式表跑 fn（同步，中间不会绘制）：量被隐藏元素的真实尺寸用。 */
+        function unhidden(fn) {
+            const sheet = style && style.sheet;
+            if (!sheet) return fn();
+            sheet.disabled = true;
+            try {
+                return fn();
+            } finally {
+                sheet.disabled = false;
+            }
+        }
+
+        return { apply, unhidden, setPreview, isPreview, clearPreviews };
     })();
 
     // =========================================================================
@@ -470,7 +517,8 @@
             .card .row { display: flex; gap: 8px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
             .card .grow { flex: 1; }
             .card .info { margin-top: 4px; color: #52525b; }
-            .card .info.error { color: #e5484d; }
+            .card .info.error, .card .info.warn { color: #e5484d; }
+            .card .info.warn { font-weight: 600; }
             .card select { font: inherit; max-width: 220px; }
             .manager { top: 16px; bottom: auto; max-height: calc(100vh - 32px); display: flex; flex-direction: column; }
             .manager .head { margin: 0; }
@@ -594,6 +642,36 @@
     })();
 
     // =========================================================================
+    // 防误伤
+    // =========================================================================
+
+    /**
+     * 选择器会不会把整个页面藏掉：匹配到 html / body / head，或者某个元素盖住了视口的大半（页面主体容器）。
+     * 返回原因，没问题返回空串。尺寸在关掉现有规则的状态下量 —— 已经被隐藏的元素量出来是 0。
+     */
+    function dangerOf(sel) {
+        if (selectorError(sel)) return '';
+        const list = [...document.querySelectorAll(sel)].filter(n => n !== UI.host);
+        return Styler.unhidden(() => {
+            const vw = document.documentElement.clientWidth || innerWidth;
+            const vh = document.documentElement.clientHeight || innerHeight;
+            for (const n of list) {
+                if (n === document.documentElement || n === document.body || n === document.head) {
+                    return `会隐藏 <${n.localName}>，整个页面都会空白`;
+                }
+                const r = n.getBoundingClientRect();
+                const w = Math.max(0, Math.min(r.right, vw) - Math.max(r.left, 0));
+                const h = Math.max(0, Math.min(r.bottom, vh) - Math.max(r.top, 0));
+                const ratio = (w * h) / (vw * vh);
+                if (ratio > CONFIG.mainCoverRatio) {
+                    return `会隐藏一个盖住视口 ${Math.round(ratio * 100)}% 的元素 <${n.localName}${n.id ? '#' + n.id : ''}>，可能是页面主体`;
+                }
+            }
+            return '';
+        });
+    }
+
+    // =========================================================================
     // 拾取模式
     // =========================================================================
 
@@ -707,6 +785,7 @@
         let input = null;
         let info = null;
         let hideBtn = null;
+        let armed = '';         // 危险选择器第一次点「隐藏」后记下，再点一次才真的保存
 
         /** 选择器当前匹配到的页面元素；非法时返回 null。界面自己不算。 */
         function matches(sel) {
@@ -716,9 +795,12 @@
 
         /** 输入框每次变化都重算：匹配数、全部高亮、非法提示。 */
         function refresh() {
+            armed = '';
+            hideBtn.textContent = '隐藏';
             const sel = input.value.trim();
             const err = selectorError(sel);
             const list = err ? null : matches(sel);
+            info.classList.remove('warn');
             info.classList.toggle('error', !!err || !list.length);
             if (err) info.textContent = '⚠ ' + err + '，改好之前不能保存';
             else if (!list.length) info.textContent = '当前选择器没有匹配到任何元素';
@@ -780,6 +862,14 @@
 
         function save(sel, scope) {
             if (selectorError(sel)) return;
+            const danger = dangerOf(sel);
+            if (danger && armed !== sel) {
+                armed = sel;
+                info.classList.add('warn');
+                info.textContent = '⚠ ' + danger + '。确定要隐藏就再点一次「仍然隐藏」';
+                hideBtn.textContent = '仍然隐藏';
+                return;
+            }
             // 先数再隐藏：隐藏之后元素还在，但数字要在提示里告诉用户「刚才藏了几个」
             const n = matches(sel).length;
             const added = Store.add(scope, sel);
@@ -787,7 +877,8 @@
             log('已隐藏', scope, sel);
             close();
             Manager.render();
-            Toast.show(added ? `已隐藏 ${n} 个元素` : '这条规则已经存在', added ? () => {
+            const note = Pause.on() ? '（本站规则临时停用中，恢复后生效）' : '';
+            Toast.show((added ? `已隐藏 ${n} 个元素` : '这条规则已经存在') + note, added ? () => {
                 Store.remove(scope, sel);
                 Styler.apply();
                 Manager.render();
@@ -1005,12 +1096,13 @@
             const site = rules.filter(r => r.scope === SCOPE_SITE).length;
             const hiddenNow = new Set();
             for (const r of rules) {
-                if (selectorError(r.selector) || Styler.isPreview(r.scope, r.selector)) continue;
+                if (Pause.on() || selectorError(r.selector) || Styler.isPreview(r.scope, r.selector)) continue;
                 document.querySelectorAll(r.selector).forEach(n => hiddenNow.add(n));
             }
-            stats.textContent = rules.length
-                ? `共 ${rules.length} 条（本站 ${site} · 主域名 ${rules.length - site}），当前隐藏 ${hiddenNow.size} 个元素`
-                : '本站还没有规则。用菜单或 Alt+Shift+H 拾取要隐藏的元素。';
+            stats.textContent = !rules.length
+                ? '本站还没有规则。用菜单或 Alt+Shift+H 拾取要隐藏的元素。'
+                : `共 ${rules.length} 条（本站 ${site} · 主域名 ${rules.length - site}），`
+                    + (Pause.on() ? '已临时停用，一个都没隐藏' : `当前隐藏 ${hiddenNow.size} 个元素`);
             list.textContent = '';
             for (const r of rules) list.append(row(r));
         }
@@ -1055,7 +1147,11 @@
             const save = button('save', '保存');
             save.classList.add('primary');
             const cancel = button('cancel', '取消');
+            let armed = '';
             const check = () => {
+                armed = '';
+                save.textContent = '保存';
+                msg.classList.remove('warn');
                 const sel = input.value.trim();
                 const err = selectorError(sel);
                 msg.classList.toggle('error', !!err);
@@ -1066,8 +1162,16 @@
             input.addEventListener('input', check);
             cancel.addEventListener('click', render);
             save.addEventListener('click', () => {
-                const sel = check();
-                if (!sel) return;
+                const sel = input.value.trim();
+                if (selectorError(sel)) return;
+                const danger = dangerOf(sel);
+                if (danger && armed !== sel) {
+                    armed = sel;
+                    msg.classList.add('warn');
+                    msg.textContent = '⚠ ' + danger + '。确定的话再点一次';
+                    save.textContent = '仍然保存';
+                    return;
+                }
                 const wasPreview = Styler.isPreview(r.scope, r.selector);
                 if (!Store.update(r.scope, r.selector, sel)) {
                     msg.classList.add('error');
@@ -1085,6 +1189,32 @@
         }
 
         return { open, close, render };
+    })();
+
+    // =========================================================================
+    // 菜单（带规则数，停用状态切换时重新注册）
+    // =========================================================================
+
+    const Menu = (() => {
+        let ids = [];
+        let last = '';
+
+        function refresh() {
+            const n = Store.here().length;
+            const paused = Pause.on();
+            const sig = n + '|' + paused;
+            if (sig === last) return;
+            last = sig;
+            ids.forEach(id => GM_unregisterMenuCommand(id));
+            ids = [
+                GM_registerMenuCommand('🎯 拾取要隐藏的元素（Alt+Shift+H）', () => Picker.start()),
+                GM_registerMenuCommand(`📋 管理本站屏蔽规则（${n} 条）`, () => Manager.open()),
+            ];
+            if (paused) ids.push(GM_registerMenuCommand('▶ 恢复本站规则（当前临时停用中）', Pause.toggle));
+            else if (n) ids.push(GM_registerMenuCommand(`⏸ 本站临时停用全部规则（${n} 条）`, Pause.toggle));
+        }
+
+        return { refresh };
     })();
 
     // =========================================================================
@@ -1108,8 +1238,6 @@
         }
     }, true);
 
-    GM_registerMenuCommand('🎯 拾取要隐藏的元素（Alt+Shift+H）', () => Picker.start());
-    GM_registerMenuCommand('📋 管理本站屏蔽规则', () => Manager.open());
 
     /*
      * 调试钩子：GM 存储里 debug 为 true 时，把选择器生成器挂到页面上，

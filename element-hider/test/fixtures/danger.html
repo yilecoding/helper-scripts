@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>单页应用外壳</title>
+<style>
+    body { margin: 0; font: 14px/1.6 sans-serif; }
+    #app { min-height: 100vh; display: flex; flex-direction: column; }
+    .topbar { height: 48px; background: #333; color: #fff; }
+    .content { flex: 1; padding: 16px; }
+    .notice { padding: 8px; background: #ffe; border: 1px solid #ec0; }
+</style>
+</head>
+<body>
+<div id="app">
+    <div class="topbar">站点导航</div>
+    <div class="content">
+        <div class="notice">请关闭广告拦截插件</div>
+        <p>正文内容</p>
+    </div>
+</div>
+</body>
+</html>
