@@ -177,6 +177,17 @@ async function main() {
         await page.close()
     })
 
+    await t.test('页面自己写了 display: … !important（同权重、更高权重）也盖不过规则，且加载期间就生效', async () => {
+        const page = await open(browser, 'override.html', {
+            values: { 'rules:www.example.com': [rule('.ad-box'), rule('.ad-strong')] },
+        })
+        t.eq(await page.evaluate(() => window.__early), { state: 'loading', box: 'none', strong: 'none' })
+        t.eq(await display(page, '.ad-box'), 'none')
+        t.eq(await display(page, '.ad-strong'), 'none')
+        t.eq(await display(page, '.text'), 'block')
+        await page.close()
+    })
+
     console.log('拾取')
     await t.test('菜单进入拾取：悬停高亮、点击选中，页面收不到点击、链接不跳转', async () => {
         const page = await open(browser, 'pick.html')

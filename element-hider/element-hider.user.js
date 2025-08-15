@@ -3,7 +3,7 @@
 // @name:zh-CN   网页元素屏蔽
 // @name:en      Element Hider — Pick and Hide Annoying Page Elements
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.08.13.8
+// @version      2025.08.15.9
 // @description  点选网页上的广告、浮窗、推荐栏等元素一键隐藏：按站点（或整个主域名）记住规则，页面加载第一刻就用样式表隐藏，不闪烁，对之后动态插入的元素同样生效。
 // @description:zh-CN  点选网页上的广告、浮窗、推荐栏等元素一键隐藏：按站点（或整个主域名）记住规则，页面加载第一刻就用样式表隐藏，不闪烁，对之后动态插入的元素同样生效。
 // @description:en  Point at an ad, popup or recommendation box and hide it for good: rules are remembered per site (or for the whole registrable domain) and applied as a stylesheet from the very first moment of page load, so there is no flash, and elements inserted later are hidden too.
@@ -400,6 +400,15 @@
         const keyOf = (scope, sel) => scope + '\n' + sel;
 
         /*
+         * 页面自己也会写 `display: block !important`（反广告拦截的常见做法），两边都是 !important 时比权重：
+         * `#main .ad` 比我们的 `.ad` 高，规则就被盖掉了。用 :is() 包一层再挂三个不存在的 id 的 :not()，
+         * 权重抬高三个 id，和样式表的先后顺序也无关（document-start 时我们的样式表在页面样式之前）。
+         * :is() 不接受伪元素，带 :: 的选择器原样用。
+         */
+        const BOOST = ':not(#element-hider-x):not(#element-hider-x):not(#element-hider-x)';
+        const boosted = sel => (sel.includes('::') ? sel : `:is(${sel})${BOOST}`);
+
+        /*
          * 每条规则单独一行，不合并成 `a, b, c { ... }`：
          * 选择器列表里只要有一个非法（存进来之后浏览器不再支持的伪类之类），整条规则作废，
          * 一条坏规则会让本站所有规则一起失效。
@@ -410,9 +419,9 @@
             for (const r of Store.here()) {
                 if (selectorError(r.selector)) continue;
                 if (previews.has(keyOf(r.scope, r.selector))) {
-                    lines.push(`${r.selector} { outline: 2px dashed #e5484d !important; outline-offset: -2px !important; }`);
+                    lines.push(`${boosted(r.selector)} { outline: 2px dashed #e5484d !important; outline-offset: -2px !important; }`);
                 } else {
-                    lines.push(`${r.selector} { display: none !important; }`);
+                    lines.push(`${boosted(r.selector)} { display: none !important; }`);
                 }
             }
             return lines.join('\n');
