@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>拾取</title>
+<style>
+    body { margin: 0; font: 14px/1.6 sans-serif; }
+    .layout { display: flex; gap: 16px; padding: 16px; }
+    .post { flex: 1; }
+    .side { width: 300px; }
+    .widget { padding: 10px; margin-bottom: 10px; border: 1px solid #ddd; }
+    .widget img { display: block; width: 280px; height: 120px; background: #9cf; }
+</style>
+<script>
+    // 页面自己的点击处理：拾取时不该收到
+    window.__pageClicks = 0;
+    window.__pageDowns = 0;
+    window.addEventListener('click', () => window.__pageClicks++, true);
+    document.addEventListener('mousedown', () => window.__pageDowns++);
+</script>
+</head>
+<body>
+<div class="layout">
+    <div class="post">
+        <h1>文章标题</h1>
+        <p>正文第一段。<a id="inline-link" href="/other.html">站内链接</a></p>
+        <p>正文第二段。</p>
+    </div>
+    <div class="side">
+        <div class="widget hot-list"><h3>热榜</h3><ol><li>一</li><li>二</li></ol></div>
+        <div class="widget sc-gsDKAQ">
+            <a class="promo-link" href="https://ads.adnet.example/click?id=9"><img class="sc-dkPtRN" alt=""></a>
+        </div>
+        <div class="widget"><p>侧栏文字</p></div>
+    </div>
+</div>
+</body>
+</html>

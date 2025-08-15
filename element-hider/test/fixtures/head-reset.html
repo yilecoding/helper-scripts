@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>换页时重写 head</title>
+</head>
+<body>
+<div class="ad-banner">广告</div>
+<p class="text">正文</p>
+<script>
+    // 一些 SPA / 页面切换库换页时整个重写 <head>（标题、meta、样式表），挂在里面的样式表一起没了
+    setTimeout(() => {
+        document.head.innerHTML = '<meta charset="utf-8"><title>第二页</title>';
+        const ad = document.createElement('div');
+        ad.className = 'ad-banner';
+        ad.id = 'second-ad';
+        ad.textContent = '第二页的广告';
+        document.body.appendChild(ad);
+        window.__headReset = true;
+    }, 300);
+</script>
+</body>
+</html>

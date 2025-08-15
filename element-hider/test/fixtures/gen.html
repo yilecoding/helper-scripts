@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>选择器生成</title>
+<style>
+    body { margin: 0; font: 14px/1.6 sans-serif; }
+    .layout { display: flex; gap: 16px; padding: 16px; }
+    main { flex: 1; }
+    aside { width: 300px; }
+    section, aside > div, .feed > div { padding: 8px; margin: 4px 0; border: 1px solid #ddd; }
+</style>
+</head>
+<body>
+<div class="layout">
+    <main>
+        <!-- 随机类名 + 一个稳定类名：只用稳定的那个 -->
+        <div class="Header_title__3xYz1 promo-box css-1x2y3z">推广</div>
+        <!-- 测试属性优先于类名 -->
+        <button class="close-btn" data-testid="close-ad">关闭广告位</button>
+        <button class="close-btn">关闭另一个</button>
+        <!-- 只有随机类名，但有 aria-label -->
+        <button class="sc-bdVaJa kZRDVx" aria-label="关闭弹窗">×</button>
+        <!-- 广告联盟链接三条：同类广告规则一起匹配 -->
+        <div class="feed">
+            <div><a class="iVXCSc" href="https://ads.adnet.example/click?id=1">广告一</a></div>
+            <div><a class="iVXCSc" href="/news/1">新闻一</a></div>
+            <div><a class="iVXCSc" href="https://ads.adnet.example/click?id=2">广告二</a></div>
+            <div><a class="iVXCSc" href="/news/2">新闻二</a></div>
+            <div><a class="iVXCSc" href="https://ads.adnet.example/click?id=3">广告三</a></div>
+        </div>
+        <!-- 普通外链：必须精确 -->
+        <p><a href="https://github.com/yilecoding">GitHub</a> <a href="https://github.com/other">另一个</a></p>
+        <!-- 随机 id 的 GPT 广告位，两个一样的兄弟 -->
+        <div class="slots">
+            <div id="div-gpt-ad-1690000000000-0" class="gpt-slot">广告位 A</div>
+            <div id="div-gpt-ad-1690000000001-0" class="gpt-slot">广告位 B</div>
+        </div>
+    </main>
+    <aside id="sidebar">
+        <div class="_3xYz1aBc">侧栏一</div>
+        <div class="_9kLm2nOp">侧栏二</div>
+        <div class="_1aB2c3D4"><span class="jss123">侧栏三里的字</span></div>
+    </aside>
+</div>
+<div><div><span>全是匿名层级</span></div></div>
+<div><div><span>全是匿名层级 2</span></div></div>
+</body>
+</html>

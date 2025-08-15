@@ -1,0 +1,1282 @@
+// ==UserScript==
+// @name         网页元素屏蔽
+// @name:zh-CN   网页元素屏蔽
+// @name:en      Element Hider — Pick and Hide Annoying Page Elements
+// @namespace    https://github.com/yilecoding/helper-scripts
+// @version      2025.08.15.10
+// @description  点选网页上的广告、浮窗、推荐栏等元素一键隐藏：按站点（或整个主域名）记住规则，页面加载第一刻就用样式表隐藏，不闪烁，对之后动态插入的元素同样生效。
+// @description:zh-CN  点选网页上的广告、浮窗、推荐栏等元素一键隐藏：按站点（或整个主域名）记住规则，页面加载第一刻就用样式表隐藏，不闪烁，对之后动态插入的元素同样生效。
+// @description:en  Point at an ad, popup or recommendation box and hide it for good: rules are remembered per site (or for the whole registrable domain) and applied as a stylesheet from the very first moment of page load, so there is no flash, and elements inserted later are hidden too.
+// @author       壹樂（V：ita1125）
+// @match        http://*/*
+// @match        https://*/*
+// @noframes
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_deleteValue
+// @grant        GM_listValues
+// @grant        GM_addStyle
+// @grant        GM_registerMenuCommand
+// @grant        GM_unregisterMenuCommand
+// @grant        unsafeWindow
+// @license      CC BY-NC-SA
+// @run-at       document-start
+// @homepageURL  https://github.com/yilecoding/helper-scripts
+// @supportURL   https://github.com/yilecoding/helper-scripts/issues
+// @updateURL    https://raw.githubusercontent.com/yilecoding/helper-scripts/main/element-hider/element-hider.user.js
+// @downloadURL  https://raw.githubusercontent.com/yilecoding/helper-scripts/main/element-hider/element-hider.user.js
+// ==/UserScript==
+
+// 脚本持续更新维护，欢迎 star / watch 仓库获取最新版本：
+// https://github.com/yilecoding/helper-scripts
+
+/*
+ * @run-at 必须是 document-start：隐藏靠一张样式表，要在页面元素第一次绘制之前就挂上，
+ * 否则广告会先闪一下再消失。规则不靠 JS 逐个删元素，之后动态插入的元素天然也被隐藏。
+ */
+
+(function () {
+    'use strict';
+
+    /** 日志前缀。控制台过滤框输入「元素屏蔽」只看本脚本。 */
+    const TAG = '[元素屏蔽]';
+
+    // =========================================================================
+    // 配置
+    // =========================================================================
+
+    const CONFIG = {
+        debug: false,
+        maxSelectorLength: 1000,    // 单条选择器最长字符数，导入时超长的视为非法
+        undoMs: 5000,               // 隐藏后「撤销」提示停留多久
+        mainCoverRatio: 0.9,        // 匹配到的元素盖住视口这么大比例，就当成页面主体容器，保存前要再确认一次
+
+        /*
+         * 「整个主域名」的作用域需要知道注册域名。不带公共后缀表（太大），
+         * 只认常见的二级后缀：命中这些时主域名取后三段，否则取后两段。
+         */
+        secondLevelSuffixes: [
+            'com.cn', 'net.cn', 'org.cn', 'gov.cn', 'edu.cn', 'ac.cn',
+            'com.hk', 'com.tw', 'org.tw', 'co.uk', 'org.uk', 'ac.uk',
+            'co.jp', 'ne.jp', 'or.jp', 'co.kr', 'com.au', 'net.au', 'co.nz', 'com.br', 'co.in', 'com.sg',
+        ],
+    };
+
+    /*
+     * 链接指向这些主机时，生成 a[href^="https://主机/"] 这种「同类广告」规则：
+     * 允许它匹配多个元素 —— 一页上同一个广告联盟的链接通常不止一条，一起隐藏正是想要的。
+     * 别的外链必须精确到选中的那一个，免得点掉一个 GitHub 链接，全页的 GitHub 链接都没了。
+     */
+    const AD_HOST = /(^|[.-])(ads?|adserver|adservice|adx|adnxs|doubleclick|googlesyndication|googleads|banner|promo|track|tracking|click|affiliate|union|cpro|pos)\d*([.-]|$)/i;
+
+    const HOST = location.hostname;
+
+    function log(...args) {
+        if (CONFIG.debug) console.log(TAG, ...args);
+    }
+
+    // =========================================================================
+    // 作用域：本站（hostname）/ 整个主域名（*.example.com）
+    // =========================================================================
+
+    /** 注册域名（不查公共后缀表的近似值）。IP、localhost 这类就是自己。 */
+    function mainDomain(host) {
+        if (/^[\d.]+$/.test(host) || host.includes(':') || !host.includes('.')) return host;
+        const labels = host.split('.');
+        const lastTwo = labels.slice(-2).join('.');
+        const n = CONFIG.secondLevelSuffixes.includes(lastTwo) ? 3 : 2;
+        return labels.slice(-n).join('.');
+    }
+
+    const SCOPE_SITE = HOST;
+    const SCOPE_DOMAIN = '*.' + mainDomain(HOST);
+
+    // =========================================================================
+    // 选择器合法性
+    // =========================================================================
+
+    /*
+     * 拿 querySelector 当解析器：非法时抛 SyntaxError，不用自己写 CSS 语法检查。
+     * 但它对 `a/*` 这种「未闭合注释」是放行的，而样式表里这会把后面的规则全部吞掉；
+     * 花括号同理会提前结束规则块。这几个字符在选择器里本来也用不到，直接拒。
+     */
+    function selectorError(sel) {
+        if (typeof sel !== 'string' || !sel.trim()) return '选择器为空';
+        if (sel.length > CONFIG.maxSelectorLength) return `选择器过长（超过 ${CONFIG.maxSelectorLength} 个字符）`;
+        if (/[{}]|\/\*|\\$/.test(sel)) return '选择器里不能有花括号、注释或结尾的反斜杠';
+        try {
+            document.createDocumentFragment().querySelector(sel);
+        } catch (e) {
+            return '选择器语法错误';
+        }
+        return '';
+    }
+
+    // =========================================================================
+    // 随机 id / 类名判据
+    // =========================================================================
+
+    /*
+     * 构建工具生成的类名、组件库的自增 id，下次发版或下次渲染就变了，写进规则等于一次性规则。
+     * 判据宁严勿松：误判「稳定」→ 规则悄悄失效；误判「随机」→ 只是退回到结构路径，仍然能用。
+     */
+    const RANDOM_TOKEN = [
+        /^\d/,                                          // 纯数字 / 数字开头（类名本来就不该这样，多半是生成的）
+        /\d{4,}/,                                       // 长数字串：ember1234、mui-38291、div-gpt-ad-1690000000000-0
+        /^css-(?=[\w-]*\d)/i,                           // emotion / antd cssinjs：css-1x2y3z、css-dev-only-do-not-override-1x2y3z
+        /^sc-[\w-]{4,}$/,                               // styled-components 的组件类：sc-bdVaJa、sc-1a2b3c4d-0
+        /^(jss|svelte-|astro-|makeStyles-|emotion-|tw-)[\w-]*\d/i,  // JSS / Svelte / Astro 的作用域类
+        /^c-[a-zA-Z]*[A-Z][a-zA-Z]*$/,                  // Stitches：c-dhzjXW、c-PJLV
+        /^_[\w-]*\d[\w-]*$/,                            // CSS Modules 只留哈希：_3xYz1aBc
+        /(__|--)_?(?=[\w-]*\d)[a-zA-Z0-9_]{5,}$/,       // CSS Modules：Header_title__3xYz1、Button__root___2X3yZ、module--x--3xYz1
+        /[0-9a-f]{8}-[0-9a-f]{4}-/i,                    // uuid
+        // 十六进制串：8 位以上、字母数字都有（a3f9c01bd2）
+        /(^|[^0-9a-z])(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{8,}($|[^0-9a-z])/i,
+        // nanoid 一类：8 位以上的一段，同时有大写、小写、数字
+        /(^|[-_])(?=[a-zA-Z0-9]*\d)(?=[a-zA-Z0-9]*[a-z])(?=[a-zA-Z0-9]*[A-Z])[a-zA-Z0-9]{8,}($|[-_])/,
+        // 字母数字穿插：1x2y3z、a1b2c3（至少三处字母数字交替）
+        /(?:[a-z]\d|\d[a-z]){3,}/i,
+        /(^|-)[:«][a-zA-Z0-9]+[:»]$/,                   // React useId：:r1: / «r1» / radix-:r3:（不能只看冒号，Tailwind 的 hover:bg-red-500 也有）
+        /^_r_[0-9a-z]+_$/i,                             // React 19.2 的 useId
+        /^(ember|ext-gen|yui_|j_id|mui-|react-select-|radix-|headlessui-|downshift-|rc-tabs-|rc_select_)/i,
+    ];
+
+    /**
+     * styled-components / goober 的哈希类：5~8 个纯字母、大小写乱序（kZRDVx、iVXCSc、hGkUyx）。
+     * 和驼峰命名（navBarItem、userName）的区别：驼峰是「小写词 + 若干个首字母大写的词」。
+     */
+    function looksMixedCaseHash(s) {
+        if (!/^[a-zA-Z]{5,8}$/.test(s)) return false;
+        if ((s.match(/[A-Z]/g) || []).length < 2) return false;
+        return !/^[a-z]{2,}([A-Z][a-z]{2,})+$/.test(s) && !/^([A-Z][a-z]{2,})+$/.test(s);
+    }
+
+    function looksRandom(s) {
+        return !!s && (RANDOM_TOKEN.some(re => re.test(s)) || looksMixedCaseHash(s));
+    }
+
+    /** 状态类：悬停、展开、选中时才有，拾取那一刻在、平时不在。 */
+    const STATE_CLASS = /^(is-|has-)?(active|hover|hovered|focus|focused|open|opened|selected|current|show|shown|visible|in|fade|collapsed|expanded|checked|disabled|loading|loaded)$/i;
+
+    // =========================================================================
+    // 选择器生成
+    // =========================================================================
+
+    const Gen = (() => {
+        /** data-testid 这类本来就是给自动化定位用的，最稳；不带标签名。 */
+        const TEST_ATTRS = ['data-testid', 'data-test-id', 'data-test', 'data-qa', 'data-cy'];
+        /** 语义属性：带标签名用（button[aria-label="关闭"]）。 */
+        const SEMANTIC_ATTRS = ['aria-label', 'name', 'alt'];
+
+        const q = s => JSON.stringify(s);   // 属性值加引号，JSON 的转义规则在 CSS 字符串里同样成立
+        const tagOf = el => el.localName;
+
+        function count(sel) {
+            try {
+                return document.querySelectorAll(sel).length;
+            } catch (e) {
+                return -1;
+            }
+        }
+
+        function isUniqueFor(sel, el) {
+            try {
+                const all = document.querySelectorAll(sel);
+                return all.length === 1 && all[0] === el;
+            } catch (e) {
+                return false;
+            }
+        }
+
+        function stableValue(v) {
+            return !!v && v.length <= 60 && !looksRandom(v) && !/[\n\r]/.test(v);
+        }
+
+        /** 稳定类名，按在页面上出现的次数从少到多排（越少越能区分）。 */
+        function stableClasses(el) {
+            const cls = [...el.classList].filter(c => !looksRandom(c) && !STATE_CLASS.test(c));
+            const freq = new Map(cls.map(c => [c, count('.' + CSS.escape(c))]));
+            return cls.sort((a, b) => freq.get(a) - freq.get(b));
+        }
+
+        /**
+         * 只描述元素自己的候选选择器，按稳定程度排：
+         * 稳定 id → 测试属性 → 语义属性 / 链接 → role → 标签 + 类名。
+         * generic: true 表示允许匹配多个（同类广告）。
+         */
+        function selfCandidates(el) {
+            const tag = tagOf(el);
+            const out = [];
+            if (el.id && !looksRandom(el.id)) out.push({ sel: '#' + CSS.escape(el.id) });
+            for (const a of TEST_ATTRS) {
+                const v = el.getAttribute(a);
+                if (stableValue(v)) out.push({ sel: `[${a}=${q(v)}]` });
+            }
+            for (const a of SEMANTIC_ATTRS) {
+                const v = el.getAttribute(a);
+                if (stableValue(v)) out.push({ sel: `${tag}[${a}=${q(v)}]` });
+            }
+            if (tag === 'a' && el.href) {
+                let u = null;
+                try { u = new URL(el.href); } catch (e) { /* javascript: 之类 */ }
+                if (u && /^https?:$/.test(u.protocol)) {
+                    if (u.hostname !== location.hostname && AD_HOST.test(u.hostname)) {
+                        out.push({ sel: `a[href^=${q(u.origin + '/')}]`, generic: true });
+                    }
+                    const raw = el.getAttribute('href');
+                    if (raw.length <= 120 && !looksRandom(u.pathname + u.search)) out.push({ sel: `a[href=${q(raw)}]` });
+                }
+            }
+            const role = el.getAttribute('role');
+            if (stableValue(role)) out.push({ sel: `${tag}[role=${q(role)}]` });
+            const cls = stableClasses(el).slice(0, 2);
+            if (cls.length) {
+                for (const c of cls) out.push({ sel: tag + '.' + CSS.escape(c) });
+                if (cls.length > 1) out.push({ sel: tag + cls.map(c => '.' + CSS.escape(c)).join('') });
+            }
+            return out;
+        }
+
+        /** 路径上的一级：标签 + 最多两个稳定类名，同级有同样的兄弟时加 :nth-of-type。 */
+        function step(el) {
+            let s = tagOf(el) + stableClasses(el).slice(0, 2).map(c => '.' + CSS.escape(c)).join('');
+            const parent = el.parentElement;
+            if (parent) {
+                const same = [...parent.children].filter(c => c.matches(s));
+                if (same.length > 1) {
+                    const n = [...parent.children].filter(c => c.localName === el.localName).indexOf(el) + 1;
+                    s += `:nth-of-type(${n})`;
+                }
+            }
+            return s;
+        }
+
+        function accept(c, el) {
+            if (c.generic) {
+                const n = count(c.sel);
+                return n >= 1 && n <= 50 && el.matches(c.sel);
+            }
+            return isUniqueFor(c.sel, el);
+        }
+
+        /**
+         * 为元素生成选择器：先看自己能不能单独定位；不能就往上找一个能单独定位的祖先，
+         * 用 `>` 连起来的路径从那里走下来；到 body 都没有就从 body 起写全路径。
+         */
+        function selectorFor(el) {
+            if (el === document.documentElement) return 'html';
+            if (el === document.body) return 'body';
+            for (const c of selfCandidates(el)) if (accept(c, el)) return c.sel;
+
+            const path = [step(el)];
+            for (let cur = el.parentElement; cur && cur !== document.documentElement; cur = cur.parentElement) {
+                /*
+                 * 不带锚点的路径只在开头一级「有类名、没有序号」时才收（div.promo > span）。
+                 * div:nth-of-type(3) > span、div.widget:nth-of-type(2) 碰巧唯一也不收：
+                 * 页面别处多一个同样的结构就指错，继续往上找有 id / 稳定属性的锚点。
+                 */
+                if (/[.[#]/.test(path[0]) && !path[0].includes(':nth-of-type') && isUniqueFor(path.join(' > '), el)) {
+                    return path.join(' > ');
+                }
+                if (cur === document.body) break;
+                for (const c of selfCandidates(cur)) {
+                    if (c.generic) continue;
+                    const s = c.sel + ' > ' + path.join(' > ');
+                    if (isUniqueFor(c.sel, cur) && isUniqueFor(s, el)) return s;
+                }
+                path.unshift(step(cur));
+            }
+            return 'body > ' + path.join(' > ');
+        }
+
+        return { selectorFor, count };
+    })();
+
+    // =========================================================================
+    // 规则存储（GM，按作用域分键：rules:<作用域>）
+    // =========================================================================
+
+    /**
+     * 每个作用域一个键，而不是所有站点塞进一个大对象：
+     * 每次页面加载只读本站相关的两个键；多个标签页同时改不同站点也不会互相覆盖。
+     */
+    const Store = (() => {
+        const key = scope => 'rules:' + scope;
+
+        function get(scope) {
+            const list = GM_getValue(key(scope), []);
+            return Array.isArray(list) ? list.filter(r => r && typeof r.selector === 'string') : [];
+        }
+
+        function set(scope, list) {
+            if (list.length) GM_setValue(key(scope), list);
+            else GM_deleteValue(key(scope));
+        }
+
+        /** 本页生效的规则：本站 + 主域名两个作用域，带上作用域方便管理。 */
+        function here() {
+            const out = [];
+            for (const scope of [SCOPE_SITE, SCOPE_DOMAIN]) {
+                for (const r of get(scope)) out.push({ ...r, scope });
+            }
+            return out;
+        }
+
+        function add(scope, selector) {
+            const list = get(scope);
+            if (list.some(r => r.selector === selector)) return false;
+            list.push({ selector, created: Date.now() });
+            set(scope, list);
+            return true;
+        }
+
+        function remove(scope, selector) {
+            set(scope, get(scope).filter(r => r.selector !== selector));
+        }
+
+        /** 改一条规则的选择器，保持原来的位置和创建时间。新选择器和别的规则重复时返回 false。 */
+        function update(scope, from, to) {
+            const list = get(scope);
+            if (from !== to && list.some(r => r.selector === to)) return false;
+            const r = list.find(x => x.selector === from);
+            if (!r) return false;
+            r.selector = to;
+            set(scope, list);
+            return true;
+        }
+
+        /** 所有站点的规则：{ 作用域: [规则] }，导出用。 */
+        function all() {
+            const out = {};
+            for (const k of GM_listValues().filter(k => k.startsWith('rules:')).sort()) {
+                const list = get(k.slice('rules:'.length));
+                if (list.length) out[k.slice('rules:'.length)] = list;
+            }
+            return out;
+        }
+
+        return { get, set, here, add, remove, update, all };
+    })();
+
+    // =========================================================================
+    // 本站临时停用
+    // =========================================================================
+
+    /*
+     * 存在 sessionStorage 而不是 GM 存储：「临时」= 只管这个标签页，关掉就恢复。
+     * 规则把页面弄坏了想看一眼原样时用，不用一条条删再一条条加回来。
+     */
+    const Pause = (() => {
+        const KEY = 'element-hider:paused';
+
+        function on() {
+            try {
+                return sessionStorage.getItem(KEY) === '1';
+            } catch (e) {
+                return false;
+            }
+        }
+
+        function toggle() {
+            try {
+                if (on()) sessionStorage.removeItem(KEY);
+                else sessionStorage.setItem(KEY, '1');
+            } catch (e) { /* 存储被禁用时只能不停用 */ }
+            Styler.apply();
+            Manager.render();
+        }
+
+        return { on, toggle };
+    })();
+
+    // =========================================================================
+    // 生效：一张样式表
+    // =========================================================================
+
+    const Styler = (() => {
+        let style = null;
+        const previews = new Set();     // 正在预览的规则（作用域 + 选择器）：不隐藏，改成描边
+
+        const keyOf = (scope, sel) => scope + '\n' + sel;
+
+        /*
+         * 页面自己也会写 `display: block !important`（反广告拦截的常见做法），两边都是 !important 时比权重：
+         * `#main .ad` 比我们的 `.ad` 高，规则就被盖掉了。用 :is() 包一层再挂三个不存在的 id 的 :not()，
+         * 权重抬高三个 id，和样式表的先后顺序也无关（document-start 时我们的样式表在页面样式之前）。
+         * :is() 不接受伪元素，带 :: 的选择器原样用。
+         */
+        const BOOST = ':not(#element-hider-x):not(#element-hider-x):not(#element-hider-x)';
+        const boosted = sel => (sel.includes('::') ? sel : `:is(${sel})${BOOST}`);
+
+        /*
+         * 每条规则单独一行，不合并成 `a, b, c { ... }`：
+         * 选择器列表里只要有一个非法（存进来之后浏览器不再支持的伪类之类），整条规则作废，
+         * 一条坏规则会让本站所有规则一起失效。
+         */
+        function css() {
+            if (Pause.on()) return '';
+            const lines = [];
+            for (const r of Store.here()) {
+                if (selectorError(r.selector)) continue;
+                if (previews.has(keyOf(r.scope, r.selector))) {
+                    lines.push(`${boosted(r.selector)} { outline: 2px dashed #e5484d !important; outline-offset: -2px !important; }`);
+                } else {
+                    lines.push(`${boosted(r.selector)} { display: none !important; }`);
+                }
+            }
+            return lines.join('\n');
+        }
+
+        function setPreview(scope, sel, on) {
+            if (on) previews.add(keyOf(scope, sel));
+            else previews.delete(keyOf(scope, sel));
+            apply();
+        }
+
+        function isPreview(scope, sel) {
+            return previews.has(keyOf(scope, sel));
+        }
+
+        function clearPreviews() {
+            if (!previews.size) return;
+            previews.clear();
+            apply();
+        }
+
+        function apply() {
+            const text = css();
+            if (!style) {
+                // GM_addStyle 在 document-start 时也能挂（<html> 还没出来会等它）；有的管理器不返回元素，自己兜底
+                style = GM_addStyle(text) || null;
+                if (!style) {
+                    style = document.createElement('style');
+                    style.textContent = text;
+                    (document.head || document.documentElement).appendChild(style);
+                }
+                style.setAttribute('data-element-hider', '');
+                guard();
+            } else {
+                style.textContent = text;
+            }
+            log('样式已更新，规则数', text ? text.split('\n').length : 0);
+            Menu.refresh();
+        }
+
+        /*
+         * 有的 SPA / 换页库会整个重写 <head>（document.head.innerHTML = …），样式表跟着没了，
+         * 而且是静默的：已经隐藏的元素重新冒出来，新插入的也不再隐藏。
+         * 盯住整个文档，样式表一脱离就挂回去（同一个元素，规则不用重算）。
+         * 回调里只做一次 isConnected 判断，大量 DOM 变化时也没什么开销。
+         * 页面要是每次都把它删掉（和我们抢），挂回 50 次以后放弃，免得两边死循环。
+         */
+        function guard() {
+            let remounts = 0;
+            const mo = new MutationObserver(() => {
+                if (style.isConnected || !document.documentElement) return;
+                if (++remounts > 50) {
+                    mo.disconnect();
+                    console.warn(TAG, '样式表被页面反复移除，不再挂回');
+                    return;
+                }
+                (document.head || document.documentElement).appendChild(style);
+                log('样式表被移除，已挂回');
+            });
+            mo.observe(document, { childList: true, subtree: true });
+        }
+
+        /** 暂时关掉整张样式表跑 fn（同步，中间不会绘制）：量被隐藏元素的真实尺寸用。 */
+        function unhidden(fn) {
+            const sheet = style && style.sheet;
+            if (!sheet) return fn();
+            sheet.disabled = true;
+            try {
+                return fn();
+            } finally {
+                sheet.disabled = false;
+            }
+        }
+
+        return { apply, unhidden, setPreview, isPreview, clearPreviews };
+    })();
+
+    // =========================================================================
+    // 界面宿主（shadow DOM）
+    // =========================================================================
+
+    /*
+     * 一个铺满视口、自身 pointer-events: none 的宿主：高亮框画在里面，不拦截鼠标，
+     * 拾取时 elementFromPoint 打得到下面的页面元素；只有面板、提示条这些要点的东西单独开 pointer-events。
+     */
+    const UI = (() => {
+        let host = null;
+        let root = null;
+        let boxes = null;
+        let tracked = [];       // 正在高亮的元素：滚动 / 缩放时重算位置
+        let raf = 0;
+
+        const CSS = `
+            :host { all: initial; }
+            * { box-sizing: border-box; }
+            .boxes, .box { position: fixed; pointer-events: none; }
+            .boxes { inset: 0; }
+            .box { border: 2px solid #e5484d; background: rgba(229, 72, 77, .18); border-radius: 2px; }
+            .box.match { border-color: #f5a524; background: rgba(245, 165, 36, .16); }
+            .box .label {
+                position: absolute; left: -2px; bottom: 100%; margin-bottom: 2px; padding: 1px 6px; white-space: nowrap;
+                font: 12px/18px ui-monospace, Menlo, Consolas, monospace; color: #fff; background: #e5484d; border-radius: 3px;
+                max-width: 60vw; overflow: hidden; text-overflow: ellipsis;
+            }
+            .box.flip .label { bottom: auto; top: 100%; margin: 2px 0 0; }
+            .tip {
+                position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); pointer-events: none;
+                padding: 6px 14px; border-radius: 6px; background: rgba(24, 24, 27, .92); color: #fafafa;
+                font: 13px/20px system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; white-space: nowrap;
+            }
+            .toast {
+                position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); pointer-events: auto;
+                display: flex; align-items: center; gap: 4px; padding: 6px 8px 6px 14px; border-radius: 6px;
+                background: rgba(24, 24, 27, .94); color: #fafafa; box-shadow: 0 6px 20px rgba(0, 0, 0, .25);
+                font: 13px/20px system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; white-space: nowrap;
+            }
+            .toast button { background: transparent; border-color: transparent; color: #f5a524; font-weight: 600; }
+            .card {
+                position: fixed; right: 16px; bottom: 16px; width: 420px; max-width: calc(100vw - 32px); pointer-events: auto;
+                padding: 12px 14px; border-radius: 8px; background: #fff; color: #18181b; border: 1px solid #e4e4e7;
+                box-shadow: 0 8px 28px rgba(0, 0, 0, .18);
+                font: 13px/1.5 system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+            }
+            .card h3 { margin: 0 0 8px; font-size: 14px; }
+            .card .row { display: flex; gap: 8px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
+            .card .grow { flex: 1; }
+            .card .info { margin-top: 4px; color: #52525b; }
+            .card .info.error, .card .info.warn { color: #e5484d; }
+            .card .info.warn { font-weight: 600; }
+            .card select { font: inherit; max-width: 220px; }
+            .manager { top: 16px; bottom: auto; max-height: calc(100vh - 32px); display: flex; flex-direction: column; }
+            .manager .head { margin: 0; }
+            .manager .head h3 { margin: 0; }
+            .manager .stats { color: #52525b; margin: 4px 0 8px; }
+            .manager .list { overflow: auto; min-height: 0; }
+            .manager .rule { padding: 8px 0; border-top: 1px solid #e4e4e7; }
+            .manager .rule.previewing code { color: #e5484d; }
+            .manager .rule .meta { margin-top: 4px; }
+            .manager .tag { padding: 0 6px; border-radius: 3px; background: #f4f4f5; font-size: 12px; }
+            .manager .count.zero { color: #a1a1aa; }
+            .manager .io { padding-top: 8px; border-top: 1px solid #e4e4e7; }
+            .card code, .card textarea {
+                font: 12px/1.5 ui-monospace, Menlo, Consolas, monospace; word-break: break-all;
+            }
+            button {
+                font: inherit; padding: 3px 10px; border-radius: 5px; cursor: pointer;
+                border: 1px solid #d4d4d8; background: #fafafa; color: inherit;
+            }
+            button.primary { background: #e5484d; border-color: #e5484d; color: #fff; }
+            button:disabled { opacity: .5; cursor: not-allowed; }
+            @media (prefers-color-scheme: dark) {
+                .card { background: #18181b; color: #fafafa; border-color: #3f3f46; }
+                .card .info, .manager .stats { color: #a1a1aa; }
+                .manager .rule { border-color: #3f3f46; }
+                .manager .tag { background: #27272a; }
+                .card textarea, .card select { background: #27272a; color: inherit; border: 1px solid #3f3f46; }
+                button { background: #27272a; border-color: #3f3f46; }
+            }
+        `;
+
+        function ensure() {
+            if (host && host.isConnected) return root;
+            host = document.createElement('element-hider-ui');
+            // 内联 !important：用户自己的规则（比如 `html > *`）或页面样式都盖不过，界面不会把自己藏起来
+            host.style.cssText = 'all:initial!important;display:block!important;position:fixed!important;inset:0!important;'
+                + 'z-index:2147483647!important;pointer-events:none!important;';
+            root = host.attachShadow({ mode: 'open' });
+            const style = document.createElement('style');
+            style.textContent = CSS;
+            boxes = document.createElement('div');
+            boxes.className = 'boxes';
+            root.append(style, boxes);
+            document.documentElement.appendChild(host);
+            addEventListener('scroll', schedule, { capture: true, passive: true });
+            addEventListener('resize', schedule, { passive: true });
+            return root;
+        }
+
+        function el(tag, props, children) {
+            const n = document.createElement(tag);
+            Object.assign(n, props || {});
+            for (const c of children || []) n.append(c);
+            return n;
+        }
+
+        /** 页面坐标处的页面元素：界面自己（面板、提示条）不算。 */
+        function pageElementAt(x, y) {
+            const t = document.elementFromPoint(x, y);
+            return !t || t === host ? null : t;
+        }
+
+        function isOwn(e) {
+            return !!host && e.composedPath().includes(host);
+        }
+
+        function describe(node) {
+            const cls = [...node.classList].slice(0, 3).map(c => '.' + c).join('');
+            const r = node.getBoundingClientRect();
+            return `${node.localName}${node.id ? '#' + node.id : ''}${cls}  ${Math.round(r.width)}×${Math.round(r.height)}`;
+        }
+
+        /** 高亮一组元素。kind: 'hover'（拾取中的那个，带标签）/ 'match'（选择器匹配到的）。 */
+        function highlight(list, kind) {
+            ensure();
+            tracked = list.map(node => ({ node, kind }));
+            draw();
+        }
+
+        function draw() {
+            raf = 0;
+            if (!boxes) return;
+            boxes.textContent = '';
+            for (const { node, kind } of tracked) {
+                if (!node.isConnected) continue;
+                const r = node.getBoundingClientRect();
+                const b = el('div', { className: 'box ' + kind });
+                b.style.cssText = `left:${r.left}px;top:${r.top}px;width:${r.width}px;height:${r.height}px;`;
+                if (kind === 'hover') {
+                    if (r.top < 24) b.classList.add('flip');
+                    b.append(el('div', { className: 'label', textContent: describe(node) }));
+                }
+                boxes.append(b);
+            }
+        }
+
+        function schedule() {
+            if (!raf && tracked.length) raf = requestAnimationFrame(draw);
+        }
+
+        function clear() {
+            tracked = [];
+            if (boxes) boxes.textContent = '';
+        }
+
+        /** 挂一个带 class 的浮层（同 class 的旧的先移除），返回它。 */
+        function mount(className, children) {
+            ensure();
+            unmount(className);
+            const node = el('div', { className }, children);
+            root.append(node);
+            return node;
+        }
+
+        /* 不能写 root.querySelectorAll(':scope > .x')：shadow root 是 DocumentFragment，:scope 在它上面什么都不匹配 */
+        function unmount(className) {
+            if (root) [...root.children].filter(n => n.classList.contains(className)).forEach(n => n.remove());
+        }
+
+        return { ensure, el, pageElementAt, isOwn, highlight, clear, mount, unmount, get host() { return host; } };
+    })();
+
+    // =========================================================================
+    // 防误伤
+    // =========================================================================
+
+    /**
+     * 选择器会不会把整个页面藏掉：匹配到 html / body / head，或者某个元素盖住了视口的大半（页面主体容器）。
+     * 返回原因，没问题返回空串。尺寸在关掉现有规则的状态下量 —— 已经被隐藏的元素量出来是 0。
+     */
+    function dangerOf(sel) {
+        if (selectorError(sel)) return '';
+        const list = [...document.querySelectorAll(sel)].filter(n => n !== UI.host);
+        return Styler.unhidden(() => {
+            const vw = document.documentElement.clientWidth || innerWidth;
+            const vh = document.documentElement.clientHeight || innerHeight;
+            for (const n of list) {
+                if (n === document.documentElement || n === document.body || n === document.head) {
+                    return `会隐藏 <${n.localName}>，整个页面都会空白`;
+                }
+                const r = n.getBoundingClientRect();
+                const w = Math.max(0, Math.min(r.right, vw) - Math.max(r.left, 0));
+                const h = Math.max(0, Math.min(r.bottom, vh) - Math.max(r.top, 0));
+                const ratio = (w * h) / (vw * vh);
+                if (ratio > CONFIG.mainCoverRatio) {
+                    return `会隐藏一个盖住视口 ${Math.round(ratio * 100)}% 的元素 <${n.localName}${n.id ? '#' + n.id : ''}>，可能是页面主体`;
+                }
+            }
+            return '';
+        });
+    }
+
+    // =========================================================================
+    // 拾取模式
+    // =========================================================================
+
+    const Picker = (() => {
+        let active = false;
+        let base = null;        // 鼠标下的元素
+        let cur = null;         // 当前选中的层级（滚轮 / 方向键会在 base 的祖先间移动）
+        let trail = [];         // 往上走过的层级，往下走时原路返回
+
+        function start() {
+            if (active) return;
+            Confirm.close();
+            active = true;
+            base = cur = null;
+            trail = [];
+            UI.mount('tip', [UI.el('span', { textContent: '拾取模式：点击选中 · 滚轮 / ↑↓ 切换父子层级 · Esc 退出' })]);
+            log('进入拾取模式');
+        }
+
+        function stop() {
+            active = false;
+            base = cur = null;
+            UI.clear();
+            UI.unmount('tip');
+        }
+
+        function setCurrent(node) {
+            cur = node;
+            UI.highlight([node], 'hover');
+        }
+
+        function up() {
+            if (!cur || cur === document.documentElement || !cur.parentElement) return;
+            trail.push(cur);
+            setCurrent(cur.parentElement);
+        }
+
+        function down() {
+            if (!cur) return;
+            if (trail.length) return setCurrent(trail.pop());
+            const child = [...cur.children].find(c => c !== UI.host && c.getBoundingClientRect().width > 0);
+            if (child) setCurrent(child);
+        }
+
+        function choose() {
+            const node = cur;
+            stop();
+            if (node) Confirm.open(node);
+        }
+
+        function onMove(e) {
+            if (!active) return;
+            const node = UI.pageElementAt(e.clientX, e.clientY);
+            if (!node || node === base) return;
+            base = node;
+            trail = [];
+            setCurrent(node);
+        }
+
+        /*
+         * 拾取时按下的鼠标不能让页面收到：链接会跳转、按钮会提交，mousedown 上挂的菜单会弹出来。
+         * 这些监听在 document-start 时就挂在 window 的捕获阶段，比页面自己的任何监听都早，
+         * 等进了拾取模式再挂就排在页面的捕获监听后面，拦不住。
+         */
+        function onPointer(e) {
+            if (!active || UI.isOwn(e)) return;
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            if (e.type === 'click') {
+                if (!cur) onMove(e);
+                choose();
+            }
+        }
+
+        function onWheel(e) {
+            if (!active || !cur || UI.isOwn(e)) return;
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            if (e.deltaY < 0) up();
+            else if (e.deltaY > 0) down();
+        }
+
+        function onKey(e) {
+            if (!active) return false;
+            const act = { Escape: stop, ArrowUp: up, ArrowDown: down, Enter: choose }[e.key];
+            if (!act) return false;
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            act();
+            return true;
+        }
+
+        function install() {
+            addEventListener('mousemove', onMove, true);
+            for (const type of ['pointerdown', 'pointerup', 'mousedown', 'mouseup', 'click', 'dblclick', 'auxclick', 'contextmenu']) {
+                addEventListener(type, onPointer, true);
+            }
+            addEventListener('wheel', onWheel, { capture: true, passive: false });
+        }
+
+        return { start, stop, install, onKey, get active() { return active; } };
+    })();
+
+    // =========================================================================
+    // 确认面板
+    // =========================================================================
+
+    const Confirm = (() => {
+        let node = null;        // 拾取到的元素（父级 / 子级按钮在它的祖先链上移动）
+        let trail = [];
+        let input = null;
+        let info = null;
+        let hideBtn = null;
+        let armed = '';         // 危险选择器第一次点「隐藏」后记下，再点一次才真的保存
+
+        /** 选择器当前匹配到的页面元素；非法时返回 null。界面自己不算。 */
+        function matches(sel) {
+            if (selectorError(sel)) return null;
+            return [...document.querySelectorAll(sel)].filter(n => n !== UI.host);
+        }
+
+        /** 输入框每次变化都重算：匹配数、全部高亮、非法提示。 */
+        function refresh() {
+            armed = '';
+            hideBtn.textContent = '隐藏';
+            const sel = input.value.trim();
+            const err = selectorError(sel);
+            const list = err ? null : matches(sel);
+            info.classList.remove('warn');
+            info.classList.toggle('error', !!err || !list.length);
+            if (err) info.textContent = '⚠ ' + err + '，改好之前不能保存';
+            else if (!list.length) info.textContent = '当前选择器没有匹配到任何元素';
+            else info.textContent = `当前选择器会匹配 ${list.length} 个元素` + (list.length > 1 ? '（已全部高亮）' : '');
+            hideBtn.disabled = !!err || !list || !list.length;
+            UI.highlight(list || [], 'match');
+        }
+
+        function setNode(n) {
+            node = n;
+            input.value = Gen.selectorFor(n);
+            refresh();
+        }
+
+        function button(act, text, primary) {
+            const b = UI.el('button', { textContent: text, className: primary ? 'primary' : '' });
+            b.dataset.act = act;
+            return b;
+        }
+
+        function open(picked) {
+            trail = [];
+            input = UI.el('textarea', { className: 'sel', rows: 2, spellcheck: false });
+            input.style.cssText = 'width:100%;resize:vertical;';
+            info = UI.el('div', { className: 'info' });
+            hideBtn = button('hide', '隐藏', true);
+            const upBtn = button('parent', '↑ 父级');
+            const downBtn = button('child', '↓ 子级');
+            const cancelBtn = button('cancel', '取消');
+
+            const scopeSel = UI.el('select', { className: 'scope' }, [
+                UI.el('option', { value: SCOPE_SITE, textContent: '仅本站 ' + SCOPE_SITE }),
+                UI.el('option', { value: SCOPE_DOMAIN, textContent: '整个主域名 ' + SCOPE_DOMAIN }),
+            ]);
+            // 本站就是主域名本身（example.com）时两个选项含义几乎一样，仍然保留：*.example.com 还管所有子域名
+
+            input.addEventListener('input', refresh);
+            upBtn.addEventListener('click', () => {
+                if (node.parentElement && node !== document.body) {
+                    trail.push(node);
+                    setNode(node.parentElement);
+                }
+            });
+            downBtn.addEventListener('click', () => {
+                if (trail.length) setNode(trail.pop());
+            });
+            cancelBtn.addEventListener('click', close);
+            hideBtn.addEventListener('click', () => save(input.value.trim(), scopeSel.value));
+
+            UI.mount('card confirm', [
+                UI.el('h3', { textContent: '隐藏元素' }),
+                input,
+                info,
+                UI.el('div', { className: 'row' }, [upBtn, downBtn, UI.el('span', { className: 'grow' }), scopeSel]),
+                UI.el('div', { className: 'row' }, [UI.el('span', { className: 'grow' }), cancelBtn, hideBtn]),
+            ]);
+            setNode(picked);
+        }
+
+        function save(sel, scope) {
+            if (selectorError(sel)) return;
+            const danger = dangerOf(sel);
+            if (danger && armed !== sel) {
+                armed = sel;
+                info.classList.add('warn');
+                info.textContent = '⚠ ' + danger + '。确定要隐藏就再点一次「仍然隐藏」';
+                hideBtn.textContent = '仍然隐藏';
+                return;
+            }
+            // 先数再隐藏：隐藏之后元素还在，但数字要在提示里告诉用户「刚才藏了几个」
+            const n = matches(sel).length;
+            const added = Store.add(scope, sel);
+            Styler.apply();
+            log('已隐藏', scope, sel);
+            close();
+            Manager.render();
+            const note = Pause.on() ? '（本站规则临时停用中，恢复后生效）' : '';
+            Toast.show((added ? `已隐藏 ${n} 个元素` : '这条规则已经存在') + note, added ? () => {
+                Store.remove(scope, sel);
+                Styler.apply();
+                Manager.render();
+            } : null);
+        }
+
+        function close() {
+            UI.unmount('confirm');
+            UI.clear();
+            node = null;
+        }
+
+        return { open, close };
+    })();
+
+    // =========================================================================
+    // 撤销提示
+    // =========================================================================
+
+    const Toast = (() => {
+        let timer = 0;
+
+        /** 底部浮出一条提示，带「撤销」时点了就执行 undo；CONFIG.undoMs 后自动消失。 */
+        function show(text, undo) {
+            clearTimeout(timer);
+            const children = [UI.el('span', { textContent: text })];
+            if (undo) {
+                const b = UI.el('button', { textContent: '撤销' });
+                b.dataset.act = 'undo';
+                b.addEventListener('click', () => {
+                    undo();
+                    hide();
+                });
+                children.push(UI.el('span', { textContent: ' · ' }), b);
+            }
+            UI.mount('toast', children);
+            timer = setTimeout(hide, CONFIG.undoMs);
+        }
+
+        function hide() {
+            clearTimeout(timer);
+            UI.unmount('toast');
+        }
+
+        return { show, hide };
+    })();
+
+    // =========================================================================
+    // 导出 / 导入
+    // =========================================================================
+
+    const Backup = (() => {
+        const FORMAT = 'element-hider';
+        // 主机名（可带 *. 前缀表示整个主域名）或 IPv6 字面量
+        const SCOPE_RE = /^(\*\.)?[a-z0-9_]([a-z0-9_-]*[a-z0-9_])?(\.[a-z0-9_]([a-z0-9_-]*[a-z0-9_])?)*$|^\[[0-9a-f:.]+\]$/i;
+
+        function exportText() {
+            return JSON.stringify({ format: FORMAT, version: 1, exported: new Date().toISOString(), rules: Store.all() }, null, 2);
+        }
+
+        /**
+         * 校验整份导入，任何一处不对就整份拒绝并指出位置 —— 只导一半比全不导更难收拾：
+         * 用户不知道哪些进去了，再导一次又会撞上重复。
+         * 返回 { rules } 或 { error }。
+         */
+        function parse(text) {
+            let data;
+            try {
+                data = JSON.parse(text);
+            } catch (e) {
+                return { error: '不是合法的 JSON' };
+            }
+            if (!data || typeof data !== 'object' || Array.isArray(data)) return { error: '顶层应该是一个对象' };
+            if (data.format !== FORMAT || data.version !== 1) return { error: '不是本脚本导出的文件（format / version 不对）' };
+            const rules = data.rules;
+            if (!rules || typeof rules !== 'object' || Array.isArray(rules)) return { error: 'rules 应该是「作用域 → 规则列表」的对象' };
+            const out = {};
+            for (const [scope, list] of Object.entries(rules)) {
+                const where = `rules[${JSON.stringify(scope)}]`;
+                if (!SCOPE_RE.test(scope)) return { error: `${where}：不是合法的站点名` };
+                if (!Array.isArray(list)) return { error: `${where}：应该是数组` };
+                out[scope] = [];
+                for (let i = 0; i < list.length; i++) {
+                    const r = list[i];
+                    if (!r || typeof r !== 'object' || typeof r.selector !== 'string') return { error: `${where}[${i}]：缺少 selector` };
+                    const err = selectorError(r.selector.trim());
+                    if (err) return { error: `${where}[${i}]：${err}` };
+                    if (r.created !== undefined && !Number.isFinite(r.created)) return { error: `${where}[${i}]：created 应该是时间戳` };
+                    out[scope].push({ selector: r.selector.trim(), created: r.created || Date.now() });
+                }
+            }
+            return { rules: out };
+        }
+
+        /** 合并进现有规则，重复的跳过。返回 { added, skipped } 或 { error }。 */
+        function importText(text) {
+            const r = parse(text);
+            if (r.error) return r;
+            let added = 0;
+            let skipped = 0;
+            for (const [scope, list] of Object.entries(r.rules)) {
+                const cur = Store.get(scope);
+                for (const rule of list) {
+                    if (cur.some(x => x.selector === rule.selector)) skipped++;
+                    else {
+                        cur.push(rule);
+                        added++;
+                    }
+                }
+                Store.set(scope, cur);
+            }
+            Styler.apply();
+            return { added, skipped };
+        }
+
+        return { exportText, importText, parse };
+    })();
+
+    // =========================================================================
+    // 管理面板
+    // =========================================================================
+
+    const Manager = (() => {
+        let card = null;
+        let list = null;
+        let stats = null;
+
+        const SCOPE_LABEL = { [SCOPE_SITE]: '本站', [SCOPE_DOMAIN]: '主域名' };
+
+        function count(sel) {
+            return selectorError(sel) ? 0 : Gen.count(sel);
+        }
+
+        function button(act, text) {
+            const b = UI.el('button', { textContent: text });
+            b.dataset.act = act;
+            return b;
+        }
+
+        function open() {
+            Picker.stop();
+            Confirm.close();
+            const closeBtn = button('close', '关闭');
+            closeBtn.addEventListener('click', close);
+            stats = UI.el('div', { className: 'stats' });
+            list = UI.el('div', { className: 'list' });
+            card = UI.mount('card manager', [
+                UI.el('div', { className: 'row head' }, [
+                    UI.el('h3', { className: 'grow', textContent: '本站屏蔽规则' }),
+                    closeBtn,
+                ]),
+                stats,
+                list,
+                ioSection(),
+            ]);
+            render();
+        }
+
+        /** 底部的导出 / 导入：同一个文本框，导出时填进去，导入时从里面读（也可以选文件填进去）。 */
+        function ioSection() {
+            const box = UI.el('textarea', { className: 'io-text', rows: 4, spellcheck: false, placeholder: '导出的 JSON 会出现在这里；导入时把 JSON 粘贴进来，或选择文件' });
+            box.style.cssText = 'width:100%;resize:vertical;';
+            const msg = UI.el('div', { className: 'info io-msg' });
+            const exportBtn = button('export', '导出全部');
+            const download = button('download', '下载文件');
+            const file = UI.el('input', { type: 'file', accept: '.json,application/json' });
+            file.style.display = 'none';
+            const pickFile = button('pick-file', '选择文件…');
+            const importBtn = button('import', '导入');
+            const say = (text, bad) => {
+                msg.textContent = text;
+                msg.classList.toggle('error', !!bad);
+            };
+
+            exportBtn.addEventListener('click', () => {
+                box.value = Backup.exportText();
+                box.select();
+                const n = Object.values(Store.all()).reduce((a, l) => a + l.length, 0);
+                say(`已导出所有站点的 ${n} 条规则，复制保存即可`);
+            });
+            download.addEventListener('click', () => {
+                const url = URL.createObjectURL(new Blob([Backup.exportText()], { type: 'application/json' }));
+                const a = UI.el('a', { href: url, download: `element-hider-${new Date().toISOString().slice(0, 10)}.json` });
+                a.click();
+                setTimeout(() => URL.revokeObjectURL(url), 1000);
+            });
+            pickFile.addEventListener('click', () => file.click());
+            file.addEventListener('change', async () => {
+                if (file.files[0]) box.value = await file.files[0].text();
+                file.value = '';
+            });
+            importBtn.addEventListener('click', () => {
+                const r = Backup.importText(box.value);
+                if (r.error) return say('⚠ 导入被拒绝：' + r.error, true);
+                render();
+                say(`导入了 ${r.added} 条规则` + (r.skipped ? `，跳过重复的 ${r.skipped} 条` : ''));
+            });
+
+            return UI.el('div', { className: 'io' }, [
+                box,
+                msg,
+                UI.el('div', { className: 'row' }, [exportBtn, download, UI.el('span', { className: 'grow' }), pickFile, importBtn, file]),
+            ]);
+        }
+
+        function close() {
+            Styler.clearPreviews();
+            UI.unmount('manager');
+            card = null;
+        }
+
+        function render() {
+            if (!card) return;
+            const rules = Store.here();
+            const site = rules.filter(r => r.scope === SCOPE_SITE).length;
+            const hiddenNow = new Set();
+            for (const r of rules) {
+                if (Pause.on() || selectorError(r.selector) || Styler.isPreview(r.scope, r.selector)) continue;
+                document.querySelectorAll(r.selector).forEach(n => hiddenNow.add(n));
+            }
+            stats.textContent = !rules.length
+                ? '本站还没有规则。用菜单或 Alt+Shift+H 拾取要隐藏的元素。'
+                : `共 ${rules.length} 条（本站 ${site} · 主域名 ${rules.length - site}），`
+                    + (Pause.on() ? '已临时停用，一个都没隐藏' : `当前隐藏 ${hiddenNow.size} 个元素`);
+            list.textContent = '';
+            for (const r of rules) list.append(row(r));
+        }
+
+        function row(r) {
+            const n = count(r.selector);
+            const previewing = Styler.isPreview(r.scope, r.selector);
+            const node = UI.el('div', { className: 'rule' + (previewing ? ' previewing' : '') });
+            node.dataset.scope = r.scope;
+            node.dataset.selector = r.selector;
+
+            const preview = button('preview', previewing ? '取消预览' : '预览');
+            const edit = button('edit', '编辑');
+            const del = button('delete', '删除');
+            preview.addEventListener('click', () => {
+                Styler.setPreview(r.scope, r.selector, !previewing);
+                render();
+            });
+            edit.addEventListener('click', () => node.replaceWith(editor(r)));
+            del.addEventListener('click', () => {
+                Styler.setPreview(r.scope, r.selector, false);
+                Store.remove(r.scope, r.selector);
+                Styler.apply();
+                render();
+            });
+            node.append(
+                UI.el('code', { className: 'sel', textContent: r.selector }),
+                UI.el('div', { className: 'row meta' }, [
+                    UI.el('span', { className: 'tag', textContent: SCOPE_LABEL[r.scope] || r.scope, title: r.scope }),
+                    UI.el('span', { className: 'grow count' + (n ? '' : ' zero'), textContent: n ? `匹配 ${n} 个` : '当前页没有匹配' }),
+                    preview, edit, del,
+                ]),
+            );
+            return node;
+        }
+
+        function editor(r) {
+            const node = UI.el('div', { className: 'rule editing' });
+            const input = UI.el('textarea', { className: 'sel', rows: 2, spellcheck: false, value: r.selector });
+            input.style.cssText = 'width:100%;resize:vertical;';
+            const msg = UI.el('div', { className: 'info' });
+            const save = button('save', '保存');
+            save.classList.add('primary');
+            const cancel = button('cancel', '取消');
+            let armed = '';
+            const check = () => {
+                armed = '';
+                save.textContent = '保存';
+                msg.classList.remove('warn');
+                const sel = input.value.trim();
+                const err = selectorError(sel);
+                msg.classList.toggle('error', !!err);
+                msg.textContent = err ? '⚠ ' + err : `匹配 ${count(sel)} 个元素`;
+                save.disabled = !!err;
+                return err ? null : sel;
+            };
+            input.addEventListener('input', check);
+            cancel.addEventListener('click', render);
+            save.addEventListener('click', () => {
+                const sel = input.value.trim();
+                if (selectorError(sel)) return;
+                const danger = dangerOf(sel);
+                if (danger && armed !== sel) {
+                    armed = sel;
+                    msg.classList.add('warn');
+                    msg.textContent = '⚠ ' + danger + '。确定的话再点一次';
+                    save.textContent = '仍然保存';
+                    return;
+                }
+                const wasPreview = Styler.isPreview(r.scope, r.selector);
+                if (!Store.update(r.scope, r.selector, sel)) {
+                    msg.classList.add('error');
+                    msg.textContent = '⚠ 本站已有一样的规则';
+                    return;
+                }
+                Styler.setPreview(r.scope, r.selector, false);
+                if (wasPreview) Styler.setPreview(r.scope, sel, true);
+                Styler.apply();
+                render();
+            });
+            node.append(input, msg, UI.el('div', { className: 'row' }, [UI.el('span', { className: 'grow' }), cancel, save]));
+            check();
+            return node;
+        }
+
+        return { open, close, render };
+    })();
+
+    // =========================================================================
+    // 菜单（带规则数，停用状态切换时重新注册）
+    // =========================================================================
+
+    const Menu = (() => {
+        let ids = [];
+        let last = '';
+
+        function refresh() {
+            const n = Store.here().length;
+            const paused = Pause.on();
+            const sig = n + '|' + paused;
+            if (sig === last) return;
+            last = sig;
+            ids.forEach(id => GM_unregisterMenuCommand(id));
+            ids = [
+                GM_registerMenuCommand('🎯 拾取要隐藏的元素（Alt+Shift+H）', () => Picker.start()),
+                GM_registerMenuCommand(`📋 管理本站屏蔽规则（${n} 条）`, () => Manager.open()),
+            ];
+            if (paused) ids.push(GM_registerMenuCommand('▶ 恢复本站规则（当前临时停用中）', Pause.toggle));
+            else if (n) ids.push(GM_registerMenuCommand(`⏸ 本站临时停用全部规则（${n} 条）`, Pause.toggle));
+        }
+
+        return { refresh };
+    })();
+
+    // =========================================================================
+    // 启动
+    // =========================================================================
+
+    Styler.apply();
+    Picker.install();
+
+    /*
+     * 快捷键按 e.code 认：macOS 上 Alt+Shift+H 的 e.key 是「Ó」，按 e.key 判断永远不触发。
+     * 拾取模式里的 Esc / 方向键也在这里分发，同样要抢在页面之前（页面的 Esc 会关它自己的弹窗）。
+     */
+    addEventListener('keydown', e => {
+        if (Picker.onKey(e)) return;
+        if (e.altKey && e.shiftKey && !e.ctrlKey && !e.metaKey && e.code === 'KeyH') {
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            if (Picker.active) Picker.stop();
+            else Picker.start();
+        }
+    }, true);
+
+
+    /*
+     * 调试钩子：GM 存储里 debug 为 true 时，把选择器生成器挂到页面上，
+     * 控制台里 __elementHider.selectorFor($0) 就能看某个元素会生成什么。测试也走这里做单测。
+     */
+    if (GM_getValue('debug', false)) {
+        CONFIG.debug = true;
+        unsafeWindow.__elementHider = { looksRandom, selectorFor: Gen.selectorFor, selectorError, mainDomain };
+    }
+})();

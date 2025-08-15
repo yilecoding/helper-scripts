@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>页面自己写了 !important</title>
+<style>
+    /* 反广告拦截常见写法：给广告位强行 display !important */
+    .ad-box { display: block !important; height: 90px; background: #fc0; }
+    #main .ad-strong { display: flex !important; }
+</style>
+</head>
+<body>
+<div id="main">
+    <div class="ad-box">普通类名广告</div>
+    <div class="ad-strong">id 加类名的广告</div>
+    <script>
+        window.__early = {
+            state: document.readyState,
+            box: getComputedStyle(document.querySelector('.ad-box')).display,
+            strong: getComputedStyle(document.querySelector('.ad-strong')).display,
+        };
+    </script>
+    <p class="text">正文</p>
+</div>
+</body>
+</html>
