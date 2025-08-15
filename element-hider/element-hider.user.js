@@ -3,7 +3,7 @@
 // @name:zh-CN   网页元素屏蔽
 // @name:en      Element Hider — Pick and Hide Annoying Page Elements
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.08.15.9
+// @version      2025.08.15.10
 // @description  点选网页上的广告、浮窗、推荐栏等元素一键隐藏：按站点（或整个主域名）记住规则，页面加载第一刻就用样式表隐藏，不闪烁，对之后动态插入的元素同样生效。
 // @description:zh-CN  点选网页上的广告、浮窗、推荐栏等元素一键隐藏：按站点（或整个主域名）记住规则，页面加载第一刻就用样式表隐藏，不闪烁，对之后动态插入的元素同样生效。
 // @description:en  Point at an ad, popup or recommendation box and hide it for good: rules are remembered per site (or for the whole registrable domain) and applied as a stylesheet from the very first moment of page load, so there is no flash, and elements inserted later are hidden too.
@@ -454,11 +454,34 @@
                     (document.head || document.documentElement).appendChild(style);
                 }
                 style.setAttribute('data-element-hider', '');
+                guard();
             } else {
                 style.textContent = text;
             }
             log('样式已更新，规则数', text ? text.split('\n').length : 0);
             Menu.refresh();
+        }
+
+        /*
+         * 有的 SPA / 换页库会整个重写 <head>（document.head.innerHTML = …），样式表跟着没了，
+         * 而且是静默的：已经隐藏的元素重新冒出来，新插入的也不再隐藏。
+         * 盯住整个文档，样式表一脱离就挂回去（同一个元素，规则不用重算）。
+         * 回调里只做一次 isConnected 判断，大量 DOM 变化时也没什么开销。
+         * 页面要是每次都把它删掉（和我们抢），挂回 50 次以后放弃，免得两边死循环。
+         */
+        function guard() {
+            let remounts = 0;
+            const mo = new MutationObserver(() => {
+                if (style.isConnected || !document.documentElement) return;
+                if (++remounts > 50) {
+                    mo.disconnect();
+                    console.warn(TAG, '样式表被页面反复移除，不再挂回');
+                    return;
+                }
+                (document.head || document.documentElement).appendChild(style);
+                log('样式表被移除，已挂回');
+            });
+            mo.observe(document, { childList: true, subtree: true });
         }
 
         /** 暂时关掉整张样式表跑 fn（同步，中间不会绘制）：量被隐藏元素的真实尺寸用。 */

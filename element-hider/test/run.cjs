@@ -188,6 +188,15 @@ async function main() {
         await page.close()
     })
 
+    await t.test('页面重写 <head> 把样式表带走了：自动挂回去，规则继续生效', async () => {
+        const page = await open(browser, 'head-reset.html', { values: { 'rules:www.example.com': [rule('.ad-banner')] } })
+        await page.waitForFunction(() => window.__headReset)
+        await page.waitForTimeout(50)
+        t.eq(await display(page, '#second-ad'), 'none')
+        t.eq(await page.evaluate(() => document.querySelectorAll('style[data-element-hider]').length), 1, '只有一份')
+        await page.close()
+    })
+
     console.log('拾取')
     await t.test('菜单进入拾取：悬停高亮、点击选中，页面收不到点击、链接不跳转', async () => {
         const page = await open(browser, 'pick.html')
