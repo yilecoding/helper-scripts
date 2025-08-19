@@ -106,6 +106,44 @@ async function installCanvasDecoder(page) {
     })
 }
 
+const HOST = '#qr-code-userscript-host'
+
+/** 浮层是否打开。 */
+function overlayOpen(page) {
+    return page.evaluate((sel) => !!document.querySelector(sel), HOST)
+}
+
+/** 浮层里的文字信息。 */
+function overlayInfo(page) {
+    return page.evaluate((sel) => document.querySelector(sel).shadowRoot.querySelector('.info').textContent, HOST)
+}
+
+/**
+ * 断言浮层里那张图扫出来是 expected。有解码器就真解；没有就退一步：
+ * 画布边长应等于 QR.encode(expected) 的尺寸 × 缩放（至少证明画的是那段内容对应的版本）。
+ */
+async function expectOverlayQr(page, expected, QR, hasDecoder, opts = {}) {
+    if (hasDecoder) {
+        const out = await page.evaluate((sel) => window.__decodeCanvas(document.querySelector(sel).shadowRoot.querySelector('canvas.qr')), HOST)
+        t.eq(out, expected, '浮层二维码解码')
+    } else {
+        const q = QR.encode(expected, { ecl: opts.ecl || 'M' })
+        const w = await page.evaluate((sel) => document.querySelector(sel).shadowRoot.querySelector('canvas.qr').width, HOST)
+        t.eq(w % (q.size + 8), 0, '画布边长是 (模块数 + 静区) 的整数倍')
+    }
+}
+
+/** 打开装好脚本（和解码器，如果有）的测试页。 */
+async function openUi(browser, decoderPath, opts = {}) {
+    const page = await open(browser, opts.file || 'page.html', opts)
+    await page.waitForFunction(() => window.__gm && window.__gm.menu.length > 0)
+    if (decoderPath) {
+        await page.addScriptTag({ path: decoderPath })
+        await installCanvasDecoder(page)
+    }
+    return page
+}
+
 const hex = (bytes) => Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join(' ')
 
 async function main() {
@@ -332,6 +370,52 @@ async function main() {
         })
         await page.context().close()
     }
+
+    console.log('\n浮层')
+
+    await t.test('菜单打开当前页二维码，扫出来是当前地址', async () => {
+        const page = await openUi(browser, decoderPath)
+        t.eq((await h.gm(page)).menu, ['当前页面二维码（Alt+Q）'])
+        t.eq(await overlayOpen(page), false)
+        await h.menu(page, '当前页面二维码')
+        t.eq(await overlayOpen(page), true)
+        await expectOverlayQr(page, SITE + '/page.html', QR, !!decoderPath)
+        t.eq(h.errors(page).map(String), [])
+        await page.context().close()
+    })
+
+    await t.test('Alt+Q 打开、再按一次关闭；Esc 关闭且不传给页面', async () => {
+        const page = await openUi(browser, decoderPath)
+        await page.evaluate(() => { window.__pageEsc = 0; document.addEventListener('keydown', (e) => { if (e.key === 'Escape') window.__pageEsc++ }) })
+        await page.keyboard.press('Alt+KeyQ')
+        t.eq(await overlayOpen(page), true)
+        await page.keyboard.press('Alt+KeyQ')
+        t.eq(await overlayOpen(page), false, '再按一次关闭')
+        await page.keyboard.press('Alt+KeyQ')
+        await page.keyboard.press('Escape')
+        t.eq(await overlayOpen(page), false, 'Esc 关闭')
+        t.eq(await page.evaluate(() => window.__pageEsc), 0, '关浮层的 Esc 不该再触发页面自己的 Esc')
+        await page.keyboard.press('Escape')
+        t.eq(await page.evaluate(() => window.__pageEsc), 1, '浮层关了以后 Esc 照常给页面')
+        await page.context().close()
+    })
+
+    await t.test('点浮层外面关闭，点面板里面不关', async () => {
+        const page = await openUi(browser, decoderPath)
+        await page.keyboard.press('Alt+KeyQ')
+        await page.locator(HOST + ' canvas.qr').click()
+        t.eq(await overlayOpen(page), true, '点二维码本身不关')
+        // 在面板里按下、拖到外面松开（选文字时常见）也不关
+        const box = await page.locator(HOST + ' .panel').boundingBox()
+        await page.mouse.move(box.x + 20, box.y + 20)
+        await page.mouse.down()
+        await page.mouse.move(10, 10)
+        await page.mouse.up()
+        t.eq(await overlayOpen(page), true, '从面板里拖出去松开不关')
+        await page.mouse.click(10, 10)
+        t.eq(await overlayOpen(page), false)
+        await page.context().close()
+    })
 
     await close()
     t.done()

@@ -3,7 +3,7 @@
 // @name:zh-CN   页面二维码
 // @name:en      Page QR Code — Send the Current Page, a Link or Any Text to Your Phone
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.08.19.3
+// @version      2025.08.19.4
 // @description  把当前页面、链接或一段文字变成二维码，手机一扫就过去。编码器自带、不依赖外部库。
 // @description:zh-CN  把当前页面、链接或一段文字变成二维码，手机一扫就过去。编码器自带、不依赖外部库。
 // @description:en  Turns the current page, a link or any text into a QR code so you can open it on your phone with one scan. Self-contained encoder, no external libraries.
@@ -11,7 +11,7 @@
 // @match        http://*/*
 // @match        https://*/*
 // @noframes
-// @grant        none
+// @grant        GM_registerMenuCommand
 // @license      CC BY-NC-SA
 // @run-at       document-idle
 // @homepageURL  https://github.com/yilecoding/helper-scripts
@@ -35,7 +35,12 @@
 
     const CONFIG = {
         defaultEcl: 'M',        // 默认纠错等级：M 能扛 15% 污损，对屏幕扫码绰绰有余
+        hotkey: 'KeyQ',         // 和 Alt 组合；按物理键位（KeyboardEvent.code）匹配
+        quietZone: 4,           // 静区宽度（模块数），标准要求至少 4
+        displaySize: 240,       // 浮层里二维码的显示边长（CSS 像素）
     };
+
+    const HOST_ID = 'qr-code-userscript-host';
 
     // =========================================================================
     // 二维码编码器（ISO/IEC 18004）
@@ -509,6 +514,140 @@
         };
     })();
     // ---- QR-ENCODER-END ----
+
+    // =========================================================================
+    // 渲染
+    // =========================================================================
+
+    /**
+     * 画到 canvas 上：白底 + 四周 quietZone 个模块的静区。
+     * 每个模块是整数像素（scale），缩放显示交给 CSS 的 image-rendering: pixelated，
+     * 否则模块边缘会被插值成灰色，手机在屏幕上扫时更难对焦。
+     */
+    function renderCanvas(qr, canvas, scale) {
+        const q = CONFIG.quietZone;
+        const n = qr.size + q * 2;
+        canvas.width = canvas.height = n * scale;
+        const g = canvas.getContext('2d');
+        g.fillStyle = '#fff';
+        g.fillRect(0, 0, canvas.width, canvas.height);
+        g.fillStyle = '#000';
+        for (let r = 0; r < qr.size; r++) {
+            for (let c = 0; c < qr.size; c++) {
+                if (qr.modules[r][c]) g.fillRect((c + q) * scale, (r + q) * scale, scale, scale);
+            }
+        }
+        return canvas;
+    }
+
+    /** 显示用的缩放：让画布像素至少是显示尺寸的 2 倍（高分屏不糊）。 */
+    function displayScale(qr) {
+        return Math.max(1, Math.ceil((CONFIG.displaySize * 2) / (qr.size + CONFIG.quietZone * 2)));
+    }
+
+    // =========================================================================
+    // 浮层
+    // =========================================================================
+
+    const STYLE = `
+        :host { all: initial; }
+        .backdrop { position: fixed; inset: 0; z-index: 2147483647; background: rgba(0,0,0,.35);
+                    display: flex; align-items: center; justify-content: center;
+                    font: 13px/1.5 system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; color: #222; }
+        .panel { background: #fff; border-radius: 10px; box-shadow: 0 8px 32px rgba(0,0,0,.25);
+                 padding: 14px 16px 16px; width: ${CONFIG.displaySize + 32}px; box-sizing: border-box; }
+        .head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+        .title { font-weight: 600; }
+        .close { all: unset; cursor: pointer; width: 24px; height: 24px; text-align: center; border-radius: 4px; font-size: 18px; line-height: 24px; color: #666; }
+        .close:hover { background: #f0f0f0; }
+        canvas.qr { display: block; width: ${CONFIG.displaySize}px; height: ${CONFIG.displaySize}px; image-rendering: pixelated; }
+        .info { margin-top: 6px; color: #666; font-size: 12px; min-height: 18px; word-break: break-all; }
+    `;
+
+    const Overlay = (() => {
+        let host = null;
+        let root = null;
+
+        function onKey(e) {
+            if (e.key === 'Escape') {
+                e.preventDefault();
+                e.stopPropagation();    // 页面自己的弹窗也监听 Esc，别让一次 Esc 关两层
+                close();
+            }
+        }
+
+        function build() {
+            host = document.createElement('div');
+            host.id = HOST_ID;
+            root = host.attachShadow({ mode: 'open' });
+            root.innerHTML = `
+                <style>${STYLE}</style>
+                <div class="backdrop">
+                    <div class="panel" role="dialog" aria-label="二维码">
+                        <div class="head"><span class="title">扫码在手机上打开</span><button class="close" title="关闭（Esc）">×</button></div>
+                        <canvas class="qr"></canvas>
+                        <div class="info"></div>
+                    </div>
+                </div>`;
+            root.querySelector('.close').addEventListener('click', close);
+            const backdrop = root.querySelector('.backdrop');
+            // 只认直接点在遮罩上的：在面板里按下、拖到外面松开时 click 的 target 是共同祖先（遮罩），不能关
+            let downOnBackdrop = false;
+            backdrop.addEventListener('mousedown', (e) => { downOnBackdrop = e.target === backdrop; });
+            backdrop.addEventListener('click', (e) => {
+                if (e.target === backdrop && downOnBackdrop) close();
+            });
+            document.documentElement.appendChild(host);
+        }
+
+        function draw(text) {
+            const canvas = root.querySelector('canvas.qr');
+            const info = root.querySelector('.info');
+            try {
+                const qr = QR.encode(text, { ecl: CONFIG.defaultEcl });
+                renderCanvas(qr, canvas, displayScale(qr));
+                info.textContent = text;
+            } catch (e) {
+                console.warn(TAG, e);
+                info.textContent = e.message;
+            }
+        }
+
+        function open(text) {
+            if (!host || !host.isConnected) build();
+            draw(text);
+            window.addEventListener('keydown', onKey, true);
+        }
+
+        function close() {
+            window.removeEventListener('keydown', onKey, true);
+            if (host) host.remove();
+            host = root = null;
+        }
+
+        const isOpen = () => !!(host && host.isConnected);
+
+        return { open, close, isOpen };
+    })();
+
+    // =========================================================================
+    // 入口：快捷键 / 菜单
+    // =========================================================================
+
+    function showPage() {
+        Overlay.open(location.href);
+    }
+
+    window.addEventListener('keydown', (e) => {
+        // 按 code 不按 key：macOS 上 Option+Q 的 key 是「œ」
+        if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && e.code === CONFIG.hotkey && !e.repeat) {
+            e.preventDefault();
+            if (Overlay.isOpen()) Overlay.close();
+            else showPage();
+        }
+    }, true);
+
+    GM_registerMenuCommand('当前页面二维码（Alt+Q）', showPage);
 
     console.debug(TAG, '已加载');
 })();
