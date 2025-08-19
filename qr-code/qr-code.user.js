@@ -3,7 +3,7 @@
 // @name:zh-CN   页面二维码
 // @name:en      Page QR Code — Send the Current Page, a Link or Any Text to Your Phone
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.08.18.2
+// @version      2025.08.19.3
 // @description  把当前页面、链接或一段文字变成二维码，手机一扫就过去。编码器自带、不依赖外部库。
 // @description:zh-CN  把当前页面、链接或一段文字变成二维码，手机一扫就过去。编码器自带、不依赖外部库。
 // @description:en  Turns the current page, a link or any text into a QR code so you can open it on your phone with one scan. Self-contained encoder, no external libraries.
@@ -289,10 +289,223 @@
             return out;
         }
 
+        // ---- 格式信息 / 版本信息（BCH） ----
+
+        const FORMAT_ECL = { L: 0b01, M: 0b00, Q: 0b11, H: 0b10 };   // 注意不是按 L<M<Q<H 的顺序编号
+
+        /** 15 位格式信息：2 位纠错等级 + 3 位掩码，BCH(15,5) 生成多项式 0x537，再异或 0x5412 防全 0。 */
+        function formatBits(ecl, mask) {
+            const data = (FORMAT_ECL[ecl] << 3) | mask;
+            let rem = data;
+            for (let i = 0; i < 10; i++) rem = (rem << 1) ^ ((rem >>> 9) * 0x537);
+            return ((data << 10) | rem) ^ 0x5412;
+        }
+
+        /** 18 位版本信息（版本 ≥ 7 才有）：6 位版本号 + BCH(18,6) 生成多项式 0x1F25，不异或。 */
+        function versionBits(ver) {
+            let rem = ver;
+            for (let i = 0; i < 12; i++) rem = (rem << 1) ^ ((rem >>> 11) * 0x1f25);
+            return (ver << 12) | rem;
+        }
+
+        // ---- 矩阵 ----
+
+        const MASKS = [
+            (r, c) => (r + c) % 2 === 0,
+            (r) => r % 2 === 0,
+            (r, c) => c % 3 === 0,
+            (r, c) => (r + c) % 3 === 0,
+            (r, c) => (Math.floor(r / 2) + Math.floor(c / 3)) % 2 === 0,
+            (r, c) => ((r * c) % 2) + ((r * c) % 3) === 0,
+            (r, c) => (((r * c) % 2) + ((r * c) % 3)) % 2 === 0,
+            (r, c) => (((r + c) % 2) + ((r * c) % 3)) % 2 === 0,
+        ];
+
+        /** 画功能图形，返回 { size, m, fn }：m[行][列] 1 = 深色，fn 标记哪些格是功能图形（数据和掩码都不碰）。 */
+        function buildFunctionPatterns(ver) {
+            const size = ver * 4 + 17;
+            const m = Array.from({ length: size }, () => new Uint8Array(size));
+            const fn = Array.from({ length: size }, () => new Uint8Array(size));
+            const set = (r, c, dark) => {
+                m[r][c] = dark ? 1 : 0;
+                fn[r][c] = 1;
+            };
+
+            for (let i = 0; i < size; i++) {
+                set(6, i, i % 2 === 0);     // 时序图形
+                set(i, 6, i % 2 === 0);
+            }
+            // 三个定位图形连同一圈白色分隔符：以中心为原点，切比雪夫距离 2 和 4 的是白圈
+            for (const [cr, cc] of [[3, 3], [3, size - 4], [size - 4, 3]]) {
+                for (let dr = -4; dr <= 4; dr++) {
+                    for (let dc = -4; dc <= 4; dc++) {
+                        const r = cr + dr, c = cc + dc;
+                        if (r < 0 || r >= size || c < 0 || c >= size) continue;
+                        const d = Math.max(Math.abs(dr), Math.abs(dc));
+                        set(r, c, d !== 2 && d !== 4);
+                    }
+                }
+            }
+            // 对齐图形：坐标两两组合，和三个定位图形重叠的三个角跳过
+            const pos = alignmentPositions(ver);
+            const last = pos.length - 1;
+            pos.forEach((r, i) => pos.forEach((c, j) => {
+                if ((i === 0 && j === 0) || (i === 0 && j === last) || (i === last && j === 0)) return;
+                for (let dr = -2; dr <= 2; dr++) {
+                    for (let dc = -2; dc <= 2; dc++) set(r + dr, c + dc, Math.max(Math.abs(dr), Math.abs(dc)) !== 1);
+                }
+            }));
+            // 先用随便一个值占住格式信息的位置（标成功能格，数据不往里放），选完掩码再写真值
+            drawFormat(m, fn, 'M', 0);
+            if (ver >= 7) {
+                const bits = versionBits(ver);
+                for (let i = 0; i < 18; i++) {
+                    const bit = (bits >>> i) & 1;
+                    const a = size - 11 + (i % 3), b = Math.floor(i / 3);
+                    set(b, a, bit);     // 右上：6 行 × 3 列
+                    set(a, b, bit);     // 左下：3 行 × 6 列
+                }
+            }
+            return { size, m, fn };
+        }
+
+        /** 格式信息两份：左上角绕定位图形一圈；另一份拆成右上（低 8 位）+ 左下（高 7 位）。外加那个固定的暗模块。 */
+        function drawFormat(m, fn, ecl, mask) {
+            const size = m.length;
+            const bits = formatBits(ecl, mask);
+            const set = (r, c, i) => {
+                m[r][c] = (bits >>> i) & 1;
+                fn[r][c] = 1;
+            };
+            for (let i = 0; i <= 5; i++) set(i, 8, i);
+            set(7, 8, 6);
+            set(8, 8, 7);
+            set(8, 7, 8);
+            for (let i = 9; i < 15; i++) set(8, 14 - i, i);
+            for (let i = 0; i < 8; i++) set(8, size - 1 - i, i);
+            for (let i = 8; i < 15; i++) set(size - 15 + i, 8, i);
+            m[size - 8][8] = 1;
+            fn[size - 8][8] = 1;
+        }
+
+        /**
+         * 码字按位从右下角开始、两列一组蛇形往上往下摆，跳过功能格；
+         * 第 6 列整列是竖向时序图形，走到那里时整体左移一列。放不满的剩余位保持 0（之后照样被掩码）。
+         */
+        function placeCodewords(m, fn, codewords) {
+            const size = m.length;
+            let i = 0;
+            for (let right = size - 1; right >= 1; right -= 2) {
+                if (right === 6) right = 5;
+                const upward = ((right + 1) & 2) === 0;
+                for (let v = 0; v < size; v++) {
+                    const r = upward ? size - 1 - v : v;
+                    for (let j = 0; j < 2; j++) {
+                        const c = right - j;
+                        if (fn[r][c] || i >= codewords.length * 8) continue;
+                        m[r][c] = (codewords[i >>> 3] >>> (7 - (i & 7))) & 1;
+                        i++;
+                    }
+                }
+            }
+        }
+
+        function applyMask(m, fn, mask) {
+            const f = MASKS[mask];
+            for (let r = 0; r < m.length; r++) {
+                for (let c = 0; c < m.length; c++) if (!fn[r][c] && f(r, c)) m[r][c] ^= 1;
+            }
+        }
+
+        const N3_A = [0, 0, 0, 0, 1, 0, 1, 1, 1, 0, 1];
+        const N3_B = [1, 0, 1, 1, 1, 0, 1, 0, 0, 0, 0];
+
+        /**
+         * 标准 7.8.3 的四条罚分：
+         *   N1 行/列里同色连续 ≥5 个：3 + (长度 - 5)
+         *   N2 每个同色 2×2 块：3（重叠的块分别计）
+         *   N3 1:1:3:1:1 的深浅深浅深，任一侧带 4 个浅色：40；符号外是静区，按浅色算
+         *   N4 深色占比偏离 50% 每满 5%：10
+         */
+        function penalty(m) {
+            // 按矩形写（行数、列数分开），方便单测拿一行 1×N 的「矩阵」单独测 N1/N3
+            const rows = m.length, cols = m[0].length;
+            let n1 = 0, n2 = 0, n3 = 0, dark = 0;
+            const scan = (line, n) => {
+                let run = 1;
+                for (let i = 1; i <= n; i++) {
+                    if (i < n && line[i] === line[i - 1]) run++;
+                    else {
+                        if (run >= 5) n1 += run - 2;
+                        run = 1;
+                    }
+                }
+                for (let s = -4; s <= n - 7; s++) {
+                    let a = true, b = true;
+                    for (let k = 0; k < 11 && (a || b); k++) {
+                        const i = s + k;
+                        const v = i < 0 || i >= n ? 0 : line[i];
+                        if (v !== N3_A[k]) a = false;
+                        if (v !== N3_B[k]) b = false;
+                    }
+                    if (a) n3 += 40;
+                    if (b) n3 += 40;
+                }
+            };
+            for (let r = 0; r < rows; r++) scan(m[r], cols);
+            const col = new Uint8Array(rows);
+            for (let c = 0; c < cols; c++) {
+                for (let r = 0; r < rows; r++) col[r] = m[r][c];
+                scan(col, rows);
+            }
+            for (let r = 0; r < rows; r++) {
+                for (let c = 0; c < cols; c++) {
+                    dark += m[r][c];
+                    if (r < rows - 1 && c < cols - 1) {
+                        const v = m[r][c];
+                        if (v === m[r][c + 1] && v === m[r + 1][c] && v === m[r + 1][c + 1]) n2 += 3;
+                    }
+                }
+            }
+            const total = rows * cols;
+            const n4 = Math.floor(Math.abs(dark * 20 - total * 10) / total) * 10;
+            return { n1, n2, n3, n4, total: n1 + n2 + n3 + n4 };
+        }
+
+        /**
+         * 文字 → 二维码矩阵。opts 同 encodeData，另加 mask（0–7，不传就按罚分自动挑）。
+         * 返回 { version, ecl, mode, count, eci, mask, size, modules }，modules[行][列] 1 = 深色。
+         */
+        function encode(text, opts = {}) {
+            const d = encodeData(text, opts);
+            const codewords = addEccAndInterleave(d.data, d.version, d.ecl);
+            const { size, m, fn } = buildFunctionPatterns(d.version);
+            placeCodewords(m, fn, codewords);
+
+            let mask = opts.mask;
+            if (mask === undefined || mask === null) {
+                let best = Infinity;
+                for (let k = 0; k < 8; k++) {
+                    applyMask(m, fn, k);
+                    drawFormat(m, fn, d.ecl, k);    // 格式信息也参与罚分
+                    const p = penalty(m).total;
+                    if (p < best) {
+                        best = p;
+                        mask = k;
+                    }
+                    applyMask(m, fn, k);            // 异或两次复原
+                }
+            }
+            applyMask(m, fn, mask);
+            drawFormat(m, fn, d.ecl, mask);
+            return { version: d.version, ecl: d.ecl, mode: d.mode, count: d.count, eci: d.eci, mask, size, modules: m };
+        }
+
         return {
             gfMul, rsGenerator, rsEncode,
             alignmentPositions, rawDataModules, totalCodewords, dataCodewordCount,
             chooseMode, makeSegment, encodeData, capacity, addEccAndInterleave,
+            formatBits, versionBits, penalty, encode,
         };
     })();
     // ---- QR-ENCODER-END ----

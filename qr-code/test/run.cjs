@@ -4,6 +4,13 @@
  *
  * 编码器部分：按源码里的 QR-ENCODER-BEGIN / END 标记把编码器切出来，在 node 里直接跑，
  * 和 ISO/IEC 18004 附录里的公开样例逐个码字比对。
+ *
+ * 真实解码：生成的矩阵画到 canvas 上，交给 ZXing（html5-qrcode 打包的那份）解码，比对原文。
+ * 仓库不带解码器，按顺序找：环境变量 QR_DECODER（html5-qrcode.min.js 的路径）
+ * → require.resolve('html5-qrcode/html5-qrcode.min.js') → 下面 DECODER_CANDIDATES。
+ * 都找不到时跳过解码用例并打印一行提示（码字级的标准样例照样跑）。
+ *
+ * 页面都用 page.route 挂在假域名 https://example.com 下，不访问外网。
  */
 'use strict'
 
@@ -13,6 +20,18 @@ const vm = require('vm')
 const h = require('../../tools/userscript-harness.cjs')
 
 const SCRIPT = path.join(__dirname, '..', 'qr-code.user.js')
+const FIXTURES = path.join(__dirname, 'fixtures')
+const SITE = 'https://example.com'
+
+const DECODER_CANDIDATES = [
+    '/home/yujie_ao/code/avcp/frontend/node_modules/.pnpm/html5-qrcode@2.3.8/node_modules/html5-qrcode/html5-qrcode.min.js',
+]
+
+function findDecoder() {
+    if (process.env.QR_DECODER) return process.env.QR_DECODER
+    try { return require.resolve('html5-qrcode/html5-qrcode.min.js') } catch (e) { /* 没装 */ }
+    return DECODER_CANDIDATES.find((p) => fs.existsSync(p)) || null
+}
 
 const t = h.createRunner('qr-code')
 
@@ -24,10 +43,74 @@ function loadEncoder() {
     return vm.runInNewContext(`${m[1]}\nQR`, { TextEncoder }, { filename: 'qr-encoder' })
 }
 
+/** 新开页面，把假域名的请求映射到 fixtures（用正则匹配：glob 对带中文的路径不可靠）。 */
+async function open(browser, file = 'page.html', opts = {}) {
+    const context = opts.context || (await browser.newContext({ viewport: { width: 1280, height: 800 } }))
+    const page = await context.newPage()
+    page.on('console', (m) => { if (m.type() === 'error') console.log('      [page error]', m.text()) })
+    await page.route(/^https:\/\/example\.com\//, (route) => {
+        const url = new URL(route.request().url())
+        const name = url.pathname.endsWith('.html') ? path.basename(url.pathname) : file
+        const fp = path.join(FIXTURES, name)
+        if (!fs.existsSync(fp)) return route.fulfill({ status: 404, body: 'not found' })
+        route.fulfill({ contentType: 'text/html; charset=utf-8', body: fs.readFileSync(fp) })
+    })
+    if (opts.install !== false) await h.install(page, SCRIPT, opts)
+    await page.goto(SITE + '/' + file)
+    return page
+}
+
+/**
+ * 往页面里装解码器，返回 decode(modules) → 解出的文字（都失败返回 'ERR:…'）。
+ * 先按每模块 4px 画；解不出再换 2px、3px 重画重解 —— ZXing-js 对个别矩阵在某些像素尺寸下
+ * 找不到定位图形（同一矩阵与 node-qrcode 的输出逐位相同，换个尺寸就能解，是解码器那边的事），
+ * 能解出与原文完全一致的文字本身就证明了编码正确。
+ */
+async function decoderOn(page, decoderPath) {
+    await page.addScriptTag({ path: decoderPath })
+    await installCanvasDecoder(page)
+    return (modules) => page.evaluate(async (mods) => {
+        let out = ''
+        for (const scale of [4, 2, 3]) {
+            const n = mods.length, quiet = 4
+            const c = document.createElement('canvas')
+            c.width = c.height = (n + quiet * 2) * scale
+            const g = c.getContext('2d')
+            g.fillStyle = '#fff'
+            g.fillRect(0, 0, c.width, c.height)
+            g.fillStyle = '#000'
+            mods.forEach((row, r) => row.forEach((v, col) => { if (v) g.fillRect((col + quiet) * scale, (r + quiet) * scale, scale, scale) }))
+            out = await window.__decodeCanvas(c)
+            if (!out.startsWith('ERR:')) return out
+        }
+        return out
+    }, modules.map((row) => Array.from(row)))
+}
+
+/** 解一个 canvas（页面里已经装好解码器）。挂在 window 上，UI 用例直接拿浮层里的 canvas 来解。 */
+async function installCanvasDecoder(page) {
+    await page.evaluate(() => {
+        window.__decodeCanvas = async (canvas) => {
+            const blob = await new Promise((r) => canvas.toBlob(r, 'image/png'))
+            const file = new File([blob], 'qr.png', { type: 'image/png' })
+            if (!document.getElementById('__reader')) {
+                const d = document.createElement('div')
+                d.id = '__reader'
+                d.style.display = 'none'
+                document.body.appendChild(d)
+            }
+            // 关掉 BarcodeDetector：要测的是 ZXing 这一个确定的解码器
+            const q = new window.Html5Qrcode('__reader', { verbose: false, useBarCodeDetectorIfSupported: false, formatsToSupport: [0] })
+            try { return await q.scanFile(file, false) } catch (e) { return 'ERR:' + e }
+        }
+    })
+}
+
 const hex = (bytes) => Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join(' ')
 
 async function main() {
     const QR = loadEncoder()
+    const { browser, close } = await h.setup(FIXTURES)
 
     console.log('编码器（node）')
 
@@ -134,6 +217,123 @@ async function main() {
         t.eq(out.slice(62, 66), ecc0)
     })
 
+    await t.test('格式信息 BCH 与 ISO 表 C.1 一致', async () => {
+        t.eq(QR.formatBits('M', 0).toString(2).padStart(15, '0'), '101010000010010')
+        t.eq(QR.formatBits('L', 0).toString(2).padStart(15, '0'), '111011111000100')
+        t.eq(QR.formatBits('Q', 0).toString(2).padStart(15, '0'), '011010101011111')
+        t.eq(QR.formatBits('H', 7).toString(2).padStart(15, '0'), '000100000111011')
+        t.eq(QR.formatBits('M', 5).toString(2).padStart(15, '0'), '100000011001110')
+    })
+
+    await t.test('版本信息 BCH 与 ISO 表 D.1 一致', async () => {
+        t.eq(QR.versionBits(7).toString(16), '7c94')
+        t.eq(QR.versionBits(8).toString(16), '85bc')
+        t.eq(QR.versionBits(21).toString(16), '15683')
+        t.eq(QR.versionBits(40).toString(16), '28c69')
+    })
+
+    await t.test('罚分 N1：同色连续 5 个 3 分，每多一个 +1', async () => {
+        t.eq(QR.penalty([[1, 1, 1, 1, 1]]), { n1: 3, n2: 0, n3: 0, n4: 100, total: 103 })
+        const p = QR.penalty([[1, 1, 1, 1, 1, 1, 1, 0, 0, 0]])
+        t.eq([p.n1, p.n4], [5, 40], '连续 7 个 = 5 分；70% 深色偏 20% = 40 分')
+        t.eq(QR.penalty([[1, 0, 1, 0, 1, 0, 1, 0]]).total, 0)
+    })
+
+    await t.test('罚分 N2：每个同色 2×2 块 3 分，重叠的分别计', async () => {
+        const p = QR.penalty([[0, 0, 0], [0, 0, 0], [0, 0, 0]])
+        t.eq([p.n1, p.n2, p.n3, p.n4], [0, 12, 0, 100])
+        const q = QR.penalty([[1, 1, 0, 1], [1, 1, 1, 0], [0, 1, 0, 1], [1, 0, 1, 0]])
+        t.eq(q.n2, 3)
+    })
+
+    await t.test('罚分 N3：1:1:3:1:1 两侧各自带 4 个浅色各算 40，符号外按浅色（静区）', async () => {
+        t.eq(QR.penalty([[0, 0, 0, 0, 1, 0, 1, 1, 1, 0, 1]]).n3, 80, '左边 4 个浅色 + 右边静区')
+        t.eq(QR.penalty([[1, 0, 1, 1, 1, 0, 1]]).n3, 80, '两侧都是静区')
+        const p = QR.penalty([[1, 0, 1, 0, 1, 1, 1, 0, 1, 0, 1]])
+        t.eq([p.n3, p.n4], [0, 20], '两侧都不够 4 个浅色：不罚；7/11 深色偏 13.6% → 20')
+        t.eq(QR.penalty([[0, 0, 0, 1, 0, 1, 1, 1, 0, 1, 1, 0, 0, 0]]).n3, 40, '左边 3 个浅色 + 静区凑够 4 个')
+        t.eq(QR.penalty([[1, 0, 0, 0, 1, 0, 1, 1, 1, 0, 1, 1, 0, 0]]).n3, 0, '左边只有 3 个浅色、右边紧跟深色')
+    })
+
+    await t.test('罚分 N4：深色占比每偏离 50% 满 5% 加 10 分', async () => {
+        const line = (dark, total) => [Array.from({ length: total }, (_, i) => (i < dark ? 1 : 0))]
+        t.eq(QR.penalty(line(10, 20)).n4, 0)
+        t.eq(QR.penalty(line(11, 20)).n4, 10, '55% 正好偏 5%')
+        t.eq(QR.penalty(line(13, 20)).n4, 30, '65% 偏 15%')
+        t.eq(QR.penalty(line(7, 20)).n4, 30, '35% 同样偏 15%')
+        t.eq(QR.penalty(line(0, 20)).n4, 100)
+    })
+
+    await t.test('自动掩码 = 8 种里罚分最低的那个（格式信息画上之后算）', async () => {
+        for (const [text, ecl] of [['https://example.com/', 'M'], ['HELLO WORLD', 'Q'], ['二维码'.repeat(30), 'H']]) {
+            const scores = Array.from({ length: 8 }, (_, k) => QR.penalty(QR.encode(text, { ecl, mask: k }).modules).total)
+            const auto = QR.encode(text, { ecl })
+            t.eq(scores[auto.mask], Math.min(...scores), `${text.slice(0, 12)} 罚分 ${scores}`)
+        }
+    })
+
+    await t.test('矩阵结构：三个定位图形、时序图形、暗模块、两份格式信息一致', async () => {
+        const q = QR.encode('https://example.com/', { ecl: 'Q' })
+        const m = q.modules, n = q.size
+        t.eq(n, q.version * 4 + 17)
+        const finder = ['1111111', '1000001', '1011101', '1011101', '1011101', '1000001', '1111111']
+        const block = (r0, c0) => finder.map((_, r) => Array.from(m[r0 + r].slice(c0, c0 + 7)).join(''))
+        t.eq(block(0, 0), finder)
+        t.eq(block(0, n - 7), finder)
+        t.eq(block(n - 7, 0), finder)
+        for (let i = 8; i < n - 8; i++) t.eq([m[6][i], m[i][6]], [(i + 1) % 2, (i + 1) % 2], `时序 ${i}`)
+        t.eq(m[n - 8][8], 1, '暗模块')
+        // 读回两份格式信息（位 14 → 0）
+        const a = [], b = []
+        for (let i = 0; i <= 5; i++) a[i] = m[i][8]
+        a[6] = m[7][8]; a[7] = m[8][8]; a[8] = m[8][7]
+        for (let i = 9; i < 15; i++) a[i] = m[8][14 - i]
+        for (let i = 0; i < 8; i++) b[i] = m[8][n - 1 - i]
+        for (let i = 8; i < 15; i++) b[i] = m[n - 15 + i][8]
+        const val = (bits) => bits.reduce((acc, bit, i) => acc | (bit << i), 0)
+        t.eq(val(a), QR.formatBits('Q', q.mask))
+        t.eq(val(b), QR.formatBits('Q', q.mask))
+    })
+
+    const decoderPath = findDecoder()
+    if (!decoderPath) {
+        console.log('  - 跳过真实解码用例：没找到 html5-qrcode.min.js（设 QR_DECODER 指过去）')
+    } else {
+        console.log(`\n真实解码（ZXing：${path.basename(path.dirname(decoderPath))}）`)
+        const page = await open(browser, 'page.html', { install: false })
+        const decode = await decoderOn(page, decoderPath)
+        const cases = [
+            ['纯数字', '01234567890123456789', {}, 'numeric'],
+            ['大写字母数字', 'HTTPS://EXAMPLE.COM/A-B/C?X', {}, 'byte'],
+            ['大写字母数字（无 ?）', 'HELLO WORLD $%*+-./:', { ecl: 'H' }, 'alphanumeric'],
+            ['URL', 'https://example.com/path/to/page?q=二维码&lang=zh#top', {}, 'byte'],
+            ['中文', '扫一扫，把这一页带到手机上。', {}, 'byte'],
+            ['中文 + ECI', '扫一扫，把这一页带到手机上。', { eci: true }, 'byte'],
+            ['emoji / 西欧字母', 'café ñ 😀', {}, 'byte'],
+            ['空串', '', {}, 'numeric'],
+            ['版本 40-L 满载', 'x'.repeat(2953), { ecl: 'L' }, 'byte'],
+            ['版本 40-H 满载数字', '7'.repeat(3057), { ecl: 'H' }, 'numeric'],
+        ]
+        for (const [name, text, opts, mode] of cases) {
+            await t.test(`解码比对：${name}`, async () => {
+                const q = QR.encode(text, opts)
+                t.eq(q.mode, mode)
+                const out = await decode(q.modules)
+                t.assert(out === text, `v${q.version}-${q.ecl} mask ${q.mask}，解出 ${JSON.stringify(String(out).slice(0, 60))}`)
+            })
+        }
+        await t.test('解码比对：8 种掩码 × 4 个纠错等级都能解', async () => {
+            for (const ecl of ['L', 'M', 'Q', 'H']) {
+                for (let mask = 0; mask < 8; mask++) {
+                    const text = `mask ${mask} ecl ${ecl} 二维码`
+                    t.eq(await decode(QR.encode(text, { ecl, mask }).modules), text, `${ecl} mask ${mask}`)
+                }
+            }
+        })
+        await page.context().close()
+    }
+
+    await close()
     t.done()
 }
 
