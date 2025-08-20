@@ -3,7 +3,7 @@
 // @name:zh-CN   页面二维码
 // @name:en      Page QR Code — Send the Current Page, a Link or Any Text to Your Phone
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.08.19.4
+// @version      2025.08.20.5
 // @description  把当前页面、链接或一段文字变成二维码，手机一扫就过去。编码器自带、不依赖外部库。
 // @description:zh-CN  把当前页面、链接或一段文字变成二维码，手机一扫就过去。编码器自带、不依赖外部库。
 // @description:en  Turns the current page, a link or any text into a QR code so you can open it on your phone with one scan. Self-contained encoder, no external libraries.
@@ -11,6 +11,8 @@
 // @match        http://*/*
 // @match        https://*/*
 // @noframes
+// @grant        GM_getValue
+// @grant        GM_setValue
 // @grant        GM_registerMenuCommand
 // @license      CC BY-NC-SA
 // @run-at       document-idle
@@ -546,8 +548,27 @@
     }
 
     // =========================================================================
+    // 存储
+    // =========================================================================
+
+    const Store = {
+        /** 纠错等级是个人偏好，全局记一个，不按站点分。 */
+        ecl() {
+            const v = GM_getValue('ecl', CONFIG.defaultEcl);
+            return 'LMQH'.includes(v) && v.length === 1 ? v : CONFIG.defaultEcl;
+        },
+        setEcl(v) {
+            GM_setValue('ecl', v);
+        },
+    };
+
+    // =========================================================================
     // 浮层
     // =========================================================================
+
+    const ECL_HINT = { L: '约 7%', M: '约 15%', Q: '约 25%', H: '约 30%' };
+    const MODE_NAME = { numeric: '数字', alphanumeric: '字母数字', byte: '字节' };
+    const UNIT = { numeric: '位数字', alphanumeric: '个字符', byte: '字节' };
 
     const STYLE = `
         :host { all: initial; }
@@ -560,13 +581,33 @@
         .title { font-weight: 600; }
         .close { all: unset; cursor: pointer; width: 24px; height: 24px; text-align: center; border-radius: 4px; font-size: 18px; line-height: 24px; color: #666; }
         .close:hover { background: #f0f0f0; }
-        canvas.qr { display: block; width: ${CONFIG.displaySize}px; height: ${CONFIG.displaySize}px; image-rendering: pixelated; }
-        .info { margin-top: 6px; color: #666; font-size: 12px; min-height: 18px; word-break: break-all; }
+        .stage { position: relative; width: ${CONFIG.displaySize}px; height: ${CONFIG.displaySize}px; }
+        canvas.qr { display: block; width: 100%; height: 100%; image-rendering: pixelated; }
+        .stage.empty canvas.qr, .stage.over canvas.qr { opacity: .08; }
+        .msg { position: absolute; inset: 0; display: none; align-items: center; justify-content: center; text-align: center;
+               padding: 16px; color: #555; font-size: 12px; }
+        .stage.empty .msg, .stage.over .msg { display: flex; }
+        .stage.over .msg { color: #c62828; }
+        textarea.text { display: block; width: 100%; box-sizing: border-box; margin-top: 10px; resize: vertical;
+                        min-height: 54px; max-height: 200px; padding: 6px 8px; border: 1px solid #ccc; border-radius: 6px;
+                        font: 12px/1.5 ui-monospace, Consolas, monospace; color: #222; background: #fff; }
+        textarea.text:focus { outline: none; border-color: #1a73e8; }
+        .row { display: flex; align-items: center; justify-content: space-between; margin-top: 8px; gap: 8px; }
+        .ecl { display: inline-flex; border: 1px solid #ccc; border-radius: 6px; overflow: hidden; }
+        .ecl button { all: unset; cursor: pointer; padding: 1px 9px; font-size: 12px; color: #444; }
+        .ecl button + button { border-left: 1px solid #ccc; }
+        .ecl button[aria-checked="true"] { background: #1a73e8; color: #fff; }
+        .label { color: #888; font-size: 12px; }
+        .info { margin-top: 6px; color: #666; font-size: 12px; min-height: 18px; }
+        .info.over { color: #c62828; }
     `;
 
     const Overlay = (() => {
         let host = null;
         let root = null;
+        let pending = 0;
+
+        const $ = (sel) => root.querySelector(sel);
 
         function onKey(e) {
             if (e.key === 'Escape') {
@@ -585,42 +626,91 @@
                 <div class="backdrop">
                     <div class="panel" role="dialog" aria-label="二维码">
                         <div class="head"><span class="title">扫码在手机上打开</span><button class="close" title="关闭（Esc）">×</button></div>
-                        <canvas class="qr"></canvas>
+                        <div class="stage"><canvas class="qr"></canvas><div class="msg"></div></div>
+                        <textarea class="text" spellcheck="false" placeholder="输入要生成二维码的内容"></textarea>
+                        <div class="row">
+                            <span class="label">纠错</span>
+                            <span class="ecl" role="radiogroup" aria-label="纠错等级">
+                                ${'LMQH'.split('').map((k) => `<button role="radio" data-ecl="${k}" title="能扛${ECL_HINT[k]}污损">${k}</button>`).join('')}
+                            </span>
+                        </div>
                         <div class="info"></div>
                     </div>
                 </div>`;
-            root.querySelector('.close').addEventListener('click', close);
-            const backdrop = root.querySelector('.backdrop');
+            $('.close').addEventListener('click', close);
+            const backdrop = $('.backdrop');
             // 只认直接点在遮罩上的：在面板里按下、拖到外面松开时 click 的 target 是共同祖先（遮罩），不能关
             let downOnBackdrop = false;
             backdrop.addEventListener('mousedown', (e) => { downOnBackdrop = e.target === backdrop; });
             backdrop.addEventListener('click', (e) => {
                 if (e.target === backdrop && downOnBackdrop) close();
             });
+            $('textarea.text').addEventListener('input', schedule);
+            $('.ecl').addEventListener('click', (e) => {
+                const b = e.target.closest('button[data-ecl]');
+                if (!b) return;
+                Store.setEcl(b.dataset.ecl);
+                draw();
+            });
             document.documentElement.appendChild(host);
         }
 
-        function draw(text) {
-            const canvas = root.querySelector('canvas.qr');
-            const info = root.querySelector('.info');
+        /** 输入时合并到下一帧再画：版本 40 编一次要几十毫秒，连打字不能每个键都编。 */
+        function schedule() {
+            if (pending) return;
+            pending = requestAnimationFrame(() => {
+                pending = 0;
+                if (root) draw();
+            });
+        }
+
+        function draw() {
+            const text = $('textarea.text').value;
+            const ecl = Store.ecl();
+            const stage = $('.stage');
+            const info = $('.info');
+            const msg = $('.msg');
+            root.querySelectorAll('.ecl button').forEach((b) => b.setAttribute('aria-checked', String(b.dataset.ecl === ecl)));
+            stage.classList.remove('empty', 'over');
+            info.classList.remove('over');
+
+            if (!text) {
+                stage.classList.add('empty');
+                msg.textContent = '输入要生成二维码的内容';
+                info.textContent = '';
+                return null;
+            }
             try {
-                const qr = QR.encode(text, { ecl: CONFIG.defaultEcl });
-                renderCanvas(qr, canvas, displayScale(qr));
-                info.textContent = text;
+                const qr = QR.encode(text, { ecl });
+                renderCanvas(qr, $('canvas.qr'), displayScale(qr));
+                const cap = QR.capacity(qr.version, ecl, qr.mode, qr.eci);
+                info.textContent = `版本 ${qr.version}（${qr.size}×${qr.size}）· ${MODE_NAME[qr.mode]}模式 · ${qr.count} / ${cap} ${UNIT[qr.mode]}`;
+                return qr;
             } catch (e) {
-                console.warn(TAG, e);
-                info.textContent = e.message;
+                if (e.code !== 'TOO_LONG') throw e;
+                stage.classList.add('over');
+                info.classList.add('over');
+                msg.textContent = '内容太长，放不进一个二维码';
+                info.textContent = `超出版本 40 的容量：${e.count} / ${e.capacity} ${UNIT[e.mode]}（纠错 ${ecl}）。` +
+                    (ecl === 'L' ? '删掉一些内容。' : '删掉一些内容，或把纠错等级调低。');
+                return null;
             }
         }
 
         function open(text) {
             if (!host || !host.isConnected) build();
-            draw(text);
+            const ta = $('textarea.text');
+            ta.value = text;
+            draw();
+            ta.focus();
+            ta.select();    // 全选：想换内容直接粘贴
             window.addEventListener('keydown', onKey, true);
         }
 
         function close() {
             window.removeEventListener('keydown', onKey, true);
+            if (pending) cancelAnimationFrame(pending);
+            pending = 0;
             if (host) host.remove();
             host = root = null;
         }

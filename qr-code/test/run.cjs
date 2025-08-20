@@ -133,6 +133,22 @@ async function expectOverlayQr(page, expected, QR, hasDecoder, opts = {}) {
     }
 }
 
+/** 往浮层文本框里填内容（触发 input），等下一帧重绘完。 */
+async function fillText(page, text) {
+    await page.locator(HOST + ' textarea.text').fill(text)
+    await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))))
+}
+
+/** 浮层画布的状态：{ empty, over, eclChecked }。 */
+function stageState(page) {
+    return page.evaluate((sel) => {
+        const sr = document.querySelector(sel).shadowRoot
+        const st = sr.querySelector('.stage')
+        const checked = sr.querySelector('.ecl button[aria-checked="true"]')
+        return { empty: st.classList.contains('empty'), over: st.classList.contains('over'), ecl: checked && checked.dataset.ecl }
+    }, HOST)
+}
+
 /** 打开装好脚本（和解码器，如果有）的测试页。 */
 async function openUi(browser, decoderPath, opts = {}) {
     const page = await open(browser, opts.file || 'page.html', opts)
@@ -414,6 +430,58 @@ async function main() {
         t.eq(await overlayOpen(page), true, '从面板里拖出去松开不关')
         await page.mouse.click(10, 10)
         t.eq(await overlayOpen(page), false)
+        await page.context().close()
+    })
+
+    await t.test('文本框预填当前地址；改内容后实时重绘，信息栏显示版本与容量', async () => {
+        const page = await openUi(browser, decoderPath)
+        await page.keyboard.press('Alt+KeyQ')
+        t.eq(await page.locator(HOST + ' textarea.text').inputValue(), SITE + '/page.html')
+        t.eq(await overlayInfo(page), '版本 3（29×29）· 字节模式 · 29 / 42 字节')
+        await fillText(page, '你好，二维码')
+        await expectOverlayQr(page, '你好，二维码', QR, !!decoderPath)
+        t.eq(await overlayInfo(page), '版本 2（25×25）· 字节模式 · 18 / 26 字节', '中文按 UTF-8 字节计：6 字 = 18 字节，版本 1 只放得下 14')
+        await fillText(page, '0123456789')
+        t.eq(await overlayInfo(page), '版本 1（21×21）· 数字模式 · 10 / 34 位数字')
+        await expectOverlayQr(page, '0123456789', QR, !!decoderPath)
+        await fillText(page, '')
+        t.eq((await stageState(page)).empty, true, '清空后显示提示，不画空码')
+        t.eq(h.errors(page).map(String), [])
+        await page.context().close()
+    })
+
+    await t.test('纠错等级切换：重绘、记住选择，下次打开沿用', async () => {
+        const page = await openUi(browser, decoderPath)
+        await page.keyboard.press('Alt+KeyQ')
+        t.eq((await stageState(page)).ecl, 'M', '默认 M')
+        await fillText(page, 'HELLO WORLD')
+        t.eq(await overlayInfo(page), '版本 1（21×21）· 字母数字模式 · 11 / 20 个字符')
+        await page.locator(HOST + ' .ecl button[data-ecl="H"]').click()
+        t.eq((await stageState(page)).ecl, 'H')
+        t.eq(await overlayInfo(page), '版本 2（25×25）· 字母数字模式 · 11 / 20 个字符', 'H 级下版本 1 只放得下 10 个，升到版本 2')
+        await expectOverlayQr(page, 'HELLO WORLD', QR, !!decoderPath, { ecl: 'H' })
+        t.eq(await page.evaluate(() => JSON.parse(localStorage.getItem('__gm:ecl'))), 'H')
+        await page.keyboard.press('Escape')
+        await h.menu(page, '当前页面二维码')
+        t.eq((await stageState(page)).ecl, 'H', '重新打开沿用 H')
+        await page.context().close()
+    })
+
+    await t.test('超出版本 40 容量：提示超了多少、建议调低纠错；删回去恢复', async () => {
+        const page = await openUi(browser, decoderPath)
+        await page.keyboard.press('Alt+KeyQ')
+        await fillText(page, 'x'.repeat(2400))
+        t.eq((await stageState(page)).over, true)
+        t.eq(await overlayInfo(page), '超出版本 40 的容量：2400 / 2331 字节（纠错 M）。删掉一些内容，或把纠错等级调低。')
+        await page.locator(HOST + ' .ecl button[data-ecl="L"]').click()
+        t.eq((await stageState(page)).over, false, '调到 L 就放得下了（2953 字节）')
+        t.eq(await overlayInfo(page), '版本 36（161×161）· 字节模式 · 2400 / 2431 字节')
+        await expectOverlayQr(page, 'x'.repeat(2400), QR, !!decoderPath, { ecl: 'L' })
+        await fillText(page, 'x'.repeat(3000))
+        t.eq(await overlayInfo(page), '超出版本 40 的容量：3000 / 2953 字节（纠错 L）。删掉一些内容。')
+        await fillText(page, 'short')
+        t.eq((await stageState(page)).over, false)
+        t.eq(h.errors(page).map(String), [])
         await page.context().close()
     })
 
