@@ -3,7 +3,7 @@
 // @name:zh-CN   页面二维码
 // @name:en      Page QR Code — Send the Current Page, a Link or Any Text to Your Phone
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.08.21.6
+// @version      2025.08.21.7
 // @description  把当前页面、链接或一段文字变成二维码，手机一扫就过去。编码器自带、不依赖外部库。
 // @description:zh-CN  把当前页面、链接或一段文字变成二维码，手机一扫就过去。编码器自带、不依赖外部库。
 // @description:en  Turns the current page, a link or any text into a QR code so you can open it on your phone with one scan. Self-contained encoder, no external libraries.
@@ -788,11 +788,12 @@
             }
         }
 
-        function open(text) {
+        function open(text, notice) {
             if (!host || !host.isConnected) build();
             const ta = $('textarea.text');
             ta.value = text;
             draw();
+            if (notice) toast(notice, true);
             ta.focus();
             ta.select();    // 全选：想换内容直接粘贴
             window.addEventListener('keydown', onKey, true);
@@ -819,6 +820,28 @@
         Overlay.open(location.href);
     }
 
+    /**
+     * 选中的文字。输入框 / 文本框里的选区，Firefox 的 window.getSelection() 拿不到（空串；
+     * Chromium 现在能拿到），所以先从 selectionStart/End 截；email、number 之类的 input 读 selectionStart 会抛错。
+     * 密码框不读。
+     */
+    function selectedText() {
+        const el = document.activeElement;
+        if (el && el.id !== HOST_ID && (el.tagName === 'TEXTAREA' || (el.tagName === 'INPUT' && /^(text|search|url|tel)$/i.test(el.type)))) {
+            try {
+                const s = el.value.slice(el.selectionStart, el.selectionEnd).trim();
+                if (s) return s;
+            } catch (e) { /* 不支持选区的 input 类型 */ }
+        }
+        return String(window.getSelection() || '').trim();
+    }
+
+    function showSelection() {
+        const text = selectedText();
+        if (text) Overlay.open(text);
+        else Overlay.open(location.href, '没有选中文字，先用当前页地址');
+    }
+
     window.addEventListener('keydown', (e) => {
         // 按 code 不按 key：macOS 上 Option+Q 的 key 是「œ」
         if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && e.code === CONFIG.hotkey && !e.repeat) {
@@ -829,6 +852,7 @@
     }, true);
 
     GM_registerMenuCommand('当前页面二维码（Alt+Q）', showPage);
+    GM_registerMenuCommand('选中文字生成二维码', showSelection);
 
     console.debug(TAG, '已加载');
 })();

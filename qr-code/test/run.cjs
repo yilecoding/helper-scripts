@@ -409,7 +409,7 @@ async function main() {
 
     await t.test('菜单打开当前页二维码，扫出来是当前地址', async () => {
         const page = await openUi(browser, decoderPath)
-        t.eq((await h.gm(page)).menu, ['当前页面二维码（Alt+Q）'])
+        t.eq((await h.gm(page)).menu, ['当前页面二维码（Alt+Q）', '选中文字生成二维码'])
         t.eq(await overlayOpen(page), false)
         await h.menu(page, '当前页面二维码')
         t.eq(await overlayOpen(page), true)
@@ -579,6 +579,45 @@ async function main() {
         t.eq(await disabled(), [true, true])
         await fillText(page, 'x'.repeat(3000))
         t.eq(await disabled(), [true, true])
+        await page.context().close()
+    })
+
+    console.log('\n选中文字')
+
+    await t.test('选中正文文字 → 菜单生成的是选中的文字', async () => {
+        const page = await openUi(browser, decoderPath)
+        await page.evaluate(() => {
+            const r = document.createRange()
+            r.selectNodeContents(document.getElementById('para'))
+            getSelection().removeAllRanges()
+            getSelection().addRange(r)
+        })
+        await h.menu(page, '选中文字生成二维码')
+        t.eq(await page.locator(HOST + ' textarea.text').inputValue(), '这是一段可以选中的文字，用来生成二维码。')
+        await expectOverlayQr(page, '这是一段可以选中的文字，用来生成二维码。', QR, !!decoderPath)
+        t.eq(await toastText(page), '')
+        await page.context().close()
+    })
+
+    await t.test('文本框里的选区也算（Firefox 的 getSelection 拿不到那种）', async () => {
+        const page = await openUi(browser, decoderPath)
+        await page.evaluate(() => {
+            const ta = document.getElementById('ta')
+            ta.focus()
+            ta.setSelectionRange(0, 5)
+            // 模拟 Firefox：文本框里的选区 getSelection() 是空串（实测 Chromium 能拿到，不模拟就测不到这条路径）
+            window.getSelection = () => ({ toString: () => '' })
+        })
+        await h.menu(page, '选中文字生成二维码')
+        t.eq(await page.locator(HOST + ' textarea.text').inputValue(), '输入框里的')
+        await page.context().close()
+    })
+
+    await t.test('没有选中文字：用当前页地址并提示', async () => {
+        const page = await openUi(browser, decoderPath)
+        await h.menu(page, '选中文字生成二维码')
+        t.eq(await page.locator(HOST + ' textarea.text').inputValue(), SITE + '/page.html')
+        t.eq(await toastText(page), '没有选中文字，先用当前页地址')
         await page.context().close()
     })
 
