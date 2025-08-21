@@ -149,6 +149,24 @@ function stageState(page) {
     }, HOST)
 }
 
+/** 把 PNG（Buffer）在页面里画回 canvas 再解码。 */
+function decodePng(page, buf) {
+    return page.evaluate(async (b64) => {
+        const img = new Image()
+        img.src = 'data:image/png;base64,' + b64
+        await img.decode()
+        const c = document.createElement('canvas')
+        c.width = img.naturalWidth
+        c.height = img.naturalHeight
+        c.getContext('2d').drawImage(img, 0, 0)
+        return { text: await window.__decodeCanvas(c), width: c.width }
+    }, buf.toString('base64'))
+}
+
+function toastText(page) {
+    return page.evaluate((sel) => document.querySelector(sel).shadowRoot.querySelector('.toast').textContent, HOST)
+}
+
 /** 打开装好脚本（和解码器，如果有）的测试页。 */
 async function openUi(browser, decoderPath, opts = {}) {
     const page = await open(browser, opts.file || 'page.html', opts)
@@ -482,6 +500,85 @@ async function main() {
         await fillText(page, 'short')
         t.eq((await stageState(page)).over, false)
         t.eq(h.errors(page).map(String), [])
+        await page.context().close()
+    })
+
+    console.log('\n下载 / 复制')
+
+    await t.test('下载 PNG：文件名带站点名，图片能扫出当前内容，每模块整数像素', async () => {
+        const page = await openUi(browser, decoderPath)
+        await page.keyboard.press('Alt+KeyQ')
+        await fillText(page, 'https://example.com/下载测试')
+        const [dl] = await Promise.all([page.waitForEvent('download'), page.locator(HOST + ' button.download').click()])
+        t.eq(dl.suggestedFilename(), 'qrcode-example.com.png')
+        const buf = fs.readFileSync(await dl.path())
+        t.eq(buf.slice(1, 4).toString(), 'PNG')
+        if (decoderPath) {
+            const r = await decodePng(page, buf)
+            t.eq(r.text, 'https://example.com/下载测试')
+            const q = QR.encode('https://example.com/下载测试')
+            t.eq(r.width % (q.size + 8), 0, `宽 ${r.width} 是 (模块数 + 静区) 的整数倍`)
+            t.assert(r.width >= 900 && r.width <= 1100, `导出尺寸 ${r.width} 应在 1024 附近`)
+        }
+        t.eq(await toastText(page), '已下载 qrcode-example.com.png')
+        await page.context().close()
+    })
+
+    await t.test('复制图片：剪贴板里是能扫出内容的 PNG', async () => {
+        const context = await browser.newContext({ viewport: { width: 1280, height: 800 } })
+        await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: SITE })
+        const page = await openUi(browser, decoderPath, { context })
+        await page.keyboard.press('Alt+KeyQ')
+        await fillText(page, '复制到剪贴板')
+        await page.locator(HOST + ' button.copy').click()
+        await page.waitForFunction((sel) => document.querySelector(sel).shadowRoot.querySelector('.toast').textContent !== '', HOST)
+        t.eq(await toastText(page), '已复制，可以直接粘贴')
+        const b64 = await page.evaluate(async () => {
+            const items = await navigator.clipboard.read()
+            const blob = await items[0].getType('image/png')
+            const bytes = new Uint8Array(await blob.arrayBuffer())
+            let bin = ''
+            for (const b of bytes) bin += String.fromCharCode(b)
+            return btoa(bin)
+        })
+        if (decoderPath) t.eq((await decodePng(page, Buffer.from(b64, 'base64'))).text, '复制到剪贴板')
+        else t.eq(Buffer.from(b64, 'base64').slice(1, 4).toString(), 'PNG')
+        await context.close()
+    })
+
+    await t.test('不支持 ClipboardItem 时降级为下载', async () => {
+        const context = await browser.newContext({ viewport: { width: 1280, height: 800 } })
+        await context.addInitScript(() => { delete window.ClipboardItem })
+        const page = await openUi(browser, decoderPath, { context })
+        await page.keyboard.press('Alt+KeyQ')
+        const [dl] = await Promise.all([page.waitForEvent('download'), page.locator(HOST + ' button.copy').click()])
+        t.eq(dl.suggestedFilename(), 'qrcode-example.com.png')
+        t.eq(await toastText(page), '这个页面不能复制图片，已改为下载')
+        await context.close()
+    })
+
+    await t.test('浏览器拒绝写剪贴板时也降级为下载', async () => {
+        const context = await browser.newContext({ viewport: { width: 1280, height: 800 } })
+        await context.addInitScript(() => {
+            navigator.clipboard.write = () => Promise.reject(new DOMException('Write permission denied.', 'NotAllowedError'))
+        })
+        const page = await openUi(browser, decoderPath, { context })
+        await page.keyboard.press('Alt+KeyQ')
+        const [dl] = await Promise.all([page.waitForEvent('download'), page.locator(HOST + ' button.copy').click()])
+        t.eq(dl.suggestedFilename(), 'qrcode-example.com.png')
+        t.eq(await toastText(page), '复制被浏览器拒绝，已改为下载')
+        await context.close()
+    })
+
+    await t.test('内容为空或超长时，下载 / 复制按钮禁用', async () => {
+        const page = await openUi(browser, decoderPath)
+        await page.keyboard.press('Alt+KeyQ')
+        const disabled = () => page.evaluate((sel) => Array.from(document.querySelector(sel).shadowRoot.querySelectorAll('.actions button'), (b) => b.disabled), HOST)
+        t.eq(await disabled(), [false, false])
+        await fillText(page, '')
+        t.eq(await disabled(), [true, true])
+        await fillText(page, 'x'.repeat(3000))
+        t.eq(await disabled(), [true, true])
         await page.context().close()
     })
 

@@ -3,7 +3,7 @@
 // @name:zh-CN   页面二维码
 // @name:en      Page QR Code — Send the Current Page, a Link or Any Text to Your Phone
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.08.20.5
+// @version      2025.08.21.6
 // @description  把当前页面、链接或一段文字变成二维码，手机一扫就过去。编码器自带、不依赖外部库。
 // @description:zh-CN  把当前页面、链接或一段文字变成二维码，手机一扫就过去。编码器自带、不依赖外部库。
 // @description:en  Turns the current page, a link or any text into a QR code so you can open it on your phone with one scan. Self-contained encoder, no external libraries.
@@ -40,6 +40,7 @@
         hotkey: 'KeyQ',         // 和 Alt 组合；按物理键位（KeyboardEvent.code）匹配
         quietZone: 4,           // 静区宽度（模块数），标准要求至少 4
         displaySize: 240,       // 浮层里二维码的显示边长（CSS 像素）
+        exportSize: 1024,       // 下载 / 复制的图片大约多大（像素），实际取模块整数倍
     };
 
     const HOST_ID = 'qr-code-userscript-host';
@@ -542,6 +543,35 @@
         return canvas;
     }
 
+    /** 导出用的缩放：每模块整数像素，至少 4px。 */
+    function exportScale(qr) {
+        return Math.max(4, Math.round(CONFIG.exportSize / (qr.size + CONFIG.quietZone * 2)));
+    }
+
+    function toBlob(canvas) {
+        return new Promise((resolve, reject) => canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('toBlob 失败'))), 'image/png'));
+    }
+
+    /**
+     * 用 <a download> 存文件，不用 GM_download：blob: 地址是页面这边生成的，
+     * 交给扩展去下载在 Firefox 上会拿不到。revoke 要晚一点，同步 revoke 时 Firefox 会下载失败。
+     */
+    function saveBlob(blob, name, mount) {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = name;
+        a.style.display = 'none';
+        mount.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 10000);
+    }
+
+    function fileName() {
+        return `qrcode-${location.hostname || 'page'}.png`;
+    }
+
     /** 显示用的缩放：让画布像素至少是显示尺寸的 2 倍（高分屏不糊）。 */
     function displayScale(qr) {
         return Math.max(1, Math.ceil((CONFIG.displaySize * 2) / (qr.size + CONFIG.quietZone * 2)));
@@ -600,12 +630,20 @@
         .label { color: #888; font-size: 12px; }
         .info { margin-top: 6px; color: #666; font-size: 12px; min-height: 18px; }
         .info.over { color: #c62828; }
+        .actions { display: flex; gap: 8px; margin-top: 10px; }
+        .actions button { all: unset; cursor: pointer; flex: 1; text-align: center; padding: 5px 0; border-radius: 6px;
+                          border: 1px solid #ccc; font-size: 12px; color: #333; }
+        .actions button:hover { background: #f5f5f5; }
+        .actions button:disabled { cursor: default; opacity: .4; background: none; }
+        .toast { margin-top: 6px; font-size: 12px; color: #2e7d32; min-height: 18px; }
+        .toast.warn { color: #b26a00; }
     `;
 
     const Overlay = (() => {
         let host = null;
         let root = null;
         let pending = 0;
+        let current = null;     // 当前画着的那个二维码（导出时按它重画大图）
 
         const $ = (sel) => root.querySelector(sel);
 
@@ -635,6 +673,11 @@
                             </span>
                         </div>
                         <div class="info"></div>
+                        <div class="actions">
+                            <button class="download" title="保存为 PNG 图片">下载 PNG</button>
+                            <button class="copy" title="复制图片，可以直接粘贴到聊天窗口">复制图片</button>
+                        </div>
+                        <div class="toast" role="status"></div>
                     </div>
                 </div>`;
             $('.close').addEventListener('click', close);
@@ -652,7 +695,49 @@
                 Store.setEcl(b.dataset.ecl);
                 draw();
             });
+            $('.download').addEventListener('click', download);
+            $('.copy').addEventListener('click', copy);
             document.documentElement.appendChild(host);
+        }
+
+        function toast(text, warn) {
+            const el = $('.toast');
+            el.textContent = text;
+            el.classList.toggle('warn', !!warn);
+        }
+
+        function exportCanvas() {
+            return renderCanvas(current, document.createElement('canvas'), exportScale(current));
+        }
+
+        async function download() {
+            if (!current) return;
+            saveBlob(await toBlob(exportCanvas()), fileName(), root);
+            toast('已下载 ' + fileName());
+        }
+
+        /**
+         * 复制图片。ClipboardItem 里直接放 toBlob 的 Promise 而不是先 await 出 Blob：
+         * Safari 要求 clipboard.write 在用户手势里同步发起，先 await 一下手势就过期了。
+         * 不支持（http 页面没有 navigator.clipboard、老浏览器没有 ClipboardItem）或被拒绝时改为下载。
+         */
+        async function copy() {
+            if (!current) return;
+            const canvas = exportCanvas();
+            const supported = window.isSecureContext && navigator.clipboard && navigator.clipboard.write && typeof ClipboardItem === 'function';
+            if (!supported) {
+                saveBlob(await toBlob(canvas), fileName(), root);
+                toast('这个页面不能复制图片，已改为下载', true);
+                return;
+            }
+            try {
+                await navigator.clipboard.write([new ClipboardItem({ 'image/png': toBlob(canvas) })]);
+                toast('已复制，可以直接粘贴');
+            } catch (e) {
+                console.warn(TAG, '复制图片失败', e);
+                saveBlob(await toBlob(canvas), fileName(), root);
+                toast('复制被浏览器拒绝，已改为下载', true);
+            }
         }
 
         /** 输入时合并到下一帧再画：版本 40 编一次要几十毫秒，连打字不能每个键都编。 */
@@ -673,6 +758,10 @@
             root.querySelectorAll('.ecl button').forEach((b) => b.setAttribute('aria-checked', String(b.dataset.ecl === ecl)));
             stage.classList.remove('empty', 'over');
             info.classList.remove('over');
+            toast('');
+            current = null;
+            const setActions = (on) => root.querySelectorAll('.actions button').forEach((b) => { b.disabled = !on; });
+            setActions(false);
 
             if (!text) {
                 stage.classList.add('empty');
@@ -685,6 +774,8 @@
                 renderCanvas(qr, $('canvas.qr'), displayScale(qr));
                 const cap = QR.capacity(qr.version, ecl, qr.mode, qr.eci);
                 info.textContent = `版本 ${qr.version}（${qr.size}×${qr.size}）· ${MODE_NAME[qr.mode]}模式 · ${qr.count} / ${cap} ${UNIT[qr.mode]}`;
+                current = qr;
+                setActions(true);
                 return qr;
             } catch (e) {
                 if (e.code !== 'TOO_LONG') throw e;
@@ -712,7 +803,7 @@
             if (pending) cancelAnimationFrame(pending);
             pending = 0;
             if (host) host.remove();
-            host = root = null;
+            host = root = current = null;
         }
 
         const isOpen = () => !!(host && host.isConnected);
