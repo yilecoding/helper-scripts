@@ -3,7 +3,7 @@
 // @name:zh-CN   页面二维码
 // @name:en      Page QR Code — Send the Current Page, a Link or Any Text to Your Phone
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.08.21.7
+// @version      2025.08.26.8
 // @description  把当前页面、链接或一段文字变成二维码，手机一扫就过去。编码器自带、不依赖外部库。
 // @description:zh-CN  把当前页面、链接或一段文字变成二维码，手机一扫就过去。编码器自带、不依赖外部库。
 // @description:en  Turns the current page, a link or any text into a QR code so you can open it on your phone with one scan. Self-contained encoder, no external libraries.
@@ -41,9 +41,13 @@
         quietZone: 4,           // 静区宽度（模块数），标准要求至少 4
         displaySize: 240,       // 浮层里二维码的显示边长（CSS 像素）
         exportSize: 1024,       // 下载 / 复制的图片大约多大（像素），实际取模块整数倍
+        hoverDelay: 500,        // 按住 Alt 悬停链接多久浮出小二维码（毫秒）
+        hoverSize: 140,         // 链接小二维码的显示边长
+        hoverHideDelay: 300,    // 鼠标离开链接后多久收起（留时间移到小卡片上去点）
     };
 
     const HOST_ID = 'qr-code-userscript-host';
+    const HOVER_ID = 'qr-code-userscript-hover';
 
     // =========================================================================
     // 二维码编码器（ISO/IEC 18004）
@@ -813,10 +817,152 @@
     })();
 
     // =========================================================================
+    // 按住 Alt 悬停链接：浮出链接的小二维码
+    //
+    // 用户脚本拿不到浏览器原生的右键菜单，所以用这个手势代替「右键链接 → 生成二维码」。
+    // =========================================================================
+
+    const HOVER_STYLE = `
+        :host { all: initial; }
+        .card { position: fixed; z-index: 2147483647; background: #fff; border-radius: 8px; padding: 8px;
+                box-shadow: 0 4px 18px rgba(0,0,0,.25); cursor: zoom-in; width: ${CONFIG.hoverSize}px;
+                font: 11px/1.4 system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; color: #555; }
+        canvas { display: block; width: ${CONFIG.hoverSize}px; height: ${CONFIG.hoverSize}px; image-rendering: pixelated; }
+        .url { margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .hint { color: #999; }
+    `;
+
+    const Hover = (() => {
+        let link = null;        // 鼠标当前所在的链接
+        let timer = 0;
+        let hideTimer = 0;
+        let host = null;
+        let shownFor = null;    // 小卡片是为哪个链接显示的
+
+        /** 能生成二维码的链接：有 href、不是 javascript:。 */
+        function usable(a) {
+            return a && a.href && !/^javascript:/i.test(a.href);
+        }
+
+        function linkFrom(e) {
+            for (const el of e.composedPath()) {
+                if (el === host) return host;
+                if (el instanceof Element && el.tagName === 'A' && el.hasAttribute('href')) return el;
+                if (el === document.body) break;
+            }
+            return null;
+        }
+
+        function cancel() {
+            clearTimeout(timer);
+            timer = 0;
+        }
+
+        function arm() {
+            cancel();
+            if (!usable(link) || shownFor === link || Overlay.isOpen()) return;
+            const target = link;
+            timer = setTimeout(() => {
+                timer = 0;
+                if (link === target && target.isConnected) show(target);
+            }, CONFIG.hoverDelay);
+        }
+
+        function show(a) {
+            hide();
+            let qr;
+            try {
+                qr = QR.encode(a.href, { ecl: Store.ecl() });
+            } catch (e) {
+                console.warn(TAG, '链接太长，生成不了', e);
+                return;
+            }
+            host = document.createElement('div');
+            host.id = HOVER_ID;
+            const root = host.attachShadow({ mode: 'open' });
+            root.innerHTML = `<style>${HOVER_STYLE}</style>
+                <div class="card" title="点击放大"><canvas></canvas><div class="url"></div><div class="hint">点击放大 · Esc 关闭</div></div>`;
+            renderCanvas(qr, root.querySelector('canvas'), Math.max(1, Math.ceil((CONFIG.hoverSize * 2) / (qr.size + CONFIG.quietZone * 2))));
+            root.querySelector('.url').textContent = a.href;
+            const card = root.querySelector('.card');
+            card.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const href = a.href;
+                hide();
+                Overlay.open(href);
+            });
+            card.addEventListener('mouseenter', () => clearTimeout(hideTimer));
+            card.addEventListener('mouseleave', scheduleHide);
+            document.documentElement.appendChild(host);
+            place(card, a);
+            shownFor = a;
+        }
+
+        /** 放在链接下方，下面放不下就放上方，左右夹在视口里。 */
+        function place(card, a) {
+            const r = a.getBoundingClientRect();
+            const w = card.offsetWidth, h = card.offsetHeight, gap = 6;
+            let top = r.bottom + gap;
+            if (top + h > innerHeight - 4 && r.top - gap - h >= 4) top = r.top - gap - h;
+            const left = Math.min(Math.max(4, r.left), innerWidth - w - 4);
+            card.style.top = Math.max(4, top) + 'px';
+            card.style.left = Math.max(4, left) + 'px';
+        }
+
+        function hide() {
+            clearTimeout(hideTimer);
+            if (host) host.remove();
+            host = null;
+            shownFor = null;
+        }
+
+        function scheduleHide() {
+            clearTimeout(hideTimer);
+            hideTimer = setTimeout(hide, CONFIG.hoverHideDelay);
+        }
+
+        document.addEventListener('mouseover', (e) => {
+            const a = linkFrom(e);
+            if (a === host && host) {       // 移到小卡片上：保持
+                clearTimeout(hideTimer);
+                return;
+            }
+            if (a === link) return;
+            link = a;
+            cancel();
+            if (shownFor && a !== shownFor) scheduleHide();
+            if (a && e.altKey) arm();
+        }, true);
+
+        window.addEventListener('keydown', (e) => {
+            if (e.key === 'Alt' && !e.repeat && link) arm();
+            else if (e.key === 'Escape' && host) {
+                e.stopPropagation();
+                hide();
+            }
+        }, true);
+
+        window.addEventListener('keyup', (e) => {
+            if (e.key !== 'Alt') return;
+            cancel();
+            // Windows 上单按 Alt 松开会激活 Firefox 的菜单栏，用过这个手势就别让它跳出来
+            if (host) e.preventDefault();
+        }, true);
+
+        // 页面滚动后卡片和链接就对不上了，直接收起
+        window.addEventListener('scroll', () => { if (host) hide(); }, true);
+        window.addEventListener('blur', cancel);
+
+        return { hide, isShown: () => !!host };
+    })();
+
+    // =========================================================================
     // 入口：快捷键 / 菜单
     // =========================================================================
 
     function showPage() {
+        Hover.hide();
         Overlay.open(location.href);
     }
 
@@ -838,6 +984,7 @@
 
     function showSelection() {
         const text = selectedText();
+        Hover.hide();
         if (text) Overlay.open(text);
         else Overlay.open(location.href, '没有选中文字，先用当前页地址');
     }

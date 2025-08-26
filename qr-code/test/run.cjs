@@ -167,6 +167,17 @@ function toastText(page) {
     return page.evaluate((sel) => document.querySelector(sel).shadowRoot.querySelector('.toast').textContent, HOST)
 }
 
+const HOVER = '#qr-code-userscript-hover'
+
+function hoverShown(page) {
+    return page.evaluate((sel) => !!document.querySelector(sel), HOVER)
+}
+
+/** 小卡片里那张图解出来的文字。 */
+function decodeHover(page) {
+    return page.evaluate((sel) => window.__decodeCanvas(document.querySelector(sel).shadowRoot.querySelector('canvas')), HOVER)
+}
+
 /** 打开装好脚本（和解码器，如果有）的测试页。 */
 async function openUi(browser, decoderPath, opts = {}) {
     const page = await open(browser, opts.file || 'page.html', opts)
@@ -618,6 +629,88 @@ async function main() {
         await h.menu(page, '选中文字生成二维码')
         t.eq(await page.locator(HOST + ' textarea.text').inputValue(), SITE + '/page.html')
         t.eq(await toastText(page), '没有选中文字，先用当前页地址')
+        await page.context().close()
+    })
+
+    console.log('\n按住 Alt 悬停链接')
+
+    await t.test('按住 Alt 悬停链接 0.5 秒浮出链接的小二维码（绝对地址）', async () => {
+        const page = await openUi(browser, decoderPath)
+        await page.keyboard.down('Alt')
+        await page.hover('#link')
+        await page.waitForTimeout(250)
+        t.eq(await hoverShown(page), false, '0.25 秒时还没出来')
+        await page.waitForTimeout(400)
+        t.eq(await hoverShown(page), true, '0.65 秒时出来了')
+        await page.keyboard.up('Alt')
+        const href = await page.evaluate(() => document.getElementById('link').href)
+        t.eq(href, SITE + '/docs/%E8%B7%AF%E5%BE%84?q=1#frag')
+        if (decoderPath) t.eq(await decodeHover(page), href)
+        t.eq(await hoverShown(page), true, '松开 Alt 后卡片留着，方便去点')
+        const card = await page.locator(HOVER + ' .card').boundingBox()
+        const link = await page.locator('#link').boundingBox()
+        t.assert(card.y >= link.y + link.height, '卡片在链接下方')
+        t.eq(h.errors(page).map(String), [])
+        await page.context().close()
+    })
+
+    await t.test('不按 Alt 悬停、或 0.5 秒内松开 Alt：不出现', async () => {
+        const page = await openUi(browser, decoderPath)
+        await page.hover('#link')
+        await page.waitForTimeout(700)
+        t.eq(await hoverShown(page), false, '没按 Alt')
+        await page.mouse.move(5, 5)
+        await page.keyboard.down('Alt')
+        await page.hover('#ext')
+        await page.waitForTimeout(200)
+        await page.keyboard.up('Alt')
+        await page.waitForTimeout(500)
+        t.eq(await hoverShown(page), false, '0.2 秒就松开了')
+        await page.context().close()
+    })
+
+    await t.test('先悬停再按 Alt 也算；javascript: 链接不出', async () => {
+        const page = await openUi(browser, decoderPath)
+        await page.hover('#ext')
+        await page.keyboard.down('Alt')
+        await page.waitForTimeout(650)
+        t.eq(await hoverShown(page), true)
+        if (decoderPath) t.eq(await decodeHover(page), 'https://other.example.org/x')
+        await page.keyboard.up('Alt')
+        await page.keyboard.press('Escape')
+        t.eq(await hoverShown(page), false, 'Esc 收起')
+        await page.keyboard.down('Alt')
+        await page.hover('#js')
+        await page.waitForTimeout(650)
+        t.eq(await hoverShown(page), false, 'javascript: 链接')
+        await page.keyboard.up('Alt')
+        await page.context().close()
+    })
+
+    await t.test('移到卡片上不收起，点卡片打开大浮层；移开后收起', async () => {
+        const page = await openUi(browser, decoderPath)
+        await page.keyboard.down('Alt')
+        await page.hover('#link')
+        await page.waitForTimeout(650)
+        await page.keyboard.up('Alt')
+        const card = await page.locator(HOVER + ' .card').boundingBox()
+        await page.mouse.move(card.x + card.width / 2, card.y + card.height / 2, { steps: 5 })
+        await page.waitForTimeout(400)
+        t.eq(await hoverShown(page), true, '经过链接和卡片之间的空隙也不收')
+        await page.mouse.click(card.x + card.width / 2, card.y + card.height / 2)
+        t.eq(await hoverShown(page), false)
+        t.eq(await overlayOpen(page), true)
+        t.eq(await page.locator(HOST + ' textarea.text').inputValue(), SITE + '/docs/%E8%B7%AF%E5%BE%84?q=1#frag')
+        await page.keyboard.press('Escape')
+
+        await page.keyboard.down('Alt')
+        await page.hover('#ext')
+        await page.waitForTimeout(650)
+        await page.keyboard.up('Alt')
+        t.eq(await hoverShown(page), true)
+        await page.mouse.move(600, 500)
+        await page.waitForTimeout(400)
+        t.eq(await hoverShown(page), false, '移开 0.3 秒后收起')
         await page.context().close()
     })
 
