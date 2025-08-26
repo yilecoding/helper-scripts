@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>带全局快捷键的页面</title>
+</head>
+<body>
+<h1>带全局快捷键的页面</h1>
+<input id="search" placeholder="按 / 聚焦">
+<script>
+    // 仿 GitHub / YouTube 的写法：焦点在输入框里时不处理，否则 / 聚焦搜索框、j 记一次「下一条」
+    window.__j = 0
+    document.addEventListener('keydown', (e) => {
+        if (e.target.closest && e.target.closest('input, textarea, [contenteditable]')) return
+        if (e.key === '/') {
+            e.preventDefault()
+            document.getElementById('search').focus()
+        }
+        if (e.key === 'j') window.__j++
+    })
+</script>
+</body>
+</html>

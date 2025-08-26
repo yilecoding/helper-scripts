@@ -714,6 +714,23 @@ async function main() {
         await page.context().close()
     })
 
+    console.log('\n边界情况')
+
+    await t.test('在浮层文本框里打字不触发页面的全局快捷键（/、j）', async () => {
+        const page = await openUi(browser, decoderPath, { file: 'shortcuts.html' })
+        await page.keyboard.press('Alt+KeyQ')
+        const ta = page.locator(HOST + ' textarea.text')
+        await ta.fill('')
+        await ta.pressSequentially('a/j')
+        t.eq(await ta.inputValue(), 'a/j', '「/」没被页面 preventDefault 吃掉')
+        t.eq(await page.evaluate(() => window.__j), 0, '页面没收到 j')
+        t.eq(await page.evaluate(() => document.activeElement.id), 'qr-code-userscript-host', '焦点还在浮层里')
+        await page.keyboard.press('Escape')
+        await page.keyboard.press('j')
+        t.eq(await page.evaluate(() => window.__j), 1, '浮层关掉后页面快捷键照常')
+        await page.context().close()
+    })
+
     await close()
     t.done()
 }

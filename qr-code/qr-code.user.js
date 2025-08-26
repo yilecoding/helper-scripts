@@ -3,7 +3,7 @@
 // @name:zh-CN   页面二维码
 // @name:en      Page QR Code — Send the Current Page, a Link or Any Text to Your Phone
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.08.26.8
+// @version      2025.08.26.9
 // @description  把当前页面、链接或一段文字变成二维码，手机一扫就过去。编码器自带、不依赖外部库。
 // @description:zh-CN  把当前页面、链接或一段文字变成二维码，手机一扫就过去。编码器自带、不依赖外部库。
 // @description:en  Turns the current page, a link or any text into a QR code so you can open it on your phone with one scan. Self-contained encoder, no external libraries.
@@ -701,6 +701,10 @@
             });
             $('.download').addEventListener('click', download);
             $('.copy').addEventListener('click', copy);
+            // 键盘事件冒出 shadow DOM 时 target 被重定向成宿主 <div>，页面「焦点在输入框里就不处理」的判断
+            // 认不出这是在打字：GitHub / YouTube 一类站点的 / 、j、k 快捷键会照常触发，/ 还会被 preventDefault
+            // 吃掉、焦点被抢到页面搜索框。在宿主上截住冒泡；Esc、Alt+Q 走的是 window 捕获阶段，不受影响。
+            for (const type of ['keydown', 'keypress', 'keyup']) host.addEventListener(type, (e) => e.stopPropagation());
             document.documentElement.appendChild(host);
         }
 
