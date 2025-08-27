@@ -3,7 +3,7 @@
 // @name:zh-CN   页面二维码
 // @name:en      Page QR Code — Send the Current Page, a Link or Any Text to Your Phone
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.08.26.9
+// @version      2025.08.27.10
 // @description  把当前页面、链接或一段文字变成二维码，手机一扫就过去。编码器自带、不依赖外部库。
 // @description:zh-CN  把当前页面、链接或一段文字变成二维码，手机一扫就过去。编码器自带、不依赖外部库。
 // @description:en  Turns the current page, a link or any text into a QR code so you can open it on your phone with one scan. Self-contained encoder, no external libraries.
@@ -600,6 +600,23 @@
     // 浮层
     // =========================================================================
 
+    /**
+     * 给 shadow root 挂样式。页面 CSP 的 style-src 没放行 'unsafe-inline' 时，shadow root 里的 <style>
+     * 一样被拦 —— 样式全丢，浮层变成页面底部一坨没样式的控件，而且不报错（只有控制台一行 CSP 警告）。
+     * 构造样式表（adoptedStyleSheets）走 CSSOM，不归 style-src 管；不支持的浏览器退回 <style>。
+     */
+    function attachStyle(root, css) {
+        try {
+            const sheet = new CSSStyleSheet();
+            sheet.replaceSync(css);
+            root.adoptedStyleSheets = [sheet];
+            return;
+        } catch (e) { /* 老浏览器没有构造样式表，或扩展沙箱里跨全局对象不让挂 */ }
+        const st = document.createElement('style');
+        st.textContent = css;
+        root.appendChild(st);
+    }
+
     const ECL_HINT = { L: '约 7%', M: '约 15%', Q: '约 25%', H: '约 30%' };
     const MODE_NAME = { numeric: '数字', alphanumeric: '字母数字', byte: '字节' };
     const UNIT = { numeric: '位数字', alphanumeric: '个字符', byte: '字节' };
@@ -664,7 +681,6 @@
             host.id = HOST_ID;
             root = host.attachShadow({ mode: 'open' });
             root.innerHTML = `
-                <style>${STYLE}</style>
                 <div class="backdrop">
                     <div class="panel" role="dialog" aria-label="二维码">
                         <div class="head"><span class="title">扫码在手机上打开</span><button class="close" title="关闭（Esc）">×</button></div>
@@ -684,6 +700,7 @@
                         <div class="toast" role="status"></div>
                     </div>
                 </div>`;
+            attachStyle(root, STYLE);
             $('.close').addEventListener('click', close);
             const backdrop = $('.backdrop');
             // 只认直接点在遮罩上的：在面板里按下、拖到外面松开时 click 的 target 是共同祖先（遮罩），不能关
@@ -884,8 +901,9 @@
             host = document.createElement('div');
             host.id = HOVER_ID;
             const root = host.attachShadow({ mode: 'open' });
-            root.innerHTML = `<style>${HOVER_STYLE}</style>
+            root.innerHTML = `
                 <div class="card" title="点击放大"><canvas></canvas><div class="url"></div><div class="hint">点击放大 · Esc 关闭</div></div>`;
+            attachStyle(root, HOVER_STYLE);
             renderCanvas(qr, root.querySelector('canvas'), Math.max(1, Math.ceil((CONFIG.hoverSize * 2) / (qr.size + CONFIG.quietZone * 2))));
             root.querySelector('.url').textContent = a.href;
             const card = root.querySelector('.card');

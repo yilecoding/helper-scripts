@@ -53,7 +53,7 @@ async function open(browser, file = 'page.html', opts = {}) {
         const name = url.pathname.endsWith('.html') ? path.basename(url.pathname) : file
         const fp = path.join(FIXTURES, name)
         if (!fs.existsSync(fp)) return route.fulfill({ status: 404, body: 'not found' })
-        route.fulfill({ contentType: 'text/html; charset=utf-8', body: fs.readFileSync(fp) })
+        route.fulfill({ contentType: 'text/html; charset=utf-8', headers: opts.headers || {}, body: fs.readFileSync(fp) })
     })
     if (opts.install !== false) await h.install(page, SCRIPT, opts)
     await page.goto(SITE + '/' + file)
@@ -728,6 +728,44 @@ async function main() {
         await page.keyboard.press('Escape')
         await page.keyboard.press('j')
         t.eq(await page.evaluate(() => window.__j), 1, '浮层关掉后页面快捷键照常')
+        await page.context().close()
+    })
+
+    await t.test('悬停在链接上按住 Alt 再按 Q：只开大浮层，小卡片不会再叠上来', async () => {
+        const page = await openUi(browser, decoderPath)
+        await page.hover('#link')
+        await page.keyboard.down('Alt')
+        await page.keyboard.press('KeyQ')
+        t.eq(await overlayOpen(page), true)
+        await page.waitForTimeout(700)      // 按住 Alt 超过 0.5 秒
+        await page.keyboard.up('Alt')
+        t.eq(await hoverShown(page), false)
+        await page.context().close()
+    })
+
+    await t.test('页面 CSP 禁内联样式（style-src \'self\'）时浮层和小卡片样式照样生效', async () => {
+        const page = await openUi(browser, decoderPath, { headers: { 'content-security-policy': "style-src 'self'" } })
+        // 前提：CSP 真的生效了 —— 页面里新插的 <style> 不起作用
+        const blocked = await page.evaluate(() => {
+            const st = document.createElement('style')
+            st.textContent = '#para { position: fixed; }'
+            document.head.appendChild(st)
+            const r = getComputedStyle(document.getElementById('para')).position
+            st.remove()
+            return r !== 'fixed'
+        })
+        t.eq(blocked, true, 'CSP 应该拦住内联 <style>')
+        await page.keyboard.press('Alt+KeyQ')
+        const pos = await page.evaluate((sel) => getComputedStyle(document.querySelector(sel).shadowRoot.querySelector('.backdrop')).position, HOST)
+        t.eq(pos, 'fixed', '遮罩是 fixed 的，说明浮层样式没被 CSP 拦掉')
+        await expectOverlayQr(page, SITE + '/page.html', QR, !!decoderPath)
+        await page.keyboard.press('Escape')
+        await page.keyboard.down('Alt')
+        await page.hover('#link')
+        await page.waitForTimeout(650)
+        await page.keyboard.up('Alt')
+        const cardPos = await page.evaluate((sel) => getComputedStyle(document.querySelector(sel).shadowRoot.querySelector('.card')).position, HOVER)
+        t.eq(cardPos, 'fixed', '小卡片样式也在')
         await page.context().close()
     })
 
