@@ -3,7 +3,7 @@
 // @name:zh-CN   页面二维码
 // @name:en      Page QR Code — Send the Current Page, a Link or Any Text to Your Phone
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.08.27.10
+// @version      2025.08.29.11
 // @description  把当前页面、链接或一段文字变成二维码，手机一扫就过去。编码器自带、不依赖外部库。
 // @description:zh-CN  把当前页面、链接或一段文字变成二维码，手机一扫就过去。编码器自带、不依赖外部库。
 // @description:en  Turns the current page, a link or any text into a QR code so you can open it on your phone with one scan. Self-contained encoder, no external libraries.
@@ -37,6 +37,9 @@
 
     const CONFIG = {
         defaultEcl: 'M',        // 默认纠错等级：M 能扛 15% 污损，对屏幕扫码绰绰有余
+        // 非 ASCII 内容是否在字节模式前加 ECI 26（UTF-8）声明。默认不加：主流扫码器对没有 ECI 的
+        // 字节数据都按 UTF-8 猜，加了反而有老扫码器把 ECI 头当乱码；遇到扫出乱码的扫码器再打开。见 notes.md
+        eci: false,
         hotkey: 'KeyQ',         // 和 Alt 组合；按物理键位（KeyboardEvent.code）匹配
         quietZone: 4,           // 静区宽度（模块数），标准要求至少 4
         displaySize: 240,       // 浮层里二维码的显示边长（CSS 像素）
@@ -795,7 +798,7 @@
                 return null;
             }
             try {
-                const qr = QR.encode(text, { ecl });
+                const qr = QR.encode(text, { ecl, eci: CONFIG.eci && /[^\x00-\x7f]/.test(text) });
                 renderCanvas(qr, $('canvas.qr'), displayScale(qr));
                 const cap = QR.capacity(qr.version, ecl, qr.mode, qr.eci);
                 info.textContent = `版本 ${qr.version}（${qr.size}×${qr.size}）· ${MODE_NAME[qr.mode]}模式 · ${qr.count} / ${cap} ${UNIT[qr.mode]}`;
@@ -893,7 +896,7 @@
             hide();
             let qr;
             try {
-                qr = QR.encode(a.href, { ecl: Store.ecl() });
+                qr = QR.encode(a.href, { ecl: Store.ecl(), eci: CONFIG.eci && /[^\x00-\x7f]/.test(a.href) });
             } catch (e) {
                 console.warn(TAG, '链接太长，生成不了', e);
                 return;

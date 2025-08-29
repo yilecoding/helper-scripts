@@ -769,6 +769,30 @@ async function main() {
         await page.context().close()
     })
 
+    await t.test('CONFIG.eci 打开后：非 ASCII 内容带 ECI 头（容量少 12 位），ASCII 不带；都扫得出', async () => {
+        const src = fs.readFileSync(SCRIPT, 'utf8').replace(/eci: false,/, 'eci: true,')
+        const tmp = path.join(require('os').tmpdir(), `qr-code-eci-${process.pid}.user.js`)
+        fs.writeFileSync(tmp, src)
+        const context = await browser.newContext({ viewport: { width: 1280, height: 800 } })
+        const page = await context.newPage()
+        await page.route(/^https:\/\/example\.com\//, (r) => r.fulfill({ contentType: 'text/html; charset=utf-8', body: fs.readFileSync(path.join(FIXTURES, 'page.html')) }))
+        await h.install(page, tmp)
+        await page.goto(SITE + '/page.html')
+        fs.unlinkSync(tmp)
+        await page.waitForFunction(() => window.__gm && window.__gm.menu.length > 0)
+        if (decoderPath) {
+            await page.addScriptTag({ path: decoderPath })
+            await installCanvasDecoder(page)
+        }
+        await page.keyboard.press('Alt+KeyQ')
+        await fillText(page, '中文二维码')
+        t.eq(await overlayInfo(page), '版本 2（25×25）· 字节模式 · 15 / 25 字节', '版本 2-M 不带 ECI 是 26 字节，ECI 头占 12 位 → 25')
+        await expectOverlayQr(page, '中文二维码', QR, !!decoderPath)
+        await fillText(page, 'abc')
+        t.eq(await overlayInfo(page), '版本 1（21×21）· 字节模式 · 3 / 14 字节', 'ASCII 不加 ECI')
+        await context.close()
+    })
+
     await close()
     t.done()
 }
