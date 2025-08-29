@@ -28,7 +28,8 @@ const DECODER_CANDIDATES = [
 ]
 
 function findDecoder() {
-    if (process.env.QR_DECODER) return process.env.QR_DECODER
+    // QR_DECODER 设成不存在的路径 = 强制不用解码器（用来验证没有解码器时这套测试照样能跑）
+    if (process.env.QR_DECODER) return fs.existsSync(process.env.QR_DECODER) ? process.env.QR_DECODER : null
     try { return require.resolve('html5-qrcode/html5-qrcode.min.js') } catch (e) { /* 没装 */ }
     return DECODER_CANDIDATES.find((p) => fs.existsSync(p)) || null
 }

@@ -3,10 +3,10 @@
 // @name:zh-CN   页面二维码
 // @name:en      Page QR Code — Send the Current Page, a Link or Any Text to Your Phone
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.08.29.11
-// @description  把当前页面、链接或一段文字变成二维码，手机一扫就过去。编码器自带、不依赖外部库。
-// @description:zh-CN  把当前页面、链接或一段文字变成二维码，手机一扫就过去。编码器自带、不依赖外部库。
-// @description:en  Turns the current page, a link or any text into a QR code so you can open it on your phone with one scan. Self-contained encoder, no external libraries.
+// @version      2025.08.29.12
+// @description  把当前页面、链接或选中的文字变成二维码，手机一扫就过去。Alt+Q 弹出当前页二维码，可改内容实时重绘、切换纠错等级 L/M/Q/H、显示容量；下载 PNG 或复制图片；按住 Alt 悬停链接 0.5 秒浮出该链接的小二维码。编码器自带（数字/字母数字/字节模式、版本 1–40 自动选择、RS 纠错、掩码评分），不依赖外部库。
+// @description:zh-CN  把当前页面、链接或选中的文字变成二维码，手机一扫就过去。Alt+Q 弹出当前页二维码，可改内容实时重绘、切换纠错等级 L/M/Q/H、显示容量；下载 PNG 或复制图片；按住 Alt 悬停链接 0.5 秒浮出该链接的小二维码。编码器自带（数字/字母数字/字节模式、版本 1–40 自动选择、RS 纠错、掩码评分），不依赖外部库。
+// @description:en  Turns the current page, a link or selected text into a QR code so you can open it on your phone with one scan. Alt+Q shows the page's QR code with live editing, L/M/Q/H error correction and a capacity readout; download as PNG or copy the image; hold Alt over a link for half a second to get that link's QR code. Self-contained encoder (numeric/alphanumeric/byte modes, versions 1-40, Reed-Solomon, mask scoring), no external libraries.
 // @author       壹樂（V：ita1125）
 // @match        http://*/*
 // @match        https://*/*
