@@ -97,6 +97,40 @@ async function main() {
         await page.close()
     })
 
+    /** 打开页面，返回脚本认出的「下一页」日志里的 URL（没认出返回 null）。 */
+    async function detected(url) {
+        const page = await open(browser, url)
+        const line = await Promise.race([waitLog(page, '下一页（'), waitLog(page, '没有找到下一页')])
+        t.eq(h.errors(page).map(String), [])
+        await page.close()
+        const m = /下一页（(.+?)）：(\S+)/.exec(line)
+        return m ? { how: m[1], url: m[2] } : null
+    }
+
+    await t.test('识别：<link rel="next"> 优先于文字链接', async () => {
+        t.eq(await detected('/forum/rel'), { how: 'rel=next', url: SITE + '/forum/rel?page=2' })
+    })
+
+    await t.test('识别：文字「下一页 >」（去掉两侧装饰后整段匹配）', async () => {
+        t.eq(await detected('/forum/text'), { how: '文字匹配', url: SITE + '/forum/text?page=3' })
+    })
+
+    await t.test('识别：只有图标的按钮靠 aria-label / title', async () => {
+        t.eq(await detected('/forum/aria'), { how: '文字匹配', url: SITE + '/forum/aria?p=3' })
+    })
+
+    await t.test('识别：« ‹ 1 2 3 › » 里取 ›，不取尾页 »', async () => {
+        t.eq(await detected('/forum/arrows'), { how: '文字匹配', url: SITE + '/forum/arrows?page=3' })
+    })
+
+    await t.test('「下一篇 / 下一章 / Next post」和 WordPress 的 rel=next 文章导航都不算下一页', async () => {
+        t.eq(await detected('/post/article.html'), null)
+    })
+
+    await t.test('javascript: / 跨域 / mailto / disabled / 只有 hash 的链接被跳过', async () => {
+        t.eq(await detected('/forum/bad'), { how: '文字匹配', url: SITE + '/forum/bad?page=2' })
+    })
+
     t.done()
     await close()
 }

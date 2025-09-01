@@ -1,0 +1,24 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>一篇文章（只有上一篇/下一篇导航，没有分页）</title></head>
+<body>
+  <article>
+    <h1>文章标题</h1>
+    <p>正文第一段。</p>
+    <p>正文第二段。</p>
+  </article>
+  <!-- WordPress 的 next_post_link：带 rel="next"，文字是文章标题 -->
+  <nav class="navigation post-navigation">
+    <div class="nav-links">
+      <div class="nav-previous"><a href="/post/a.html" rel="prev">上一篇文章的标题</a></div>
+      <div class="nav-next"><a href="/post/c.html" rel="next">下一篇文章的标题 →</a></div>
+    </div>
+  </nav>
+  <div class="related">
+    <a href="/post/c.html" rel="next">下一篇：如何写用户脚本</a>
+    <a href="/post/d.html">下一篇</a>
+    <a href="/post/e.html" title="下一章">继续阅读</a>
+    <a href="/post/f.html">Next post</a>
+  </div>
+</body>
+</html>
