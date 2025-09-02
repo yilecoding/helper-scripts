@@ -123,6 +123,14 @@ async function main() {
         t.eq(await detected('/forum/arrows'), { how: '文字匹配', url: SITE + '/forum/arrows?page=3' })
     })
 
+    await t.test('识别：没有「下一页」字样时按当前页码推断（回复数这种孤立数字不算）', async () => {
+        t.eq(await detected('/forum/numbers'), { how: '页码推断', url: SITE + '/forum/numbers?page=3' })
+    })
+
+    await t.test('识别：当前页本身是链接时靠 aria-current / .active 认出', async () => {
+        t.eq(await detected('/forum/numbers-aria'), { how: '页码推断', url: SITE + '/forum/numbers-aria?page=5' })
+    })
+
     await t.test('「下一篇 / 下一章 / Next post」和 WordPress 的 rel=next 文章导航都不算下一页', async () => {
         t.eq(await detected('/post/article.html'), null)
     })

@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>只有页码、没有「下一页」字样的分页条</title></head>
+<body>
+  <ul class="list">
+    <!-- 回复数也是「不是链接的数字」，但它周围没有一串数字链接，不能被当成当前页码 -->
+    <li><a href="/t/1">帖子一</a> <span class="num">7</span></li>
+    <li><a href="/t/2">帖子二</a> <span class="num">12</span></li>
+    <li><a href="/t/3">帖子三</a> <span class="num">3</span></li>
+  </ul>
+  <div class="pg">
+    <a href="/forum/numbers?page=1">1</a>
+    <strong>2</strong>
+    <a href="/forum/numbers?page=3">3</a>
+    <a href="/forum/numbers?page=4">4</a>
+    <a href="/forum/numbers?page=10">... 10</a>
+  </div>
+</body>
+</html>

@@ -3,7 +3,7 @@
 // @name:zh-CN   自动翻页
 // @name:en      Auto Pager — Load the Next Page When You Scroll to the Bottom
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.09.01.2
+// @version      2025.09.02.3
 // @description  论坛、搜索结果、文章列表滚到底自动加载下一页并拼接到当前页。
 // @description:zh-CN  论坛、搜索结果、文章列表滚到底自动加载下一页并拼接到当前页。
 // @description:en  Automatically loads the next page of forums, search results and article lists when you scroll near the bottom, and appends it to the current page.
@@ -63,7 +63,7 @@
 
     /**
      * 输入一个文档（当前页，或 fetch 回来解析出的下一页）和它的 URL，返回 { url, how } 或 null。
-     * 顺序：rel=next → 文字 / aria-label / title → （后面再加：分页条页码推断）。
+     * 顺序：rel=next → 文字 / aria-label / title → 分页条里当前页码的后一个。
      * 每一步都要过同一套判据：同源 http(s)、不是指回本页、不是「下一篇」那种文章导航。
      */
     const Finder = (() => {
@@ -155,8 +155,45 @@
             return best && { url: best.url, how: best.how };
         }
 
+        const CURRENT_CLASS = /(?:^|\s)(?:current|active|cur|on|selected|thispage|now)(?:\s|$)/i;
+        const NUM = /^\d{1,5}$/;
+
+        /** 是不是「当前页码」：不是链接，或者自己 / 上两级带 aria-current、current/active 之类的类名。 */
+        function isCurrentMark(el) {
+            if (!el.closest('a[href]')) return true;
+            for (let n = el, i = 0; n && i < 3; n = n.parentElement, i++) {
+                if (n.getAttribute('aria-current') === 'page' || CURRENT_CLASS.test(classAndId(n))) return true;
+            }
+            return false;
+        }
+
+        /**
+         * 分页条只有页码没有「下一页」字样时：找到当前页码 N，在同一个分页条里找文字为 N+1 的链接。
+         * 「分页条」= 往上 4 级内第一个含 ≥2 个纯数字链接的祖先 —— 列表里的回复数、楼层号
+         * 也是不带链接的数字，靠这一条和真正的当前页码区分开。
+         */
+        function byNumber(doc, pageUrl) {
+            for (const el of doc.body.querySelectorAll('*')) {
+                if (el.children.length || !NUM.test(textOf(el)) || !isCurrentMark(el)) continue;
+                let pager = null;
+                for (let n = el.parentElement, i = 0; n && n !== doc.body && i < 4; n = n.parentElement, i++) {
+                    const nums = Array.from(n.querySelectorAll('a[href]')).filter((a) => NUM.test(textOf(a).replace(/^\.+\s*/, '')));
+                    if (nums.length >= 2) {
+                        pager = nums;
+                        break;
+                    }
+                }
+                if (!pager) continue;
+                const want = String(Number(textOf(el)) + 1);
+                const a = pager.find((x) => textOf(x).replace(/^\.+\s*/, '') === want && !excluded(x));
+                const url = a && resolve(a, doc, pageUrl);
+                if (url) return { url, how: '页码推断' };
+            }
+            return null;
+        }
+
         function find(doc, pageUrl) {
-            return byRel(doc, pageUrl) || byText(doc, pageUrl);
+            return byRel(doc, pageUrl) || byText(doc, pageUrl) || byNumber(doc, pageUrl);
         }
 
         return { find };
