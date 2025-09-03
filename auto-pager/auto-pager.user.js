@@ -3,7 +3,7 @@
 // @name:zh-CN   自动翻页
 // @name:en      Auto Pager — Load the Next Page When You Scroll to the Bottom
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.09.03.4
+// @version      2025.09.03.5
 // @description  论坛、搜索结果、文章列表滚到底自动加载下一页并拼接到当前页。
 // @description:zh-CN  论坛、搜索结果、文章列表滚到底自动加载下一页并拼接到当前页。
 // @description:en  Automatically loads the next page of forums, search results and article lists when you scroll near the bottom, and appends it to the current page.
@@ -43,6 +43,9 @@
     };
 
     const SEP_CLASS = 'auto-pager-sep';
+
+    /** 懒加载库把真实地址放在这些属性里（Discuz 用 file / zoomfile，知乎用 data-actualsrc）。 */
+    const LAZY_ATTRS = ['data-src', 'data-original', 'data-lazy-src', 'data-lazy', 'data-actualsrc', 'data-echo', 'data-url', 'file', 'zoomfile'];
 
     // =========================================================================
     // 存储（GM）
@@ -306,7 +309,66 @@
             return kids.slice(first, last + 1).filter((x) => x.tagName !== 'SCRIPT' && x.tagName !== 'STYLE');
         }
 
-        return { detect, itemsIn };
+        return { detect, itemsIn, pathOf };
+    })();
+
+    // =========================================================================
+    // 导入前的修正
+    // =========================================================================
+
+    /**
+     * 节点从下一页搬到当前页，相对地址会改按当前页解析：/blog/page/2/ 里的 ../../a.html
+     * 搬到 /blog/ 下就指到站外的 /a.html 去了。所以导入前按下一页的 <base> 全部转成绝对地址。
+     * 纯 #锚点 不动：内容已经在本页了，锚点指向它才对。
+     */
+    const Fixer = (() => {
+        const URL_ATTRS = ['href', 'src', 'action', 'poster', 'data'];
+        const SKIP_SCHEME = /^\s*(?:#|javascript:|mailto:|tel:|data:|blob:|about:)/i;
+
+        function abs(raw, base) {
+            if (!raw || SKIP_SCHEME.test(raw)) return raw;
+            try {
+                return new URL(raw.trim(), base).href;
+            } catch (e) {
+                return raw;
+            }
+        }
+
+        function absSrcset(raw, base) {
+            if (!raw || /data:/i.test(raw)) return raw;
+            return raw.split(',').map((part) => {
+                const [u, ...desc] = part.trim().split(/\s+/);
+                return [abs(u, base)].concat(desc).join(' ');
+            }).join(', ');
+        }
+
+        /**
+         * 懒加载图片：页面上的懒加载脚本只盯着首屏时就在的 <img>，后拼进来的永远停在占位图。
+         * 有真实地址就直接写进 src。
+         */
+        function unlazy(img, base) {
+            const attr = LAZY_ATTRS.find((a) => img.getAttribute(a));
+            if (attr) {
+                const real = abs(img.getAttribute(attr), base);
+                if (img.getAttribute('src') !== real) img.setAttribute('src', real);
+            }
+            const set = img.getAttribute('data-srcset') || img.getAttribute('data-lazy-srcset');
+            if (set) img.setAttribute('srcset', absSrcset(set, base));
+        }
+
+        function fix(root, base) {
+            const els = [root].concat(Array.from(root.querySelectorAll('*')));
+            for (const el of els) {
+                for (const a of URL_ATTRS) if (el.hasAttribute(a)) el.setAttribute(a, abs(el.getAttribute(a), base));
+                if (el.hasAttribute('srcset')) el.setAttribute('srcset', absSrcset(el.getAttribute('srcset'), base));
+                if (el.tagName === 'IMG') unlazy(el, base);
+                // DOMParser 出来的 <script> 不会执行，搬过来也只是死节点
+                if (el.tagName === 'SCRIPT') el.remove();
+            }
+            return root;
+        }
+
+        return { fix };
     })();
 
     // =========================================================================
@@ -320,6 +382,7 @@
             busy: false,
             done: false,
             content: null,      // { el, path, sig, last }：last 是最后插入的节点，下一页接在它后面
+            pager: null,        // 分页条的定位路径：拼接后换成下一页的，页码跟着走
         };
 
         async function fetchDoc(url) {
@@ -363,15 +426,42 @@
             return sep;
         }
 
+        /**
+         * 当前页的分页条：页面上（内容区之外）指向下一页的那个链接，往上 4 级内第一个含 ≥2 个链接、
+         * 又不包住内容区的祖先。从链接出发而不是按类名找：rel=next 是 <link> 时也一样能用。
+         */
+        function locatePager(nextUrl) {
+            const box = state.content.el;
+            for (const a of document.querySelectorAll('a[href]')) {
+                if (box.contains(a) || a.href.split('#')[0] !== nextUrl) continue;
+                for (let n = a.parentElement, i = 0; n && n !== document.body && i < 4; n = n.parentElement, i++) {
+                    if (n.contains(box)) break;
+                    if (n.querySelectorAll('a[href]').length >= 2) return Content.pathOf(n, document);
+                }
+            }
+            return null;
+        }
+
+        /** 同一路径命中多个（顶部 + 底部分页条）就逐个换。下一页没有对应的就留着旧的。 */
+        function replacePager(doc) {
+            if (!state.pager) return;
+            const mine = document.querySelectorAll(state.pager.selector);
+            const theirs = doc.querySelectorAll(state.pager.selector);
+            mine.forEach((el, i) => {
+                if (theirs[i]) el.replaceWith(document.importNode(Fixer.fix(theirs[i], doc.baseURI), true));
+            });
+        }
+
         function append(doc, url) {
             const items = Content.itemsIn(doc, state.content);
             if (!items) throw new Error('下一页里找不到内容区域');
             const pageNo = state.pageNo + 1;
             const sep = makeSeparator(state.content.last.tagName, pageNo, url);
-            const nodes = [sep].concat(items.map((x) => document.importNode(x, true)));
+            const nodes = [sep].concat(items.map((x) => document.importNode(Fixer.fix(x, doc.baseURI), true)));
             state.content.last.after(...nodes);
             state.content.last = nodes[nodes.length - 1];
             state.pageNo = pageNo;
+            replacePager(doc);
             console.info(TAG, `已拼接第 ${pageNo} 页：${items.length} 项`);
         }
 
@@ -390,6 +480,8 @@
                     state.content = Content.detect(doc);
                     if (!state.content) return finish('没认出内容区域，停止');
                     console.info(TAG, `内容区域：${state.content.path.selector}`);
+                    state.pager = locatePager(url);
+                    if (state.pager) console.info(TAG, `分页条：${state.pager.selector}`);
                 }
                 append(doc, finalUrl);
                 const next = Finder.find(doc, finalUrl);

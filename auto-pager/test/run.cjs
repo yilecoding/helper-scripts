@@ -16,17 +16,20 @@ const h = require('../../tools/userscript-harness.cjs')
 const SCRIPT = path.join(__dirname, '..', 'auto-pager.user.js')
 const FIXTURES = path.join(__dirname, 'fixtures')
 const SITE = 'https://bbs.example.com'
+const PIXEL = Buffer.from('R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==', 'base64')
 
 const t = h.createRunner('auto-pager')
 
 /**
  * URL → fixture：/a/list?page=2 → list-2.html；没有 page 参数 → list.html（不存在再试 list-1.html）。
+ * WordPress 式的目录分页 /blog/page/2/ → blog-2.html，/blog/ → blog-1.html。
  * /post/abc.html 这种直接按文件名找。
  */
 function fixtureFor(url) {
     const u = new URL(url)
-    const name = path.basename(u.pathname).replace(/\.html$/, '') || 'index'
-    const page = u.searchParams.get('page')
+    const dirPage = /\/([\w-]+)\/page\/(\d+)\/?$/.exec(u.pathname)
+    const name = dirPage ? dirPage[1] : path.basename(u.pathname).replace(/\.html$/, '') || 'index'
+    const page = dirPage ? dirPage[2] : u.searchParams.get('page')
     const tries = page ? [`${name}-${page}.html`] : [`${name}.html`, `${name}-1.html`]
     for (const f of tries) {
         const fp = path.join(FIXTURES, f)
@@ -53,6 +56,8 @@ async function open(browser, url, opts = {}) {
         page.requests.push(reqUrl)
         const custom = opts.respond && (await opts.respond(reqUrl))
         if (custom) return route.fulfill(custom)
+        // fixture 里的图片地址都是假的，一律回一个 1×1 的 gif，免得控制台刷 404
+        if (/\.(?:png|jpe?g|gif)(?:\?|$)/.test(reqUrl)) return route.fulfill({ contentType: 'image/gif', body: PIXEL })
         const fp = fixtureFor(reqUrl)
         if (!fp) return route.fulfill({ status: 404, body: 'not found' })
         route.fulfill({ contentType: 'text/html; charset=utf-8', body: fs.readFileSync(fp) })
@@ -174,6 +179,61 @@ async function main() {
         await page.close()
     })
 
+    await t.test('导入修正：相对链接按下一页转绝对、懒加载图片写回 src、锚点和 javascript: 不动、脚本不搬', async () => {
+        const page = await open(browser, '/blog/')
+        await waitSeps(page, 1)
+        const got = await page.evaluate(() => {
+            const arts = Array.from(document.querySelectorAll('.posts > article'))
+            const a4 = arts[3]
+            const a5 = arts[4]
+            const a6 = arts[5]
+            return {
+                count: arts.length,
+                page1Link: arts[0].querySelector('h2 a').href,
+                link4: a4.querySelector('h2 a').getAttribute('href'),
+                img4: a4.querySelector('img').getAttribute('src'),
+                srcset4: a4.querySelector('img').getAttribute('srcset'),
+                hash4: a4.querySelector('p a').getAttribute('href'),
+                img5: a5.querySelector('img').getAttribute('src'),
+                js5: a5.querySelector('p a').getAttribute('href'),
+                img6: a6.querySelector('img').getAttribute('src'),
+                script6: a6.querySelectorAll('script').length,
+                ran: !!window.__ranImportedScript,
+            }
+        })
+        t.eq(got, {
+            count: 6,
+            page1Link: SITE + '/blog/2026/10/post-1/',
+            link4: SITE + '/blog/2026/09/post-4/',
+            img4: SITE + '/blog/img/4.png',
+            srcset4: SITE + '/blog/img/4.png 1x, ' + SITE + '/blog/img/4@2x.png 2x',
+            hash4: '#comments',
+            img5: SITE + '/blog/page/2/thumb-5.png',
+            js5: 'javascript:void(0)',
+            img6: SITE + '/blog/img/6.png',
+            script6: 0,
+            ran: false,
+        })
+        await page.close()
+    })
+
+    await t.test('分页条换成下一页的：当前页码跟着变，链接是绝对地址', async () => {
+        const page = await open(browser, '/blog/')
+        await waitSeps(page, 1)
+        t.eq((await waitLog(page, '分页条：')).split('分页条：')[1], 'body > nav.navigation.pagination > div.nav-links')
+        const pager = await page.evaluate(() => {
+            const bars = document.querySelectorAll('.nav-links')
+            const bar = bars[0]
+            return {
+                bars: bars.length,
+                current: bar.querySelector('.current').textContent,
+                links: Array.from(bar.querySelectorAll('a')).map((a) => a.getAttribute('href')),
+            }
+        })
+        t.eq(pager, { bars: 1, current: '2', links: [SITE + '/blog/', SITE + '/blog/'] })
+        await page.close()
+    })
+
     await t.test('没滚到底不加载；滚到底依次追加第 2、3 页，带分隔线和原链接', async () => {
         const page = await open(browser, '/forum/list')
         await waitLog(page, '下一页（')
@@ -198,6 +258,7 @@ async function main() {
         })
         t.eq(order, ['第1页 帖子10', '第2页 帖子1'])
         await waitLog(page, '已到最后一页')
+        t.eq(await page.evaluate(() => document.querySelector('.pagination .current').textContent), '3', '分页条应换成第 3 页的')
         t.eq(h.errors(page).map(String), [])
         await page.close()
     })
