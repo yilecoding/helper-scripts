@@ -3,7 +3,7 @@
 // @name:zh-CN   自动翻页
 // @name:en      Auto Pager — Load the Next Page When You Scroll to the Bottom
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.09.02.3
+// @version      2025.09.03.4
 // @description  论坛、搜索结果、文章列表滚到底自动加载下一页并拼接到当前页。
 // @description:zh-CN  论坛、搜索结果、文章列表滚到底自动加载下一页并拼接到当前页。
 // @description:en  Automatically loads the next page of forums, search results and article lists when you scroll near the bottom, and appends it to the current page.
@@ -36,7 +36,13 @@
 
     const CONFIG = {
         triggerScreens: 2,      // 距页面底部不到这么多屏时加载下一页
+        minItems: 3,            // 内容容器里同类子元素至少这么多个
+        minItemText: 8,         // 同类子元素平均字数低于这个的是菜单 / 分页条，不是内容
+        itemTextCap: 300,       // 单个子元素最多计这么多字，免得一个超长元素压过一整列
+        imageWeight: 40,        // 一张图折合多少字（图片列表没什么文字）
     };
+
+    const SEP_CLASS = 'auto-pager-sep';
 
     // =========================================================================
     // 存储（GM）
@@ -199,6 +205,236 @@
         return { find };
     })();
 
+    // =========================================================================
+    // 找「内容容器」
+    // =========================================================================
+
+    /**
+     * 内容容器 = 子元素里有一大组「同类」元素（同 tag + 同类名）、文字量最多的那个元素，
+     * 而且在下一页的同一位置也能找到它。只看当前页会被「当前页独有」的结构骗
+     * （置顶公告、本页才有的推荐位），所以要等下一页拿回来两边对照。
+     */
+    const Content = (() => {
+        /** 这些区域里的列表是菜单、侧栏、页脚链接，不是内容。 */
+        const SKIP = 'nav, header, footer, aside, [role="navigation"], [role="banner"], [role="contentinfo"], [role="complementary"]';
+
+        /** 类名里带数字的去掉：WordPress 的 post-123、Discuz 的 normalthread_456 每项都不同。 */
+        function cleanClasses(el) {
+            return Array.from(el.classList).filter((c) => !/\d/.test(c) && c !== SEP_CLASS).sort();
+        }
+
+        function signature(el) {
+            return [el.tagName.toLowerCase()].concat(cleanClasses(el)).join('.');
+        }
+
+        /** 子元素里数量最多的同类组：{ sig, items }。 */
+        function dominantGroup(el) {
+            const groups = new Map();
+            for (const c of el.children) {
+                if (c.tagName === 'SCRIPT' || c.tagName === 'STYLE' || c.classList.contains(SEP_CLASS)) continue;
+                const sig = signature(c);
+                if (!groups.has(sig)) groups.set(sig, []);
+                groups.get(sig).push(c);
+            }
+            let best = null;
+            for (const [sig, items] of groups) if (!best || items.length > best.items.length) best = { sig, items };
+            return best;
+        }
+
+        function weight(el) {
+            const text = (el.textContent || '').replace(/\s+/g, '').length;
+            return Math.min(text + el.querySelectorAll('img').length * CONFIG.imageWeight, CONFIG.itemTextCap);
+        }
+
+        /** 定位路径：最近的稳定 id 起，往下逐级 tag + 类名；同一选择器命中多个时记下标。 */
+        function pathOf(el, doc) {
+            const parts = [];
+            let n = el;
+            for (; n && n !== doc.body && n !== doc.documentElement; n = n.parentElement) {
+                // 长串数字的 id 多半是每页不同的自增 id，不能拿来跨页定位
+                if (n.id && !/\d{3,}/.test(n.id)) {
+                    parts.unshift('#' + CSS.escape(n.id));
+                    break;
+                }
+                parts.unshift([n.tagName.toLowerCase()].concat(cleanClasses(n).map((c) => CSS.escape(c))).join('.'));
+            }
+            if (!n || n === doc.body) parts.unshift('body');
+            const selector = parts.join(' > ');
+            return { selector, index: Array.from(doc.querySelectorAll(selector)).indexOf(el) };
+        }
+
+        function locate(doc, path) {
+            return doc.querySelectorAll(path.selector)[path.index] || null;
+        }
+
+        function candidates(doc) {
+            const list = [];
+            for (const el of doc.body.querySelectorAll('*')) {
+                if (el.children.length < CONFIG.minItems || el.closest(SKIP)) continue;
+                const g = dominantGroup(el);
+                if (!g || g.items.length < CONFIG.minItems) continue;
+                const score = g.items.reduce((sum, c) => sum + weight(c), 0);
+                if (score / g.items.length < CONFIG.minItemText) continue;
+                // 当前页上不可见的（折叠的 tab、隐藏的模板）不算
+                if (doc === document && !el.getClientRects().length) continue;
+                list.push({ el, sig: g.sig, items: g.items, score });
+            }
+            return list.sort((a, b) => b.score - a.score);
+        }
+
+        /** 在当前页和下一页里都认得出的内容容器：{ el, path, sig } 或 null。 */
+        function detect(nextDoc) {
+            // 按日期分组的列表（每组一个标题 + 一串帖子）会选中外层：整组搬过来正好也是对的
+            for (const c of candidates(document)) {
+                const path = pathOf(c.el, document);
+                const there = locate(nextDoc, path);
+                if (!there || !Array.from(there.children).some((x) => signature(x) === c.sig)) continue;
+                return { el: c.el, path, sig: c.sig, last: c.items[c.items.length - 1] };
+            }
+            return null;
+        }
+
+        /** 下一页容器里要搬过来的子元素：第一个到最后一个同类元素之间的全部（表头、页内分页条不要）。 */
+        function itemsIn(doc, info) {
+            const box = locate(doc, info.path);
+            if (!box) return null;
+            const kids = Array.from(box.children);
+            const first = kids.findIndex((x) => signature(x) === info.sig);
+            if (first < 0) return [];
+            let last = first;
+            kids.forEach((x, i) => { if (signature(x) === info.sig) last = i; });
+            return kids.slice(first, last + 1).filter((x) => x.tagName !== 'SCRIPT' && x.tagName !== 'STYLE');
+        }
+
+        return { detect, itemsIn };
+    })();
+
+    // =========================================================================
+    // 加载与拼接
+    // =========================================================================
+
+    const Loader = (() => {
+        const state = {
+            next: null,         // 下一页 URL
+            pageNo: 1,          // 已经拼到第几页
+            busy: false,
+            done: false,
+            content: null,      // { el, path, sig, last }：last 是最后插入的节点，下一页接在它后面
+        };
+
+        async function fetchDoc(url) {
+            const res = await fetch(url, { credentials: 'include' });
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            const html = await res.text();
+            const doc = new DOMParser().parseFromString(html, 'text/html');
+            const finalUrl = res.url || url;
+            // DOMParser 出来的文档 baseURI 是「当前页」，里面的相对链接会按当前页解析 ——
+            // 第 2 页的 ?page=3 能碰巧对上，但 ../list/3 这种就错了。补一个 <base> 指向它自己的 URL。
+            const base = doc.querySelector('base[href]');
+            if (base) base.setAttribute('href', new URL(base.getAttribute('href'), finalUrl).href);
+            else {
+                const b = doc.createElement('base');
+                b.setAttribute('href', finalUrl);
+                (doc.head || doc.documentElement).prepend(b);
+            }
+            return { doc, url: finalUrl };
+        }
+
+        /** 分隔线的标签要和列表项匹配：<ul> 里只能放 <li>，<table> 里只能放 <tr> / <tbody>，否则浏览器会把它挤出去。 */
+        function makeSeparator(itemTag, pageNo, url) {
+            const link = document.createElement('a');
+            link.href = url;
+            link.textContent = `第 ${pageNo} 页`;
+            let sep;
+            let inner;
+            if (itemTag === 'TR' || itemTag === 'TBODY') {
+                const tr = document.createElement('tr');
+                inner = tr.appendChild(document.createElement('td'));
+                inner.colSpan = 99;
+                sep = itemTag === 'TR' ? tr : document.createElement('tbody');
+                if (sep !== tr) sep.appendChild(tr);
+            } else {
+                sep = document.createElement(itemTag === 'LI' ? 'li' : 'div');
+                inner = sep;
+            }
+            sep.className = SEP_CLASS;
+            sep.dataset.page = String(pageNo);
+            inner.appendChild(link);
+            return sep;
+        }
+
+        function append(doc, url) {
+            const items = Content.itemsIn(doc, state.content);
+            if (!items) throw new Error('下一页里找不到内容区域');
+            const pageNo = state.pageNo + 1;
+            const sep = makeSeparator(state.content.last.tagName, pageNo, url);
+            const nodes = [sep].concat(items.map((x) => document.importNode(x, true)));
+            state.content.last.after(...nodes);
+            state.content.last = nodes[nodes.length - 1];
+            state.pageNo = pageNo;
+            console.info(TAG, `已拼接第 ${pageNo} 页：${items.length} 项`);
+        }
+
+        function finish(reason) {
+            state.done = true;
+            console.info(TAG, reason);
+        }
+
+        async function loadNext() {
+            if (state.busy || state.done || !state.next) return;
+            state.busy = true;
+            const url = state.next;
+            try {
+                const { doc, url: finalUrl } = await fetchDoc(url);
+                if (!state.content) {
+                    state.content = Content.detect(doc);
+                    if (!state.content) return finish('没认出内容区域，停止');
+                    console.info(TAG, `内容区域：${state.content.path.selector}`);
+                }
+                append(doc, finalUrl);
+                const next = Finder.find(doc, finalUrl);
+                state.next = next && next.url;
+                if (!state.next) finish('已到最后一页');
+            } catch (e) {
+                console.warn(TAG, `加载 ${url} 失败`, e);
+            } finally {
+                state.busy = false;
+            }
+            requestAnimationFrame(check);
+        }
+
+        /** 离底部不到 N 屏就加载。拼接完会再查一次：内容太短时一口气补到够长。 */
+        function check() {
+            if (state.busy || state.done || !state.next) return;
+            const remain = document.documentElement.scrollHeight - (window.scrollY + window.innerHeight);
+            if (remain < window.innerHeight * CONFIG.triggerScreens) loadNext();
+        }
+
+        let ticking = false;
+        function onScroll() {
+            if (ticking) return;
+            ticking = true;
+            requestAnimationFrame(() => {
+                ticking = false;
+                check();
+            });
+        }
+
+        function start(nextUrl) {
+            state.next = nextUrl;
+            const style = document.createElement('style');
+            // 表格里的分隔线是 <tr>，不能给它 display:block（会脱离表格布局），样式落在 <td> 上
+            style.textContent = `div.${SEP_CLASS},li.${SEP_CLASS},.${SEP_CLASS} td{margin:12px 0;padding:6px 0;border-top:2px dashed #c8c8c8;text-align:center;font:13px/1.6 sans-serif;color:#888;list-style:none}`
+                + `.${SEP_CLASS} a{color:inherit;text-decoration:none}.${SEP_CLASS} a:hover{text-decoration:underline}`;
+            (document.head || document.documentElement).appendChild(style);
+            window.addEventListener('scroll', onScroll, { passive: true });
+            window.addEventListener('resize', onScroll, { passive: true });
+            check();
+        }
+
+        return { start };
+    })();
+
     function boot() {
         if (!document.body) return;
         if (Store.site().disabled) {
@@ -212,6 +448,7 @@
             return;
         }
         console.info(TAG, `下一页（${next.how}）：${next.url}`);
+        Loader.start(next.url);
     }
 
     boot();

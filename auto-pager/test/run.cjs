@@ -79,6 +79,24 @@ async function waitLog(page, text, timeout = 3000) {
     throw new Error(`等不到日志「${text}」，已有：\n        ${page.logs.join('\n        ')}`)
 }
 
+/** 滚到页面最底部（瞬间滚动），触发 scroll。 */
+async function scrollBottom(page) {
+    await page.evaluate(() => window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'instant' }))
+}
+
+/** 分隔线：[{ page, text, href }]。 */
+function separators(page) {
+    return page.evaluate(() => Array.from(document.querySelectorAll('.auto-pager-sep')).map((s) => {
+        const a = s.querySelector('a')
+        return { page: s.dataset.page, text: a.textContent, href: a.href }
+    }))
+}
+
+/** 等分隔线数量到 n。 */
+async function waitSeps(page, n, timeout = 3000) {
+    await page.waitForFunction((n) => document.querySelectorAll('.auto-pager-sep').length >= n, n, { timeout })
+}
+
 async function main() {
     const { browser, close } = await h.setup(FIXTURES)
     console.log('auto-pager')
@@ -137,6 +155,51 @@ async function main() {
 
     await t.test('javascript: / 跨域 / mailto / disabled / 只有 hash 的链接被跳过', async () => {
         t.eq(await detected('/forum/bad'), { how: '文字匹配', url: SITE + '/forum/bad?page=2' })
+    })
+
+    await t.test('内容容器：选中帖子列表，不选导航菜单和侧栏「热门」', async () => {
+        const page = await open(browser, '/forum/list')
+        await waitLog(page, '下一页（')
+        await scrollBottom(page)
+        t.eq((await waitLog(page, '内容区域：')).split('内容区域：')[1], '#main > div.list')
+        await page.close()
+    })
+
+    await t.test('内容容器：只在当前页出现的推荐位文字再多也不选（要在下一页里也找得到）', async () => {
+        // 页面很短，一打开就离底部不到 2 屏，直接加载
+        const page = await open(browser, '/forum/promo')
+        t.eq((await waitLog(page, '内容区域：')).split('内容区域：')[1], 'body > ul.threads')
+        await waitSeps(page, 1)
+        t.eq(await page.evaluate(() => document.querySelectorAll('ul.threads > li.thread').length), 6)
+        await page.close()
+    })
+
+    await t.test('没滚到底不加载；滚到底依次追加第 2、3 页，带分隔线和原链接', async () => {
+        const page = await open(browser, '/forum/list')
+        await waitLog(page, '下一页（')
+        await settle(page)
+        t.eq(page.requests.filter((u) => u.includes('page=')), [], '首屏不该预加载')
+        await scrollBottom(page)
+        await waitSeps(page, 1)
+        await scrollBottom(page)
+        await waitSeps(page, 2)
+        t.eq(await separators(page), [
+            { page: '2', text: '第 2 页', href: SITE + '/forum/list?page=2' },
+            { page: '3', text: '第 3 页', href: SITE + '/forum/list?page=3' },
+        ])
+        const titles = await page.evaluate(() => Array.from(document.querySelectorAll('#main .list > .item h3')).map((x) => x.textContent))
+        t.eq(titles.length, 30)
+        t.assert(titles[10].startsWith('第2页 帖子1') && titles[29].startsWith('第3页 帖子10'), titles.join('|'))
+        // 分隔线夹在第 1 页最后一项和第 2 页第一项之间
+        const order = await page.evaluate(() => {
+            const sep = document.querySelector('.auto-pager-sep')
+            const head = (el) => /第\d+页 帖子\d+/.exec(el.textContent)[0]
+            return [head(sep.previousElementSibling), head(sep.nextElementSibling)]
+        })
+        t.eq(order, ['第1页 帖子10', '第2页 帖子1'])
+        await waitLog(page, '已到最后一页')
+        t.eq(h.errors(page).map(String), [])
+        await page.close()
     })
 
     t.done()
