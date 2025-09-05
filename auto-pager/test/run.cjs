@@ -47,6 +47,7 @@ async function open(browser, url, opts = {}) {
     const page = await browser.newPage({ viewport: { width: 1280, height: 800 } })
     page.logs = []
     page.requests = []
+    page.on('requestfailed', (r) => console.log('      [request failed]', r.url(), r.failure().errorText))
     page.on('console', (m) => {
         if (m.text().startsWith('[自动翻页]')) page.logs.push(m.text())
         if (m.type() === 'error') console.log('      [page error]', m.text())
@@ -100,6 +101,18 @@ function separators(page) {
 /** 等分隔线数量到 n。 */
 async function waitSeps(page, n, timeout = 3000) {
     await page.waitForFunction((n) => document.querySelectorAll('.auto-pager-sep').length >= n, n, { timeout })
+}
+
+/** 无尽列表：/forum/endless?page=N 总有第 N+1 页，页面很短（一打开就会连续加载）。 */
+function endlessPage(url) {
+    const u = new URL(url)
+    if (u.pathname !== '/forum/endless') return
+    const n = Number(u.searchParams.get('page') || 1)
+    const items = [1, 2, 3].map((i) => `<li class="thread">第${n}页 主题${i}：无尽列表里的帖子</li>`).join('')
+    return {
+        contentType: 'text/html; charset=utf-8',
+        body: `<!doctype html><meta charset="utf-8"><title>无尽 ${n}</title><ul class="threads">${items}</ul><div class="pages"><a href="/forum/endless?page=${n + 1}">下一页</a></div>`,
+    }
 }
 
 async function main() {
@@ -231,6 +244,57 @@ async function main() {
             }
         })
         t.eq(pager, { bars: 1, current: '2', links: [SITE + '/blog/', SITE + '/blog/'] })
+        await page.close()
+    })
+
+    await t.test('防死循环：最后一页的「下一页」绕回第 1 页时停下，每页只请求一次', async () => {
+        const page = await open(browser, '/forum/loop')
+        await waitLog(page, '指回已加载过的页面')
+        await settle(page)
+        t.eq(page.requests.filter((u) => u.includes('/forum/loop')), [SITE + '/forum/loop', SITE + '/forum/loop?page=2'])
+        t.eq((await separators(page)).length, 1)
+        await page.close()
+    })
+
+    await t.test('防死循环：页码越界跳转回已加载过的页面时停下', async () => {
+        // page.route 回 302 时，跳转后的请求不再经过 route、直接走真实网络（假域名解析失败），
+        // 所以这条用例自己起一个会真跳转的本地服务：第 2 页的「下一页」是 ?page=3，服务器把它 302 回 ?page=2
+        const http = require('http')
+        const server = http.createServer((req, res) => {
+            const u = new URL(req.url, 'http://x')
+            if (u.searchParams.get('page') === '3') return res.writeHead(302, { location: '/forum/loop?page=2' }).end()
+            const file = u.searchParams.get('page') === '2' ? 'loop-2.html' : 'loop-1.html'
+            const body = fs.readFileSync(path.join(FIXTURES, file), 'utf8').replace('href="/forum/loop"', 'href="/forum/loop?page=3"')
+            res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }).end(body)
+        })
+        await new Promise((r) => server.listen(0, '127.0.0.1', r))
+        const page = await browser.newPage()
+        page.logs = []
+        page.on('console', (m) => page.logs.push(m.text()))
+        await h.install(page, SCRIPT)
+        await page.goto(`http://127.0.0.1:${server.address().port}/forum/loop`)
+        try {
+            await waitLog(page, '跳转回已加载过的页面')
+            t.eq((await separators(page)).length, 1)
+        } finally {
+            await page.close()
+            server.close()
+        }
+    })
+
+    await t.test('页数上限：无尽列表拼到 maxPages 页就停', async () => {
+        const page = await open(browser, '/forum/endless', { respond: endlessPage })
+        // 拼到页面够长就不再自动加载了，一路滚到底推着它走
+        const end = Date.now() + 10000
+        while (!page.logs.some((l) => l.includes('到达上限')) && Date.now() < end) {
+            await scrollBottom(page)
+            await page.waitForTimeout(50)
+        }
+        await waitLog(page, '到达上限', 10)
+        const seps = await separators(page)
+        t.eq(seps.length, 29)
+        t.eq(seps[seps.length - 1].text, '第 30 页')
+        t.eq(page.requests.filter((u) => u.includes('page=31')), [])
         await page.close()
     })
 

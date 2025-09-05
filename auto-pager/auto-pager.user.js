@@ -3,7 +3,7 @@
 // @name:zh-CN   自动翻页
 // @name:en      Auto Pager — Load the Next Page When You Scroll to the Bottom
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.09.03.5
+// @version      2025.09.05.6
 // @description  论坛、搜索结果、文章列表滚到底自动加载下一页并拼接到当前页。
 // @description:zh-CN  论坛、搜索结果、文章列表滚到底自动加载下一页并拼接到当前页。
 // @description:en  Automatically loads the next page of forums, search results and article lists when you scroll near the bottom, and appends it to the current page.
@@ -40,6 +40,7 @@
         minItemText: 8,         // 同类子元素平均字数低于这个的是菜单 / 分页条，不是内容
         itemTextCap: 300,       // 单个子元素最多计这么多字，免得一个超长元素压过一整列
         imageWeight: 40,        // 一张图折合多少字（图片列表没什么文字）
+        maxPages: 30,           // 最多拼到第几页（含当前页），防止无尽列表把内存吃光
     };
 
     const SEP_CLASS = 'auto-pager-sep';
@@ -383,7 +384,12 @@
             done: false,
             content: null,      // { el, path, sig, last }：last 是最后插入的节点，下一页接在它后面
             pager: null,        // 分页条的定位路径：拼接后换成下一页的，页码跟着走
+            loaded: new Set([stripHash(location.href)]),    // 已经在页面上的 URL（含最终跳转到的）
         };
+
+        function stripHash(url) {
+            return url.split('#')[0];
+        }
 
         async function fetchDoc(url) {
             const res = await fetch(url, { credentials: 'include' });
@@ -470,12 +476,27 @@
             console.info(TAG, reason);
         }
 
+        /**
+         * 下一页 URL 能不能继续加载。有的论坛最后一页的「下一页」绕回第 1 页，
+         * 有的页码越界会 302 回最后一页 —— 不记账就是死循环，所以请求前、跳转后各查一次。
+         */
+        function setNext(url) {
+            state.next = null;
+            if (!url) return finish('已到最后一页');
+            if (state.loaded.has(stripHash(url))) return finish(`下一页指回已加载过的页面（${url}），停止`);
+            if (state.pageNo >= CONFIG.maxPages) return finish(`已加载 ${state.pageNo} 页，到达上限`);
+            state.next = url;
+        }
+
         async function loadNext() {
             if (state.busy || state.done || !state.next) return;
             state.busy = true;
             const url = state.next;
             try {
                 const { doc, url: finalUrl } = await fetchDoc(url);
+                if (state.loaded.has(stripHash(finalUrl))) return finish(`${url} 跳转回已加载过的页面，停止`);
+                state.loaded.add(stripHash(url));
+                state.loaded.add(stripHash(finalUrl));
                 if (!state.content) {
                     state.content = Content.detect(doc);
                     if (!state.content) return finish('没认出内容区域，停止');
@@ -485,8 +506,7 @@
                 }
                 append(doc, finalUrl);
                 const next = Finder.find(doc, finalUrl);
-                state.next = next && next.url;
-                if (!state.next) finish('已到最后一页');
+                setNext(next && next.url);
             } catch (e) {
                 console.warn(TAG, `加载 ${url} 失败`, e);
             } finally {
@@ -513,7 +533,7 @@
         }
 
         function start(nextUrl) {
-            state.next = nextUrl;
+            setNext(nextUrl);
             const style = document.createElement('style');
             // 表格里的分隔线是 <tr>，不能给它 display:block（会脱离表格布局），样式落在 <td> 上
             style.textContent = `div.${SEP_CLASS},li.${SEP_CLASS},.${SEP_CLASS} td{margin:12px 0;padding:6px 0;border-top:2px dashed #c8c8c8;text-align:center;font:13px/1.6 sans-serif;color:#888;list-style:none}`
