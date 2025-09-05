@@ -50,7 +50,8 @@ async function open(browser, url, opts = {}) {
     page.on('requestfailed', (r) => console.log('      [request failed]', r.url(), r.failure().errorText))
     page.on('console', (m) => {
         if (m.text().startsWith('[自动翻页]')) page.logs.push(m.text())
-        if (m.type() === 'error') console.log('      [page error]', m.text())
+        // 用例故意回 500 / 404 时浏览器会打「Failed to load resource」，不算问题
+        if (m.type() === 'error' && !m.text().startsWith('Failed to load resource')) console.log('      [page error]', m.text())
     })
     await page.route(/^https:\/\/bbs\.example\.com\//, async (route) => {
         const reqUrl = route.request().url()
@@ -295,6 +296,19 @@ async function main() {
         t.eq(seps.length, 29)
         t.eq(seps[seps.length - 1].text, '第 30 页')
         t.eq(page.requests.filter((u) => u.includes('page=31')), [])
+        await page.close()
+    })
+
+    await t.test('请求失败后不会每帧重试（不把服务器打成 DDoS）', async () => {
+        const page = await open(browser, '/forum/list', {
+            respond: (url) => (url.includes('page=2') ? { status: 500, body: 'oops' } : undefined),
+        })
+        await waitLog(page, '下一页（')
+        await scrollBottom(page)
+        await page.waitForTimeout(800)
+        await scrollBottom(page)
+        await page.waitForTimeout(200)
+        t.eq(page.requests.filter((u) => u.includes('page=2')).length, 1)
         await page.close()
     })
 

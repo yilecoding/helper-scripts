@@ -3,7 +3,7 @@
 // @name:zh-CN   自动翻页
 // @name:en      Auto Pager — Load the Next Page When You Scroll to the Bottom
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.09.05.6
+// @version      2025.09.05.7
 // @description  论坛、搜索结果、文章列表滚到底自动加载下一页并拼接到当前页。
 // @description:zh-CN  论坛、搜索结果、文章列表滚到底自动加载下一页并拼接到当前页。
 // @description:en  Automatically loads the next page of forums, search results and article lists when you scroll near the bottom, and appends it to the current page.
@@ -382,6 +382,7 @@
             pageNo: 1,          // 已经拼到第几页
             busy: false,
             done: false,
+            failed: null,       // 上一次请求的错误：有它就不再自动加载，等用户点重试
             content: null,      // { el, path, sig, last }：last 是最后插入的节点，下一页接在它后面
             pager: null,        // 分页条的定位路径：拼接后换成下一页的，页码跟着走
             loaded: new Set([stripHash(location.href)]),    // 已经在页面上的 URL（含最终跳转到的）
@@ -508,6 +509,9 @@
                 const next = Finder.find(doc, finalUrl);
                 setNext(next && next.url);
             } catch (e) {
+                // 失败后照常走下面的 check()：还在底部就会立刻再请求，一秒几十次地打服务器。
+                // 记下错误，自动加载到此为止。
+                state.failed = e;
                 console.warn(TAG, `加载 ${url} 失败`, e);
             } finally {
                 state.busy = false;
@@ -517,7 +521,7 @@
 
         /** 离底部不到 N 屏就加载。拼接完会再查一次：内容太短时一口气补到够长。 */
         function check() {
-            if (state.busy || state.done || !state.next) return;
+            if (state.busy || state.done || state.failed || !state.next) return;
             const remain = document.documentElement.scrollHeight - (window.scrollY + window.innerHeight);
             if (remain < window.innerHeight * CONFIG.triggerScreens) loadNext();
         }
