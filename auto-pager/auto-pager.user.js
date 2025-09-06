@@ -3,7 +3,7 @@
 // @name:zh-CN   自动翻页
 // @name:en      Auto Pager — Load the Next Page When You Scroll to the Bottom
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.09.05.7
+// @version      2025.09.06.8
 // @description  论坛、搜索结果、文章列表滚到底自动加载下一页并拼接到当前页。
 // @description:zh-CN  论坛、搜索结果、文章列表滚到底自动加载下一页并拼接到当前页。
 // @description:en  Automatically loads the next page of forums, search results and article lists when you scroll near the bottom, and appends it to the current page.
@@ -44,6 +44,7 @@
     };
 
     const SEP_CLASS = 'auto-pager-sep';
+    const STATUS_CLASS = 'auto-pager-status';
 
     /** 懒加载库把真实地址放在这些属性里（Discuz 用 file / zoomfile，知乎用 data-actualsrc）。 */
     const LAZY_ATTRS = ['data-src', 'data-original', 'data-lazy-src', 'data-lazy', 'data-actualsrc', 'data-echo', 'data-url', 'file', 'zoomfile'];
@@ -472,9 +473,57 @@
             console.info(TAG, `已拼接第 ${pageNo} 页：${items.length} 项`);
         }
 
+        // ---- 状态条：加载中 / 失败可重试 / 结束原因，放在内容区下面，用户看得见 ----
+
+        let statusEl = null;
+
+        /**
+         * 内容区还没认出来（第一次加载）时没地方放，先固定在视口底部；认出来以后挪到内容区后面。
+         * 内容区是 <tbody> 时要放到整张表后面，<table> 里塞 <div> 会被浏览器挤出去。
+         */
+        function placeStatus() {
+            if (!statusEl) {
+                statusEl = document.createElement('div');
+                statusEl.className = STATUS_CLASS;
+            }
+            const box = state.content && state.content.el;
+            const anchor = box && (/^(?:TBODY|THEAD|TFOOT|TR)$/.test(box.tagName) ? box.closest('table') : box);
+            statusEl.classList.toggle('floating', !anchor);
+            if (anchor && anchor.nextSibling !== statusEl) anchor.after(statusEl);
+            else if (!anchor && !statusEl.isConnected) document.body.appendChild(statusEl);
+        }
+
+        /** kind：loading | error | done | idle。error 带一个「重试」按钮。 */
+        function showStatus(kind, text) {
+            placeStatus();
+            statusEl.dataset.state = kind;
+            statusEl.textContent = text || '';
+            statusEl.hidden = kind === 'idle';
+            if (kind === 'error') {
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.textContent = '重试';
+                btn.addEventListener('click', retry);
+                statusEl.append(' ', btn);
+            }
+        }
+
+        function retry() {
+            if (state.busy) return;
+            state.failed = null;
+            loadNext();
+        }
+
         function finish(reason) {
             state.done = true;
             console.info(TAG, reason);
+            showStatus('done', reason);
+        }
+
+        /** 错误要说人话：fetch 断网抛的是 TypeError「Failed to fetch」。 */
+        function describe(e) {
+            if (e instanceof TypeError) return '网络错误';
+            return e && e.message ? e.message : String(e);
         }
 
         /**
@@ -493,6 +542,7 @@
             if (state.busy || state.done || !state.next) return;
             state.busy = true;
             const url = state.next;
+            showStatus('loading', `正在加载第 ${state.pageNo + 1} 页…`);
             try {
                 const { doc, url: finalUrl } = await fetchDoc(url);
                 if (state.loaded.has(stripHash(finalUrl))) return finish(`${url} 跳转回已加载过的页面，停止`);
@@ -500,19 +550,21 @@
                 state.loaded.add(stripHash(finalUrl));
                 if (!state.content) {
                     state.content = Content.detect(doc);
-                    if (!state.content) return finish('没认出内容区域，停止');
+                    if (!state.content) return finish('没认出这一页的内容区域，自动翻页停止');
                     console.info(TAG, `内容区域：${state.content.path.selector}`);
                     state.pager = locatePager(url);
                     if (state.pager) console.info(TAG, `分页条：${state.pager.selector}`);
                 }
                 append(doc, finalUrl);
+                showStatus('idle');
                 const next = Finder.find(doc, finalUrl);
                 setNext(next && next.url);
             } catch (e) {
                 // 失败后照常走下面的 check()：还在底部就会立刻再请求，一秒几十次地打服务器。
-                // 记下错误，自动加载到此为止。
+                // 记下错误，自动加载到此为止，等用户点重试。
                 state.failed = e;
                 console.warn(TAG, `加载 ${url} 失败`, e);
+                showStatus('error', `第 ${state.pageNo + 1} 页加载失败（${describe(e)}）`);
             } finally {
                 state.busy = false;
             }
@@ -541,7 +593,12 @@
             const style = document.createElement('style');
             // 表格里的分隔线是 <tr>，不能给它 display:block（会脱离表格布局），样式落在 <td> 上
             style.textContent = `div.${SEP_CLASS},li.${SEP_CLASS},.${SEP_CLASS} td{margin:12px 0;padding:6px 0;border-top:2px dashed #c8c8c8;text-align:center;font:13px/1.6 sans-serif;color:#888;list-style:none}`
-                + `.${SEP_CLASS} a{color:inherit;text-decoration:none}.${SEP_CLASS} a:hover{text-decoration:underline}`;
+                + `.${SEP_CLASS} a{color:inherit;text-decoration:none}.${SEP_CLASS} a:hover{text-decoration:underline}`
+                + `.${STATUS_CLASS}{margin:12px auto;padding:8px 12px;text-align:center;font:13px/1.6 sans-serif;color:#666;clear:both}`
+                + `.${STATUS_CLASS}[hidden]{display:none}`
+                + `.${STATUS_CLASS}.floating{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);z-index:2147483647;margin:0;background:#fff;border-radius:16px;box-shadow:0 2px 8px rgba(0,0,0,.2)}`
+                + `.${STATUS_CLASS}[data-state="error"]{color:#c0392b}`
+                + `.${STATUS_CLASS} button{margin-left:6px;padding:2px 10px;font:inherit;cursor:pointer}`;
             (document.head || document.documentElement).appendChild(style);
             window.addEventListener('scroll', onScroll, { passive: true });
             window.addEventListener('resize', onScroll, { passive: true });

@@ -116,6 +116,14 @@ function endlessPage(url) {
     }
 }
 
+/** 状态条：{ state, text, hidden } 或 null。 */
+function statusOf(page) {
+    return page.evaluate(() => {
+        const el = document.querySelector('.auto-pager-status')
+        return el && { state: el.dataset.state, text: el.textContent, hidden: el.hidden }
+    })
+}
+
 async function main() {
     const { browser, close } = await h.setup(FIXTURES)
     console.log('auto-pager')
@@ -309,6 +317,49 @@ async function main() {
         await scrollBottom(page)
         await page.waitForTimeout(200)
         t.eq(page.requests.filter((u) => u.includes('page=2')).length, 1)
+        await page.close()
+    })
+
+    await t.test('请求 500：显示错误和「重试」按钮，服务器恢复后点重试接着拼', async () => {
+        let broken = true
+        const page = await open(browser, '/forum/list', {
+            respond: (url) => (broken && url.includes('page=2') ? { status: 500, body: 'oops' } : undefined),
+        })
+        await waitLog(page, '下一页（')
+        await scrollBottom(page)
+        await page.waitForSelector('.auto-pager-status[data-state="error"]')
+        const st = await statusOf(page)
+        t.eq(st, { state: 'error', text: '第 2 页加载失败（HTTP 500） 重试', hidden: false })
+        // 第一次加载就失败：内容区还没认出来，状态条浮在视口底部，看得见
+        t.assert(await page.isVisible('.auto-pager-status button'), '重试按钮不可见')
+        broken = false
+        await page.click('.auto-pager-status button')
+        await waitSeps(page, 1)
+        t.eq((await statusOf(page)).hidden, true, '成功后状态条收起')
+        // 状态条挪到了内容区后面
+        t.eq(await page.evaluate(() => document.querySelector('.auto-pager-status').previousElementSibling.className), 'list')
+        await page.close()
+    })
+
+    await t.test('加载中显示「正在加载第 N 页…」', async () => {
+        let release
+        const gate = new Promise((r) => { release = r })
+        const page = await open(browser, '/forum/list', {
+            respond: async (url) => { if (url.includes('page=2')) await gate },
+        })
+        await waitLog(page, '下一页（')
+        await scrollBottom(page)
+        await page.waitForSelector('.auto-pager-status[data-state="loading"]')
+        t.eq(await statusOf(page), { state: 'loading', text: '正在加载第 2 页…', hidden: false })
+        release()
+        await waitSeps(page, 1)
+        await page.close()
+    })
+
+    await t.test('最后一页：状态条写明「已到最后一页」', async () => {
+        const page = await open(browser, '/forum/promo')
+        await waitLog(page, '已到最后一页')
+        t.eq(await statusOf(page), { state: 'done', text: '已到最后一页', hidden: false })
         await page.close()
     })
 
