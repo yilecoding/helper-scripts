@@ -104,6 +104,55 @@ async function waitSeps(page, n, timeout = 3000) {
     await page.waitForFunction((n) => document.querySelectorAll('.auto-pager-sep').length >= n, n, { timeout })
 }
 
+/**
+ * 把字符串编码成 GBK 字节。TextEncoder 只会 UTF-8，node 也没有 GBK 编码器，
+ * 但 TextDecoder 能解 GBK —— 把所有双字节码位解一遍，反查出「字 → 字节」的表。
+ */
+const gbkTable = (() => {
+    let table = null
+    return () => {
+        if (table) return table
+        table = new Map()
+        const dec = new TextDecoder('gbk')
+        for (let hi = 0x81; hi <= 0xfe; hi++) {
+            for (let lo = 0x40; lo <= 0xfe; lo++) {
+                if (lo === 0x7f) continue
+                const ch = dec.decode(Uint8Array.of(hi, lo))
+                if (ch.length === 1 && ch !== '\ufffd' && !table.has(ch)) table.set(ch, [hi, lo])
+            }
+        }
+        return table
+    }
+})()
+
+function encodeGbk(str) {
+    const out = []
+    for (const ch of str) {
+        const code = ch.codePointAt(0)
+        if (code < 0x80) out.push(code)
+        else {
+            const bytes = gbkTable().get(ch)
+            if (!bytes) throw new Error(`GBK 里没有「${ch}」`)
+            out.push(...bytes)
+        }
+    }
+    return Buffer.from(out)
+}
+
+/**
+ * GBK 论坛：第 1 页按 UTF-8 发（站点新旧页面编码不一致），第 2 页编码只在 Content-Type 头里，
+ * 第 3 页头里没有、只有 http-equiv 写法的 <meta>。这样「按当前页编码解」两页都会乱码，
+ * 解对了只能是真从头 / meta 里取到了编码。
+ */
+function gbkPage(url) {
+    const u = new URL(url)
+    if (u.pathname !== '/bbs/gbk') return
+    const n = u.searchParams.get('page') || '1'
+    const text = fs.readFileSync(path.join(FIXTURES, `gbk-${n}.html`), 'utf8')
+    if (n === '1') return { headers: { 'content-type': 'text/html; charset=utf-8' }, body: text }
+    return { headers: { 'content-type': n === '2' ? 'text/html; charset=GBK' : 'text/html' }, body: encodeGbk(text) }
+}
+
 /** 无尽列表：/forum/endless?page=N 总有第 N+1 页，页面很短（一打开就会连续加载）。 */
 function endlessPage(url) {
     const u = new URL(url)
@@ -360,6 +409,22 @@ async function main() {
         const page = await open(browser, '/forum/promo')
         await waitLog(page, '已到最后一页')
         t.eq(await statusOf(page), { state: 'done', text: '已到最后一页', hidden: false })
+        await page.close()
+    })
+
+    await t.test('GBK 编码：按 Content-Type 头 / <meta http-equiv> 取编码解码，中文不乱码；表格里的分隔线是 <tr>', async () => {
+        const page = await open(browser, '/bbs/gbk', { respond: gbkPage })
+        await waitLog(page, '已到最后一页')
+        t.eq((await waitLog(page, '内容区域：')).split('内容区域：')[1], '#threadlist > tbody')
+        const rows = await page.evaluate(() => Array.from(document.querySelectorAll('#threadlist tr.thread td:first-child')).map((td) => td.textContent))
+        t.eq(rows.length, 9)
+        t.eq(rows[3], '第2页：老站点用的是国标码，中文标题不能乱')
+        t.eq(rows[7], '第3页：繁體字也要正確顯示（測試）')
+        t.eq(rows[8], '第3页：标点符号「引号」、省略号……破折号——')
+        const seps = await page.evaluate(() => Array.from(document.querySelectorAll('.auto-pager-sep')).map((s) => s.tagName + ':' + s.textContent))
+        t.eq(seps, ['TR:第 2 页', 'TR:第 3 页'])
+        // 表头只在第 1 页出现一次
+        t.eq(await page.evaluate(() => document.querySelectorAll('#threadlist tr.th').length), 1)
         await page.close()
     })
 

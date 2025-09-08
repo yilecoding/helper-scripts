@@ -3,7 +3,7 @@
 // @name:zh-CN   自动翻页
 // @name:en      Auto Pager — Load the Next Page When You Scroll to the Bottom
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.09.06.8
+// @version      2025.09.08.9
 // @description  论坛、搜索结果、文章列表滚到底自动加载下一页并拼接到当前页。
 // @description:zh-CN  论坛、搜索结果、文章列表滚到底自动加载下一页并拼接到当前页。
 // @description:en  Automatically loads the next page of forums, search results and article lists when you scroll near the bottom, and appends it to the current page.
@@ -393,10 +393,29 @@
             return url.split('#')[0];
         }
 
+        /**
+         * res.text() 一律按 UTF-8 解，GBK 的老论坛拿回来全是乱码 —— 连「下一页」三个字都认不出，
+         * 翻到第 2 页就断了。编码按浏览器的顺序取：Content-Type 头 → 前 1KB 里的 <meta>
+         * （charset= 和 http-equiv 两种写法）→ 当前页自己的编码（同站多半一致）。
+         */
+        function decode(buf, contentType) {
+            let charset = (/charset\s*=\s*["']?([\w-]+)/i.exec(contentType || '') || [])[1];
+            if (!charset) {
+                const head = new TextDecoder('windows-1252').decode(new Uint8Array(buf, 0, Math.min(buf.byteLength, 1024)));
+                charset = (/<meta[^>]+charset\s*=\s*["']?\s*([\w-]+)/i.exec(head) || [])[1];
+            }
+            try {
+                return new TextDecoder(charset || document.characterSet || 'utf-8').decode(buf);
+            } catch (e) {
+                // 写错的编码名（如 charset=utf8mb4）TextDecoder 会抛 RangeError
+                return new TextDecoder('utf-8').decode(buf);
+            }
+        }
+
         async function fetchDoc(url) {
             const res = await fetch(url, { credentials: 'include' });
             if (!res.ok) throw new Error('HTTP ' + res.status);
-            const html = await res.text();
+            const html = decode(await res.arrayBuffer(), res.headers.get('content-type'));
             const doc = new DOMParser().parseFromString(html, 'text/html');
             const finalUrl = res.url || url;
             // DOMParser 出来的文档 baseURI 是「当前页」，里面的相对链接会按当前页解析 ——
