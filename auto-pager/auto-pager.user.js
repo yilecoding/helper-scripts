@@ -3,7 +3,7 @@
 // @name:zh-CN   自动翻页
 // @name:en      Auto Pager — Load the Next Page When You Scroll to the Bottom
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.09.08.9
+// @version      2025.09.09.10
 // @description  论坛、搜索结果、文章列表滚到底自动加载下一页并拼接到当前页。
 // @description:zh-CN  论坛、搜索结果、文章列表滚到底自动加载下一页并拼接到当前页。
 // @description:en  Automatically loads the next page of forums, search results and article lists when you scroll near the bottom, and appends it to the current page.
@@ -48,6 +48,60 @@
 
     /** 懒加载库把真实地址放在这些属性里（Discuz 用 file / zoomfile，知乎用 data-actualsrc）。 */
     const LAZY_ATTRS = ['data-src', 'data-original', 'data-lazy-src', 'data-lazy', 'data-actualsrc', 'data-echo', 'data-url', 'file', 'zoomfile'];
+
+    // =========================================================================
+    // 站点规则
+    // =========================================================================
+
+    /**
+     * 通用识别搞不定或者不放心的站点，在这里写死选择器。字段都可选，没写的那一项照常走通用识别：
+     *   name     日志里显示的名字
+     *   host     匹配 location.hostname 的正则
+     *   url      匹配 location.href 的正则
+     *   when     页面上存在这个选择器才算命中（Discuz 这类开源程序部署在无数个域名上，只能按结构认）
+     *   next     「下一页」链接的选择器（取第一个能用的）
+     *   content  内容容器的选择器（当前页和下一页都按它找）
+     *   pager    要跟着换成下一页的分页条（可以命中多个：顶部 + 底部）
+     * 第一条全部条件都满足的规则生效。
+     */
+    const SITE_RULES = [
+        {
+            name: 'Discuz! 帖子列表',
+            when: '#threadlisttableid',
+            next: '.pg a.nxt',
+            content: '#threadlisttableid',
+            pager: '.pg',
+        },
+        {
+            name: 'Discuz! 帖子内容',
+            when: '#postlist > div[id^="post_"]',
+            next: '.pg a.nxt',
+            content: '#postlist',
+            pager: '.pg',
+        },
+        {
+            name: 'Bing 搜索',
+            host: /(?:^|\.)bing\.com$/,
+            url: /\/search\?/,
+            next: 'a.sb_pagN',
+            content: '#b_results',
+            pager: '#b_results > li.b_pag',
+        },
+        {
+            name: '百度搜索',
+            host: /(?:^|\.)baidu\.com$/,
+            url: /\/s\?/,
+            content: '#content_left',
+            pager: '#page',
+        },
+    ];
+
+    function matchRule() {
+        return SITE_RULES.find((r) =>
+            (!r.host || r.host.test(location.hostname))
+            && (!r.url || r.url.test(location.href))
+            && (!r.when || document.querySelector(r.when))) || null;
+    }
 
     // =========================================================================
     // 存储（GM）
@@ -203,8 +257,17 @@
             return null;
         }
 
-        function find(doc, pageUrl) {
-            return byRel(doc, pageUrl) || byText(doc, pageUrl) || byNumber(doc, pageUrl);
+        function byRule(doc, pageUrl, rule) {
+            if (!rule || !rule.next) return null;
+            for (const el of doc.querySelectorAll(rule.next)) {
+                const url = resolve(el, doc, pageUrl);
+                if (url) return { url, how: '站点规则：' + rule.name };
+            }
+            return null;
+        }
+
+        function find(doc, pageUrl, rule) {
+            return byRule(doc, pageUrl, rule) || byRel(doc, pageUrl) || byText(doc, pageUrl) || byNumber(doc, pageUrl);
         }
 
         return { find };
@@ -288,7 +351,21 @@
         }
 
         /** 在当前页和下一页里都认得出的内容容器：{ el, path, sig } 或 null。 */
-        function detect(nextDoc) {
+        /** 规则写死了容器：只要两边都找得到就用它，不再打分。 */
+        function byRule(nextDoc, rule) {
+            const el = document.querySelector(rule.content);
+            if (!el || !nextDoc.querySelector(rule.content)) return null;
+            const g = dominantGroup(el);
+            if (!g) return null;
+            return { el, path: { selector: rule.content, index: 0 }, sig: g.sig, last: g.items[g.items.length - 1] };
+        }
+
+        function detect(nextDoc, rule) {
+            if (rule && rule.content) {
+                const hit = byRule(nextDoc, rule);
+                if (hit) return hit;
+                console.warn(TAG, `规则「${rule.name}」的内容选择器 ${rule.content} 没命中，改用通用识别`);
+            }
             // 按日期分组的列表（每组一个标题 + 一串帖子）会选中外层：整组搬过来正好也是对的
             for (const c of candidates(document)) {
                 const path = pathOf(c.el, document);
@@ -387,6 +464,7 @@
             content: null,      // { el, path, sig, last }：last 是最后插入的节点，下一页接在它后面
             pager: null,        // 分页条的定位路径：拼接后换成下一页的，页码跟着走
             loaded: new Set([stripHash(location.href)]),    // 已经在页面上的 URL（含最终跳转到的）
+            rule: null,         // 命中的站点规则
         };
 
         function stripHash(url) {
@@ -568,15 +646,15 @@
                 state.loaded.add(stripHash(url));
                 state.loaded.add(stripHash(finalUrl));
                 if (!state.content) {
-                    state.content = Content.detect(doc);
+                    state.content = Content.detect(doc, state.rule);
                     if (!state.content) return finish('没认出这一页的内容区域，自动翻页停止');
                     console.info(TAG, `内容区域：${state.content.path.selector}`);
-                    state.pager = locatePager(url);
+                    state.pager = state.rule && state.rule.pager ? { selector: state.rule.pager } : locatePager(url);
                     if (state.pager) console.info(TAG, `分页条：${state.pager.selector}`);
                 }
                 append(doc, finalUrl);
                 showStatus('idle');
-                const next = Finder.find(doc, finalUrl);
+                const next = Finder.find(doc, finalUrl, state.rule);
                 setNext(next && next.url);
             } catch (e) {
                 // 失败后照常走下面的 check()：还在底部就会立刻再请求，一秒几十次地打服务器。
@@ -607,7 +685,8 @@
             });
         }
 
-        function start(nextUrl) {
+        function start(nextUrl, rule) {
+            state.rule = rule;
             setNext(nextUrl);
             const style = document.createElement('style');
             // 表格里的分隔线是 <tr>，不能给它 display:block（会脱离表格布局），样式落在 <td> 上
@@ -633,14 +712,15 @@
             console.info(TAG, '本站已停用');
             return;
         }
-        console.info(TAG, '启动');
-        const next = Finder.find(document, location.href);
+        const rule = matchRule();
+        console.info(TAG, rule ? `启动（站点规则：${rule.name}）` : '启动');
+        const next = Finder.find(document, location.href, rule);
         if (!next) {
             console.info(TAG, '没有找到下一页');
             return;
         }
         console.info(TAG, `下一页（${next.how}）：${next.url}`);
-        Loader.start(next.url);
+        Loader.start(next.url, rule);
     }
 
     boot();

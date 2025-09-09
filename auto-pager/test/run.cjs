@@ -428,6 +428,28 @@ async function main() {
         await page.close()
     })
 
+    await t.test('站点规则：Discuz 帖子列表按规则取下一页 / 内容 / 分页条，顶部底部两条分页条都换', async () => {
+        const page = await open(browser, '/forum.php?mod=forumdisplay&fid=2', {
+            respond: (url) => {
+                const u = new URL(url)
+                if (u.pathname !== '/forum.php') return
+                const body = fs.readFileSync(path.join(FIXTURES, `discuz-${u.searchParams.get('page') || 1}.html`))
+                return { contentType: 'text/html; charset=utf-8', body }
+            },
+        })
+        await waitLog(page, '启动（站点规则：Discuz! 帖子列表）')
+        t.eq((await waitLog(page, '下一页（')).split('下一页')[1], '（站点规则：Discuz! 帖子列表）：' + SITE + '/forum.php?mod=forumdisplay&fid=2&page=2')
+        await waitLog(page, '已到最后一页')
+        t.eq((await waitLog(page, '内容区域：')).split('内容区域：')[1], '#threadlisttableid')
+        const got = await page.evaluate(() => ({
+            threads: Array.from(document.querySelectorAll('#threadlisttableid a.xst')).map((a) => a.textContent.slice(0, 3)),
+            sep: document.querySelector('.auto-pager-sep').tagName + ':' + document.querySelector('.auto-pager-sep').textContent,
+            pagers: Array.from(document.querySelectorAll('.pg strong')).map((x) => x.textContent),
+        }))
+        t.eq(got, { threads: ['第1页', '第1页', '第1页', '第2页', '第2页', '第2页'], sep: 'TBODY:第 2 页', pagers: ['2', '2'] })
+        await page.close()
+    })
+
     await t.test('没滚到底不加载；滚到底依次追加第 2、3 页，带分隔线和原链接', async () => {
         const page = await open(browser, '/forum/list')
         await waitLog(page, '下一页（')
