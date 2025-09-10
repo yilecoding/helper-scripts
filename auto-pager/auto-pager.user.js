@@ -3,7 +3,7 @@
 // @name:zh-CN   自动翻页
 // @name:en      Auto Pager — Load the Next Page When You Scroll to the Bottom
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.09.09.10
+// @version      2025.09.10.11
 // @description  论坛、搜索结果、文章列表滚到底自动加载下一页并拼接到当前页。
 // @description:zh-CN  论坛、搜索结果、文章列表滚到底自动加载下一页并拼接到当前页。
 // @description:en  Automatically loads the next page of forums, search results and article lists when you scroll near the bottom, and appends it to the current page.
@@ -13,6 +13,8 @@
 // @noframes
 // @grant        GM_getValue
 // @grant        GM_setValue
+// @grant        GM_registerMenuCommand
+// @grant        GM_unregisterMenuCommand
 // @license      CC BY-NC-SA
 // @run-at       document-idle
 // @homepageURL  https://github.com/yilecoding/helper-scripts
@@ -107,7 +109,10 @@
     // 存储（GM）
     // =========================================================================
 
-    /** 启用/停用按站点（hostname）存：在某个站上关掉，不该影响别的站。 */
+    /**
+     * 启用/停用按站点（hostname）存：在某个站上关掉，不该影响别的站。
+     * 「地址栏跟随」是个人偏好，全局存。
+     */
     const Store = (() => {
         const siteKey = 'site:' + location.hostname;
 
@@ -119,7 +124,15 @@
             GM_setValue(siteKey, { ...site(), ...patch });
         }
 
-        return { site, saveSite };
+        function settings() {
+            return { syncUrl: false, ...GM_getValue('settings', {}) };
+        }
+
+        function saveSettings(patch) {
+            GM_setValue('settings', { ...settings(), ...patch });
+        }
+
+        return { site, saveSite, settings, saveSettings };
     })();
 
     // =========================================================================
@@ -460,6 +473,7 @@
             pageNo: 1,          // 已经拼到第几页
             busy: false,
             done: false,
+            stopped: false,     // 用户在菜单里点了「停止」：不再自动加载，手动「立即加载」仍可用
             failed: null,       // 上一次请求的错误：有它就不再自动加载，等用户点重试
             content: null,      // { el, path, sig, last }：last 是最后插入的节点，下一页接在它后面
             pager: null,        // 分页条的定位路径：拼接后换成下一页的，页码跟着走
@@ -592,6 +606,7 @@
 
         /** kind：loading | error | done | idle。error 带一个「重试」按钮。 */
         function showStatus(kind, text) {
+            ensureStyle();
             placeStatus();
             statusEl.dataset.state = kind;
             statusEl.textContent = text || '';
@@ -631,12 +646,13 @@
             state.next = null;
             if (!url) return finish('已到最后一页');
             if (state.loaded.has(stripHash(url))) return finish(`下一页指回已加载过的页面（${url}），停止`);
-            if (state.pageNo >= CONFIG.maxPages) return finish(`已加载 ${state.pageNo} 页，到达上限`);
+            // 到上限只停自动加载，下一页地址留着：菜单「立即加载下一页」还能一页一页往后拼
             state.next = url;
+            if (state.pageNo >= CONFIG.maxPages) return finish(`已加载 ${state.pageNo} 页，到达上限（可在菜单里手动加载下一页）`);
         }
 
-        async function loadNext() {
-            if (state.busy || state.done || !state.next) return;
+        async function loadNext(manual) {
+            if (state.busy || (state.done && !manual) || !state.next) return;
             state.busy = true;
             const url = state.next;
             showStatus('loading', `正在加载第 ${state.pageNo + 1} 页…`);
@@ -653,7 +669,9 @@
                     if (state.pager) console.info(TAG, `分页条：${state.pager.selector}`);
                 }
                 append(doc, finalUrl);
-                showStatus('idle');
+                // 加载途中点了「停止」：提示不能被「加载完成」冲掉
+                if (state.stopped) showStatus('done', '已停止自动翻页（本页）');
+                else showStatus('idle');
                 const next = Finder.find(doc, finalUrl, state.rule);
                 setNext(next && next.url);
             } catch (e) {
@@ -670,9 +688,28 @@
 
         /** 离底部不到 N 屏就加载。拼接完会再查一次：内容太短时一口气补到够长。 */
         function check() {
-            if (state.busy || state.done || state.failed || !state.next) return;
+            if (state.busy || state.done || state.failed || state.stopped || !state.next) return;
             const remain = document.documentElement.scrollHeight - (window.scrollY + window.innerHeight);
             if (remain < window.innerHeight * CONFIG.triggerScreens) loadNext();
+        }
+
+        // ---- 地址栏跟随：把地址换成正在看的那一页（默认关） ----
+
+        let originUrl = location.href;
+
+        /**
+         * 视口上 1/3 处以上的最后一条分隔线 = 正在看的页。用 replaceState 不用 pushState：
+         * 往下滚几十页不该在「后退」里塞几十条历史。带上原来的 history.state，SPA 路由靠它恢复。
+         */
+        function syncUrl() {
+            if (!Store.settings().syncUrl) return;
+            const line = window.innerHeight / 3;
+            let url = originUrl;
+            for (const sep of document.querySelectorAll('.' + SEP_CLASS)) {
+                if (sep.getBoundingClientRect().top > line) break;
+                url = sep.querySelector('a').href;
+            }
+            if (url !== location.href) history.replaceState(history.state, '', url);
         }
 
         let ticking = false;
@@ -682,12 +719,41 @@
             requestAnimationFrame(() => {
                 ticking = false;
                 check();
+                syncUrl();
             });
         }
 
-        function start(nextUrl, rule) {
-            state.rule = rule;
-            setNext(nextUrl);
+        // ---- 菜单调用 ----
+
+        function loadNow() {
+            if (state.busy) return;
+            if (!state.next) {
+                showStatus('done', state.done ? statusEl.textContent : '这一页没有找到下一页');
+                return;
+            }
+            state.failed = null;
+            loadNext(true);
+        }
+
+        function stop() {
+            state.stopped = true;
+            if (!state.busy) showStatus('done', '已停止自动翻页（本页）');
+        }
+
+        function resume() {
+            state.stopped = false;
+            if (!state.busy && !state.done && !state.failed) showStatus('idle');
+            check();
+        }
+
+        function isStopped() {
+            return state.stopped;
+        }
+
+        let styled = false;
+        function ensureStyle() {
+            if (styled) return;
+            styled = true;
             const style = document.createElement('style');
             // 表格里的分隔线是 <tr>，不能给它 display:block（会脱离表格布局），样式落在 <td> 上
             style.textContent = `div.${SEP_CLASS},li.${SEP_CLASS},.${SEP_CLASS} td{margin:12px 0;padding:6px 0;border-top:2px dashed #c8c8c8;text-align:center;font:13px/1.6 sans-serif;color:#888;list-style:none}`
@@ -698,20 +764,80 @@
                 + `.${STATUS_CLASS}[data-state="error"]{color:#c0392b}`
                 + `.${STATUS_CLASS} button{margin-left:6px;padding:2px 10px;font:inherit;cursor:pointer}`;
             (document.head || document.documentElement).appendChild(style);
+        }
+
+        function start(nextUrl, rule) {
+            state.rule = rule;
+            originUrl = location.href;
+            ensureStyle();
+            setNext(nextUrl);
             window.addEventListener('scroll', onScroll, { passive: true });
             window.addEventListener('resize', onScroll, { passive: true });
             check();
         }
 
-        return { start };
+        return { start, loadNow, stop, resume, isStopped, syncUrl };
     })();
 
-    function boot() {
-        if (!document.body) return;
-        if (Store.site().disabled) {
-            console.info(TAG, '本站已停用');
-            return;
+    // =========================================================================
+    // 菜单
+    // =========================================================================
+
+    /**
+     * 菜单文字带当前状态（「停用」/「启用」），切换后注销重注册。
+     * 没有 GM_unregisterMenuCommand 的管理器上重注册会越点越多，那种情况退化成固定文字、只注册一次。
+     */
+    const Menu = (() => {
+        const canUnregister = typeof GM_unregisterMenuCommand === 'function';
+        let ids = [];
+
+        function toggleSite() {
+            const disabled = !Store.site().disabled;
+            Store.saveSite({ disabled });
+            if (disabled) {
+                if (started) Loader.stop();
+                console.info(TAG, '本站已停用');
+            } else if (started) {
+                Loader.resume();
+            } else {
+                run();
+            }
+            refresh();
         }
+
+        function toggleStop() {
+            if (Loader.isStopped()) Loader.resume();
+            else Loader.stop();
+            refresh();
+        }
+
+        function toggleSync() {
+            const syncUrl = !Store.settings().syncUrl;
+            Store.saveSettings({ syncUrl });
+            if (syncUrl) Loader.syncUrl();
+            refresh();
+        }
+
+        function refresh() {
+            if (typeof GM_registerMenuCommand !== 'function') return;
+            if (ids.length && !canUnregister) return;
+            ids.forEach((id) => GM_unregisterMenuCommand(id));
+            const label = (on, a, b, fixed) => (canUnregister ? (on ? a : b) : fixed);
+            const disabled = Store.site().disabled;
+            ids = [
+                GM_registerMenuCommand(label(disabled, '启用自动翻页（本站）', '停用自动翻页（本站）', '启用/停用自动翻页（本站）'), toggleSite),
+                GM_registerMenuCommand('立即加载下一页', () => Loader.loadNow()),
+                GM_registerMenuCommand(label(Loader.isStopped(), '继续自动翻页（本页）', '停止自动翻页（本页）', '停止/继续自动翻页（本页）'), toggleStop),
+                GM_registerMenuCommand(label(Store.settings().syncUrl, '关闭地址栏跟随当前页', '开启地址栏跟随当前页', '开关地址栏跟随当前页'), toggleSync),
+            ];
+        }
+
+        return { refresh };
+    })();
+
+    let started = false;
+
+    function run() {
         const rule = matchRule();
         console.info(TAG, rule ? `启动（站点规则：${rule.name}）` : '启动');
         const next = Finder.find(document, location.href, rule);
@@ -720,7 +846,15 @@
             return;
         }
         console.info(TAG, `下一页（${next.how}）：${next.url}`);
+        started = true;
         Loader.start(next.url, rule);
+    }
+
+    function boot() {
+        if (!document.body) return;
+        if (Store.site().disabled) console.info(TAG, '本站已停用');
+        else run();
+        Menu.refresh();
     }
 
     boot();

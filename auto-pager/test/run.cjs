@@ -450,6 +450,75 @@ async function main() {
         await page.close()
     })
 
+    await t.test('菜单：四项命令，文字带当前状态', async () => {
+        const page = await open(browser, '/forum/list')
+        await waitLog(page, '下一页（')
+        t.eq((await h.gm(page)).menu, ['停用自动翻页（本站）', '立即加载下一页', '停止自动翻页（本页）', '开启地址栏跟随当前页'])
+        await page.close()
+    })
+
+    await t.test('菜单：本站停用后刷新不再加载，重新启用立即生效', async () => {
+        const page = await open(browser, '/forum/list')
+        await waitLog(page, '下一页（')
+        await h.menu(page, '停用自动翻页（本站）')
+        page.logs = []
+        page.requests = []
+        await page.reload()
+        await waitLog(page, '本站已停用')
+        await scrollBottom(page)
+        await settle(page)
+        t.eq(page.requests.filter((u) => u.includes('page=')), [])
+        t.eq((await h.gm(page)).menu[0], '启用自动翻页（本站）')
+        await h.menu(page, '启用自动翻页（本站）')
+        await waitSeps(page, 1)
+        t.eq((await h.gm(page)).menu[0], '停用自动翻页（本站）')
+        await page.close()
+    })
+
+    await t.test('菜单：「停止」后滚到底不加载，「立即加载下一页」仍可手动拼一页，「继续」恢复自动', async () => {
+        const page = await open(browser, '/forum/list')
+        await waitLog(page, '下一页（')
+        await h.menu(page, '停止自动翻页（本页）')
+        await scrollBottom(page)
+        await settle(page)
+        t.eq(page.requests.filter((u) => u.includes('page=')), [])
+        t.eq(await statusOf(page), { state: 'done', text: '已停止自动翻页（本页）', hidden: false })
+        await h.menu(page, '立即加载下一页')
+        await waitSeps(page, 1)
+        await scrollBottom(page)
+        await settle(page)
+        t.eq(page.requests.filter((u) => u.includes('page=3')), [], '手动加载一页后仍是停止状态')
+        await h.menu(page, '继续自动翻页（本页）')
+        await scrollBottom(page)
+        await waitSeps(page, 2)
+        await page.close()
+    })
+
+    await t.test('地址栏跟随（开启后）：滚到第 2 页地址变成第 2 页的，滚回顶部恢复原地址，不增加历史记录', async () => {
+        const page = await open(browser, '/forum/list', { values: { settings: { syncUrl: true } } })
+        await waitLog(page, '下一页（')
+        const before = await page.evaluate(() => history.length)
+        await scrollBottom(page)
+        await waitSeps(page, 1)
+        await page.evaluate(() => document.querySelector('.auto-pager-sep').scrollIntoView({ behavior: 'instant' }))
+        await page.waitForFunction(() => location.search === '?page=2')
+        await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'instant' }))
+        await page.waitForFunction(() => location.search === '')
+        t.eq(await page.evaluate(() => history.length), before)
+        await page.close()
+    })
+
+    await t.test('地址栏跟随默认关闭', async () => {
+        const page = await open(browser, '/forum/list')
+        await waitLog(page, '下一页（')
+        await scrollBottom(page)
+        await waitSeps(page, 1)
+        await page.evaluate(() => document.querySelector('.auto-pager-sep').scrollIntoView({ behavior: 'instant' }))
+        await settle(page, 200)
+        t.eq(await page.evaluate(() => location.href), SITE + '/forum/list')
+        await page.close()
+    })
+
     await t.test('没滚到底不加载；滚到底依次追加第 2、3 页，带分隔线和原链接', async () => {
         const page = await open(browser, '/forum/list')
         await waitLog(page, '下一页（')
