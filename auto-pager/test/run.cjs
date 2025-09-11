@@ -1,0 +1,558 @@
+/*
+ * auto-pager 的测试。运行（本仓库不带 node_modules，借一个装了 playwright 的目录）：
+ *   NODE_PATH=/path/to/node_modules node auto-pager/test/run.cjs
+ *
+ * 页面都用 page.route 挂在假域名下（https://bbs.example.com/...），不访问外网。
+ * 用 https 假域名而不是 harness 的 127.0.0.1 静态服务：「同源」「按站点停用」都以真实域名为准，
+ * 而且要能按 query（?page=2）分发不同的 fixture、按用例改响应（500、GBK 字节）。
+ * 路由必须用正则：glob 匹配不了带 query 的 URL。
+ */
+'use strict'
+
+const fs = require('fs')
+const path = require('path')
+const h = require('../../tools/userscript-harness.cjs')
+
+const SCRIPT = path.join(__dirname, '..', 'auto-pager.user.js')
+const FIXTURES = path.join(__dirname, 'fixtures')
+const SITE = 'https://bbs.example.com'
+const PIXEL = Buffer.from('R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==', 'base64')
+
+const t = h.createRunner('auto-pager')
+
+/**
+ * URL → fixture：/a/list?page=2 → list-2.html；没有 page 参数 → list.html（不存在再试 list-1.html）。
+ * WordPress 式的目录分页 /blog/page/2/ → blog-2.html，/blog/ → blog-1.html。
+ * /post/abc.html 这种直接按文件名找。
+ */
+function fixtureFor(url) {
+    const u = new URL(url)
+    const dirPage = /\/([\w-]+)\/page\/(\d+)\/?$/.exec(u.pathname)
+    const name = dirPage ? dirPage[1] : path.basename(u.pathname).replace(/\.html$/, '') || 'index'
+    const page = dirPage ? dirPage[2] : u.searchParams.get('page')
+    const tries = page ? [`${name}-${page}.html`] : [`${name}.html`, `${name}-1.html`]
+    for (const f of tries) {
+        const fp = path.join(FIXTURES, f)
+        if (fs.existsSync(fp)) return fp
+    }
+    return null
+}
+
+/**
+ * 新开一个页面（独立 context，GM 存储互不影响），把假域名的请求映射到 fixtures。
+ * opts.respond(url) 可以按 URL 接管响应：返回 { status, headers, body } 或 undefined 走默认。
+ * 返回的 page 上挂了 logs（本脚本的 console 输出）和 requests（打到假域名的请求 URL）。
+ */
+async function open(browser, url, opts = {}) {
+    const page = await browser.newPage({ viewport: { width: 1280, height: 800 } })
+    page.logs = []
+    page.requests = []
+    page.on('requestfailed', (r) => console.log('      [request failed]', r.url(), r.failure().errorText))
+    page.on('console', (m) => {
+        if (m.text().startsWith('[自动翻页]')) page.logs.push(m.text())
+        // 用例故意回 500 / 404 时浏览器会打「Failed to load resource」，不算问题
+        if (m.type() === 'error' && !m.text().startsWith('Failed to load resource')) console.log('      [page error]', m.text())
+    })
+    await page.route(/^https:\/\/bbs\.example\.com\//, async (route) => {
+        const reqUrl = route.request().url()
+        page.requests.push(reqUrl)
+        const custom = opts.respond && (await opts.respond(reqUrl))
+        if (custom) return route.fulfill(custom)
+        // fixture 里的图片地址都是假的，一律回一个 1×1 的 gif，免得控制台刷 404
+        if (/\.(?:png|jpe?g|gif)(?:\?|$)/.test(reqUrl)) return route.fulfill({ contentType: 'image/gif', body: PIXEL })
+        const fp = fixtureFor(reqUrl)
+        if (!fp) return route.fulfill({ status: 404, body: 'not found' })
+        route.fulfill({ contentType: 'text/html; charset=utf-8', body: fs.readFileSync(fp) })
+    })
+    await h.install(page, SCRIPT, opts)
+    await page.goto(SITE + url)
+    return page
+}
+
+/** 等脚本跑完（load 之后），用于断言否定结论前。 */
+async function settle(page, ms = 300) {
+    await page.waitForLoadState('load')
+    await page.waitForTimeout(ms)
+}
+
+/** 等某条日志出现（包含匹配），返回它。 */
+async function waitLog(page, text, timeout = 3000) {
+    const end = Date.now() + timeout
+    while (Date.now() < end) {
+        const hit = page.logs.find((l) => l.includes(text))
+        if (hit) return hit
+        await page.waitForTimeout(30)
+    }
+    throw new Error(`等不到日志「${text}」，已有：\n        ${page.logs.join('\n        ')}`)
+}
+
+/** 滚到页面最底部（瞬间滚动），触发 scroll。 */
+async function scrollBottom(page) {
+    await page.evaluate(() => window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'instant' }))
+}
+
+/** 分隔线：[{ page, text, href }]。 */
+function separators(page) {
+    return page.evaluate(() => Array.from(document.querySelectorAll('.auto-pager-sep')).map((s) => {
+        const a = s.querySelector('a')
+        return { page: s.dataset.page, text: a.textContent, href: a.href }
+    }))
+}
+
+/** 等分隔线数量到 n。 */
+async function waitSeps(page, n, timeout = 3000) {
+    await page.waitForFunction((n) => document.querySelectorAll('.auto-pager-sep').length >= n, n, { timeout })
+}
+
+/**
+ * 把字符串编码成 GBK 字节。TextEncoder 只会 UTF-8，node 也没有 GBK 编码器，
+ * 但 TextDecoder 能解 GBK —— 把所有双字节码位解一遍，反查出「字 → 字节」的表。
+ */
+const gbkTable = (() => {
+    let table = null
+    return () => {
+        if (table) return table
+        table = new Map()
+        const dec = new TextDecoder('gbk')
+        for (let hi = 0x81; hi <= 0xfe; hi++) {
+            for (let lo = 0x40; lo <= 0xfe; lo++) {
+                if (lo === 0x7f) continue
+                const ch = dec.decode(Uint8Array.of(hi, lo))
+                if (ch.length === 1 && ch !== '\ufffd' && !table.has(ch)) table.set(ch, [hi, lo])
+            }
+        }
+        return table
+    }
+})()
+
+function encodeGbk(str) {
+    const out = []
+    for (const ch of str) {
+        const code = ch.codePointAt(0)
+        if (code < 0x80) out.push(code)
+        else {
+            const bytes = gbkTable().get(ch)
+            if (!bytes) throw new Error(`GBK 里没有「${ch}」`)
+            out.push(...bytes)
+        }
+    }
+    return Buffer.from(out)
+}
+
+/**
+ * GBK 论坛：第 1 页按 UTF-8 发（站点新旧页面编码不一致），第 2 页编码只在 Content-Type 头里，
+ * 第 3 页头里没有、只有 http-equiv 写法的 <meta>。这样「按当前页编码解」两页都会乱码，
+ * 解对了只能是真从头 / meta 里取到了编码。
+ */
+function gbkPage(url) {
+    const u = new URL(url)
+    if (u.pathname !== '/bbs/gbk') return
+    const n = u.searchParams.get('page') || '1'
+    const text = fs.readFileSync(path.join(FIXTURES, `gbk-${n}.html`), 'utf8')
+    if (n === '1') return { headers: { 'content-type': 'text/html; charset=utf-8' }, body: text }
+    return { headers: { 'content-type': n === '2' ? 'text/html; charset=GBK' : 'text/html' }, body: encodeGbk(text) }
+}
+
+/** 无尽列表：/forum/endless?page=N 总有第 N+1 页，页面很短（一打开就会连续加载）。 */
+function endlessPage(url) {
+    const u = new URL(url)
+    if (u.pathname !== '/forum/endless') return
+    const n = Number(u.searchParams.get('page') || 1)
+    const items = [1, 2, 3].map((i) => `<li class="thread">第${n}页 主题${i}：无尽列表里的帖子</li>`).join('')
+    return {
+        contentType: 'text/html; charset=utf-8',
+        body: `<!doctype html><meta charset="utf-8"><title>无尽 ${n}</title><ul class="threads">${items}</ul><div class="pages"><a href="/forum/endless?page=${n + 1}">下一页</a></div>`,
+    }
+}
+
+/** 状态条：{ state, text, hidden } 或 null。 */
+function statusOf(page) {
+    return page.evaluate(() => {
+        const el = document.querySelector('.auto-pager-status')
+        return el && { state: el.dataset.state, text: el.textContent, hidden: el.hidden }
+    })
+}
+
+async function main() {
+    const { browser, close } = await h.setup(FIXTURES)
+    console.log('auto-pager')
+
+    await t.test('脚本在普通页面上启动，没有报错', async () => {
+        const page = await open(browser, '/list')
+        await waitLog(page, '启动')
+        t.eq(h.errors(page).map(String), [])
+        await page.close()
+    })
+
+    await t.test('本站停用后不启动', async () => {
+        const page = await open(browser, '/list', { values: { 'site:bbs.example.com': { disabled: true } } })
+        await waitLog(page, '本站已停用')
+        t.assert(!page.logs.some((l) => l.endsWith('启动')), '停用了还在启动')
+        await page.close()
+    })
+
+    /** 打开页面，返回脚本认出的「下一页」日志里的 URL（没认出返回 null）。 */
+    async function detected(url) {
+        const page = await open(browser, url)
+        const line = await Promise.race([waitLog(page, '下一页（'), waitLog(page, '没有找到下一页')])
+        t.eq(h.errors(page).map(String), [])
+        await page.close()
+        const m = /下一页（(.+?)）：(\S+)/.exec(line)
+        return m ? { how: m[1], url: m[2] } : null
+    }
+
+    await t.test('识别：<link rel="next"> 优先于文字链接', async () => {
+        t.eq(await detected('/forum/rel'), { how: 'rel=next', url: SITE + '/forum/rel?page=2' })
+    })
+
+    await t.test('识别：文字「下一页 >」（去掉两侧装饰后整段匹配）', async () => {
+        t.eq(await detected('/forum/text'), { how: '文字匹配', url: SITE + '/forum/text?page=3' })
+    })
+
+    await t.test('识别：只有图标的按钮靠 aria-label / title', async () => {
+        t.eq(await detected('/forum/aria'), { how: '文字匹配', url: SITE + '/forum/aria?p=3' })
+    })
+
+    await t.test('识别：« ‹ 1 2 3 › » 里取 ›，不取尾页 »', async () => {
+        t.eq(await detected('/forum/arrows'), { how: '文字匹配', url: SITE + '/forum/arrows?page=3' })
+    })
+
+    await t.test('识别：没有「下一页」字样时按当前页码推断（回复数这种孤立数字不算）', async () => {
+        t.eq(await detected('/forum/numbers'), { how: '页码推断', url: SITE + '/forum/numbers?page=3' })
+    })
+
+    await t.test('识别：当前页本身是链接时靠 aria-current / .active 认出', async () => {
+        t.eq(await detected('/forum/numbers-aria'), { how: '页码推断', url: SITE + '/forum/numbers-aria?page=5' })
+    })
+
+    await t.test('「下一篇 / 下一章 / Next post」和 WordPress 的 rel=next 文章导航都不算下一页', async () => {
+        t.eq(await detected('/post/article.html'), null)
+    })
+
+    await t.test('javascript: / 跨域 / mailto / disabled / 只有 hash 的链接被跳过', async () => {
+        t.eq(await detected('/forum/bad'), { how: '文字匹配', url: SITE + '/forum/bad?page=2' })
+    })
+
+    await t.test('内容容器：选中帖子列表，不选导航菜单和侧栏「热门」', async () => {
+        const page = await open(browser, '/forum/list')
+        await waitLog(page, '下一页（')
+        await scrollBottom(page)
+        t.eq((await waitLog(page, '内容区域：')).split('内容区域：')[1], '#main > div.list')
+        await page.close()
+    })
+
+    await t.test('内容容器：只在当前页出现的推荐位文字再多也不选（要在下一页里也找得到）', async () => {
+        // 页面很短，一打开就离底部不到 2 屏，直接加载
+        const page = await open(browser, '/forum/promo')
+        t.eq((await waitLog(page, '内容区域：')).split('内容区域：')[1], 'body > ul.threads')
+        await waitSeps(page, 1)
+        t.eq(await page.evaluate(() => document.querySelectorAll('ul.threads > li.thread').length), 6)
+        await page.close()
+    })
+
+    await t.test('导入修正：相对链接按下一页转绝对、懒加载图片写回 src、锚点和 javascript: 不动、脚本不搬', async () => {
+        const page = await open(browser, '/blog/')
+        await waitSeps(page, 1)
+        const got = await page.evaluate(() => {
+            const arts = Array.from(document.querySelectorAll('.posts > article'))
+            const a4 = arts[3]
+            const a5 = arts[4]
+            const a6 = arts[5]
+            return {
+                count: arts.length,
+                page1Link: arts[0].querySelector('h2 a').href,
+                link4: a4.querySelector('h2 a').getAttribute('href'),
+                img4: a4.querySelector('img').getAttribute('src'),
+                srcset4: a4.querySelector('img').getAttribute('srcset'),
+                hash4: a4.querySelector('p a').getAttribute('href'),
+                img5: a5.querySelector('img').getAttribute('src'),
+                js5: a5.querySelector('p a').getAttribute('href'),
+                img6: a6.querySelector('img').getAttribute('src'),
+                script6: a6.querySelectorAll('script').length,
+                ran: !!window.__ranImportedScript,
+            }
+        })
+        t.eq(got, {
+            count: 6,
+            page1Link: SITE + '/blog/2026/10/post-1/',
+            link4: SITE + '/blog/2026/09/post-4/',
+            img4: SITE + '/blog/img/4.png',
+            srcset4: SITE + '/blog/img/4.png 1x, ' + SITE + '/blog/img/4@2x.png 2x',
+            hash4: '#comments',
+            img5: SITE + '/blog/page/2/thumb-5.png',
+            js5: 'javascript:void(0)',
+            img6: SITE + '/blog/img/6.png',
+            script6: 0,
+            ran: false,
+        })
+        await page.close()
+    })
+
+    await t.test('分页条换成下一页的：当前页码跟着变，链接是绝对地址', async () => {
+        const page = await open(browser, '/blog/')
+        await waitSeps(page, 1)
+        t.eq((await waitLog(page, '分页条：')).split('分页条：')[1], 'body > nav.navigation.pagination > div.nav-links')
+        const pager = await page.evaluate(() => {
+            const bars = document.querySelectorAll('.nav-links')
+            const bar = bars[0]
+            return {
+                bars: bars.length,
+                current: bar.querySelector('.current').textContent,
+                links: Array.from(bar.querySelectorAll('a')).map((a) => a.getAttribute('href')),
+            }
+        })
+        t.eq(pager, { bars: 1, current: '2', links: [SITE + '/blog/', SITE + '/blog/'] })
+        await page.close()
+    })
+
+    await t.test('防死循环：最后一页的「下一页」绕回第 1 页时停下，每页只请求一次', async () => {
+        const page = await open(browser, '/forum/loop')
+        await waitLog(page, '指回已加载过的页面')
+        await settle(page)
+        t.eq(page.requests.filter((u) => u.includes('/forum/loop')), [SITE + '/forum/loop', SITE + '/forum/loop?page=2'])
+        t.eq((await separators(page)).length, 1)
+        await page.close()
+    })
+
+    await t.test('防死循环：页码越界跳转回已加载过的页面时停下', async () => {
+        // page.route 回 302 时，跳转后的请求不再经过 route、直接走真实网络（假域名解析失败），
+        // 所以这条用例自己起一个会真跳转的本地服务：第 2 页的「下一页」是 ?page=3，服务器把它 302 回 ?page=2
+        const http = require('http')
+        const server = http.createServer((req, res) => {
+            const u = new URL(req.url, 'http://x')
+            if (u.searchParams.get('page') === '3') return res.writeHead(302, { location: '/forum/loop?page=2' }).end()
+            const file = u.searchParams.get('page') === '2' ? 'loop-2.html' : 'loop-1.html'
+            const body = fs.readFileSync(path.join(FIXTURES, file), 'utf8').replace('href="/forum/loop"', 'href="/forum/loop?page=3"')
+            res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }).end(body)
+        })
+        await new Promise((r) => server.listen(0, '127.0.0.1', r))
+        const page = await browser.newPage()
+        page.logs = []
+        page.on('console', (m) => page.logs.push(m.text()))
+        await h.install(page, SCRIPT)
+        await page.goto(`http://127.0.0.1:${server.address().port}/forum/loop`)
+        try {
+            await waitLog(page, '跳转回已加载过的页面')
+            t.eq((await separators(page)).length, 1)
+        } finally {
+            await page.close()
+            server.close()
+        }
+    })
+
+    await t.test('页数上限：无尽列表拼到 maxPages 页就停', async () => {
+        const page = await open(browser, '/forum/endless', { respond: endlessPage })
+        // 拼到页面够长就不再自动加载了，一路滚到底推着它走
+        const end = Date.now() + 10000
+        while (!page.logs.some((l) => l.includes('到达上限')) && Date.now() < end) {
+            await scrollBottom(page)
+            await page.waitForTimeout(50)
+        }
+        await waitLog(page, '到达上限', 10)
+        const seps = await separators(page)
+        t.eq(seps.length, 29)
+        t.eq(seps[seps.length - 1].text, '第 30 页')
+        t.eq(page.requests.filter((u) => u.includes('page=31')), [])
+        await page.close()
+    })
+
+    await t.test('请求失败后不会每帧重试（不把服务器打成 DDoS）', async () => {
+        const page = await open(browser, '/forum/list', {
+            respond: (url) => (url.includes('page=2') ? { status: 500, body: 'oops' } : undefined),
+        })
+        await waitLog(page, '下一页（')
+        await scrollBottom(page)
+        await page.waitForTimeout(800)
+        await scrollBottom(page)
+        await page.waitForTimeout(200)
+        t.eq(page.requests.filter((u) => u.includes('page=2')).length, 1)
+        await page.close()
+    })
+
+    await t.test('请求 500：显示错误和「重试」按钮，服务器恢复后点重试接着拼', async () => {
+        let broken = true
+        const page = await open(browser, '/forum/list', {
+            respond: (url) => (broken && url.includes('page=2') ? { status: 500, body: 'oops' } : undefined),
+        })
+        await waitLog(page, '下一页（')
+        await scrollBottom(page)
+        await page.waitForSelector('.auto-pager-status[data-state="error"]')
+        const st = await statusOf(page)
+        t.eq(st, { state: 'error', text: '第 2 页加载失败（HTTP 500） 重试', hidden: false })
+        // 第一次加载就失败：内容区还没认出来，状态条浮在视口底部，看得见
+        t.assert(await page.isVisible('.auto-pager-status button'), '重试按钮不可见')
+        broken = false
+        await page.click('.auto-pager-status button')
+        await waitSeps(page, 1)
+        t.eq((await statusOf(page)).hidden, true, '成功后状态条收起')
+        // 状态条挪到了内容区后面
+        t.eq(await page.evaluate(() => document.querySelector('.auto-pager-status').previousElementSibling.className), 'list')
+        await page.close()
+    })
+
+    await t.test('加载中显示「正在加载第 N 页…」', async () => {
+        let release
+        const gate = new Promise((r) => { release = r })
+        const page = await open(browser, '/forum/list', {
+            respond: async (url) => { if (url.includes('page=2')) await gate },
+        })
+        await waitLog(page, '下一页（')
+        await scrollBottom(page)
+        await page.waitForSelector('.auto-pager-status[data-state="loading"]')
+        t.eq(await statusOf(page), { state: 'loading', text: '正在加载第 2 页…', hidden: false })
+        release()
+        await waitSeps(page, 1)
+        await page.close()
+    })
+
+    await t.test('最后一页：状态条写明「已到最后一页」', async () => {
+        const page = await open(browser, '/forum/promo')
+        await waitLog(page, '已到最后一页')
+        t.eq(await statusOf(page), { state: 'done', text: '已到最后一页', hidden: false })
+        await page.close()
+    })
+
+    await t.test('GBK 编码：按 Content-Type 头 / <meta http-equiv> 取编码解码，中文不乱码；表格里的分隔线是 <tr>', async () => {
+        const page = await open(browser, '/bbs/gbk', { respond: gbkPage })
+        await waitLog(page, '已到最后一页')
+        t.eq((await waitLog(page, '内容区域：')).split('内容区域：')[1], '#threadlist > tbody')
+        const rows = await page.evaluate(() => Array.from(document.querySelectorAll('#threadlist tr.thread td:first-child')).map((td) => td.textContent))
+        t.eq(rows.length, 9)
+        t.eq(rows[3], '第2页：老站点用的是国标码，中文标题不能乱')
+        t.eq(rows[7], '第3页：繁體字也要正確顯示（測試）')
+        t.eq(rows[8], '第3页：标点符号「引号」、省略号……破折号——')
+        const seps = await page.evaluate(() => Array.from(document.querySelectorAll('.auto-pager-sep')).map((s) => s.tagName + ':' + s.textContent))
+        t.eq(seps, ['TR:第 2 页', 'TR:第 3 页'])
+        // 表头只在第 1 页出现一次
+        t.eq(await page.evaluate(() => document.querySelectorAll('#threadlist tr.th').length), 1)
+        await page.close()
+    })
+
+    await t.test('站点规则：Discuz 帖子列表按规则取下一页 / 内容 / 分页条，顶部底部两条分页条都换', async () => {
+        const page = await open(browser, '/forum.php?mod=forumdisplay&fid=2', {
+            respond: (url) => {
+                const u = new URL(url)
+                if (u.pathname !== '/forum.php') return
+                const body = fs.readFileSync(path.join(FIXTURES, `discuz-${u.searchParams.get('page') || 1}.html`))
+                return { contentType: 'text/html; charset=utf-8', body }
+            },
+        })
+        await waitLog(page, '启动（站点规则：Discuz! 帖子列表）')
+        t.eq((await waitLog(page, '下一页（')).split('下一页')[1], '（站点规则：Discuz! 帖子列表）：' + SITE + '/forum.php?mod=forumdisplay&fid=2&page=2')
+        await waitLog(page, '已到最后一页')
+        t.eq((await waitLog(page, '内容区域：')).split('内容区域：')[1], '#threadlisttableid')
+        const got = await page.evaluate(() => ({
+            threads: Array.from(document.querySelectorAll('#threadlisttableid a.xst')).map((a) => a.textContent.slice(0, 3)),
+            sep: document.querySelector('.auto-pager-sep').tagName + ':' + document.querySelector('.auto-pager-sep').textContent,
+            pagers: Array.from(document.querySelectorAll('.pg strong')).map((x) => x.textContent),
+        }))
+        t.eq(got, { threads: ['第1页', '第1页', '第1页', '第2页', '第2页', '第2页'], sep: 'TBODY:第 2 页', pagers: ['2', '2'] })
+        await page.close()
+    })
+
+    await t.test('菜单：四项命令，文字带当前状态', async () => {
+        const page = await open(browser, '/forum/list')
+        await waitLog(page, '下一页（')
+        t.eq((await h.gm(page)).menu, ['停用自动翻页（本站）', '立即加载下一页', '停止自动翻页（本页）', '开启地址栏跟随当前页'])
+        await page.close()
+    })
+
+    await t.test('菜单：本站停用后刷新不再加载，重新启用立即生效', async () => {
+        const page = await open(browser, '/forum/list')
+        await waitLog(page, '下一页（')
+        await h.menu(page, '停用自动翻页（本站）')
+        page.logs = []
+        page.requests = []
+        await page.reload()
+        await waitLog(page, '本站已停用')
+        await scrollBottom(page)
+        await settle(page)
+        t.eq(page.requests.filter((u) => u.includes('page=')), [])
+        t.eq((await h.gm(page)).menu[0], '启用自动翻页（本站）')
+        await h.menu(page, '启用自动翻页（本站）')
+        await waitSeps(page, 1)
+        t.eq((await h.gm(page)).menu[0], '停用自动翻页（本站）')
+        await page.close()
+    })
+
+    await t.test('菜单：「停止」后滚到底不加载，「立即加载下一页」仍可手动拼一页，「继续」恢复自动', async () => {
+        const page = await open(browser, '/forum/list')
+        await waitLog(page, '下一页（')
+        await h.menu(page, '停止自动翻页（本页）')
+        await scrollBottom(page)
+        await settle(page)
+        t.eq(page.requests.filter((u) => u.includes('page=')), [])
+        t.eq(await statusOf(page), { state: 'done', text: '已停止自动翻页（本页）', hidden: false })
+        await h.menu(page, '立即加载下一页')
+        await waitSeps(page, 1)
+        await scrollBottom(page)
+        await settle(page)
+        t.eq(page.requests.filter((u) => u.includes('page=3')), [], '手动加载一页后仍是停止状态')
+        await h.menu(page, '继续自动翻页（本页）')
+        await scrollBottom(page)
+        await waitSeps(page, 2)
+        await page.close()
+    })
+
+    await t.test('地址栏跟随（开启后）：滚到第 2 页地址变成第 2 页的，滚回顶部恢复原地址，不增加历史记录', async () => {
+        const page = await open(browser, '/forum/list', { values: { settings: { syncUrl: true } } })
+        await waitLog(page, '下一页（')
+        const before = await page.evaluate(() => history.length)
+        await scrollBottom(page)
+        await waitSeps(page, 1)
+        await page.evaluate(() => document.querySelector('.auto-pager-sep').scrollIntoView({ behavior: 'instant' }))
+        await page.waitForFunction(() => location.search === '?page=2')
+        await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'instant' }))
+        await page.waitForFunction(() => location.search === '')
+        t.eq(await page.evaluate(() => history.length), before)
+        await page.close()
+    })
+
+    await t.test('地址栏跟随默认关闭', async () => {
+        const page = await open(browser, '/forum/list')
+        await waitLog(page, '下一页（')
+        await scrollBottom(page)
+        await waitSeps(page, 1)
+        await page.evaluate(() => document.querySelector('.auto-pager-sep').scrollIntoView({ behavior: 'instant' }))
+        await settle(page, 200)
+        t.eq(await page.evaluate(() => location.href), SITE + '/forum/list')
+        await page.close()
+    })
+
+    await t.test('没滚到底不加载；滚到底依次追加第 2、3 页，带分隔线和原链接', async () => {
+        const page = await open(browser, '/forum/list')
+        await waitLog(page, '下一页（')
+        await settle(page)
+        t.eq(page.requests.filter((u) => u.includes('page=')), [], '首屏不该预加载')
+        await scrollBottom(page)
+        await waitSeps(page, 1)
+        await scrollBottom(page)
+        await waitSeps(page, 2)
+        t.eq(await separators(page), [
+            { page: '2', text: '第 2 页', href: SITE + '/forum/list?page=2' },
+            { page: '3', text: '第 3 页', href: SITE + '/forum/list?page=3' },
+        ])
+        const titles = await page.evaluate(() => Array.from(document.querySelectorAll('#main .list > .item h3')).map((x) => x.textContent))
+        t.eq(titles.length, 30)
+        t.assert(titles[10].startsWith('第2页 帖子1') && titles[29].startsWith('第3页 帖子10'), titles.join('|'))
+        // 分隔线夹在第 1 页最后一项和第 2 页第一项之间
+        const order = await page.evaluate(() => {
+            const sep = document.querySelector('.auto-pager-sep')
+            const head = (el) => /第\d+页 帖子\d+/.exec(el.textContent)[0]
+            return [head(sep.previousElementSibling), head(sep.nextElementSibling)]
+        })
+        t.eq(order, ['第1页 帖子10', '第2页 帖子1'])
+        await waitLog(page, '已到最后一页')
+        t.eq(await page.evaluate(() => document.querySelector('.pagination .current').textContent), '3', '分页条应换成第 3 页的')
+        t.eq(h.errors(page).map(String), [])
+        await page.close()
+    })
+
+    t.done()
+    await close()
+}
+
+main().catch((e) => {
+    console.error(e)
+    process.exit(1)
+})
