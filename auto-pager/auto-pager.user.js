@@ -3,10 +3,10 @@
 // @name:zh-CN   自动翻页
 // @name:en      Auto Pager — Load the Next Page When You Scroll to the Bottom
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.09.10.11
-// @description  论坛、搜索结果、文章列表滚到底自动加载下一页并拼接到当前页。
-// @description:zh-CN  论坛、搜索结果、文章列表滚到底自动加载下一页并拼接到当前页。
-// @description:en  Automatically loads the next page of forums, search results and article lists when you scroll near the bottom, and appends it to the current page.
+// @version      2025.09.11.12
+// @description  论坛、搜索结果、文章列表滚到底自动加载下一页并拼接到当前页：自动识别「下一页」（rel=next、文字 / 图标按钮、分页条页码，不会把「下一篇」当成下一页）和内容区域，插入「第 N 页」分隔线并替换分页条；相对链接、懒加载图片自动修正，GBK 老论坛不乱码；防死循环、页数上限，加载失败可重试；内置 Discuz / Bing / 百度规则。菜单可按站点停用、手动加载下一页、停止，可选地址栏跟随当前页。
+// @description:zh-CN  论坛、搜索结果、文章列表滚到底自动加载下一页并拼接到当前页：自动识别「下一页」（rel=next、文字 / 图标按钮、分页条页码，不会把「下一篇」当成下一页）和内容区域，插入「第 N 页」分隔线并替换分页条；相对链接、懒加载图片自动修正，GBK 老论坛不乱码；防死循环、页数上限，加载失败可重试；内置 Discuz / Bing / 百度规则。菜单可按站点停用、手动加载下一页、停止，可选地址栏跟随当前页。
+// @description:en  Automatically loads the next page of forums, search results and article lists when you scroll near the bottom and appends it to the current page: finds the next-page link (rel=next, text or icon buttons, pagination numbers — never a "next post" link) and the main content list, inserts a "Page N" divider and swaps in the new pagination bar; fixes relative links and lazy-loaded images, decodes GBK pages correctly; guards against loops with a page limit, and shows a retry button on errors. Built-in rules for Discuz, Bing and Baidu. Menu: disable per site, load next page now, stop, optionally keep the address bar on the page you are reading.
 // @author       壹樂（V：ita1125）
 // @match        http://*/*
 // @match        https://*/*
