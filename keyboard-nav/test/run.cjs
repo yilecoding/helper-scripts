@@ -100,6 +100,51 @@ async function main() {
         await page.close()
     })
 
+    await t.test('d / u 按窗口高度滚半屏', async () => {
+        const page = await open(browser, 'long.html')
+        await press(page, ['d'])
+        t.eq((await waitScrollIdle(page)).y, 350)
+        await press(page, ['d', 'u'])
+        t.eq((await waitScrollIdle(page)).y, 350)
+        await page.close()
+    })
+
+    await t.test('body 不滚、内部 div 滚：j/k/d 滚的是视口中央那个最大的滚动容器', async () => {
+        const page = await open(browser, 'inner.html')
+        await press(page, ['j', 'j'])
+        t.eq((await waitScrollIdle(page, '#main')).y, STEP * 2)
+        t.eq((await scrollPos(page, '#side')).y, 0, '侧栏不动')
+        t.eq((await scrollPos(page)).y, 0, 'window 不动')
+        // 半屏按 #main 自己的高度算（700 - 50 顶栏）
+        await press(page, ['d'])
+        t.eq((await waitScrollIdle(page, '#main')).y, STEP * 2 + 325)
+        await press(page, ['k'])
+        t.eq((await waitScrollIdle(page, '#main')).y, STEP + 325)
+        await page.close()
+    })
+
+    await t.test('h / l 横向滚动', async () => {
+        const page = await open(browser, 'inner.html')
+        await press(page, ['l', 'l'])
+        t.eq((await waitScrollIdle(page, '#main')).x, STEP * 2)
+        await press(page, ['h'])
+        t.eq((await waitScrollIdle(page, '#main')).x, STEP)
+        await page.close()
+    })
+
+    await t.test('点过侧栏之后 j 滚侧栏（和浏览器方向键一样跟着最近点击的区域）', async () => {
+        const page = await open(browser, 'inner.html')
+        await page.click('#side .item:nth-child(3)')
+        await press(page, ['j'])
+        t.eq((await waitScrollIdle(page, '#side')).y, STEP)
+        t.eq((await scrollPos(page, '#main')).y, 0)
+        // 侧栏滚到底以后不卡住，回落到视口中央的主区域
+        await page.evaluate(() => { const s = document.getElementById('side'); s.scrollTop = s.scrollHeight })
+        await press(page, ['j'])
+        t.eq((await waitScrollIdle(page, '#main')).y, STEP, '侧栏到底后 j 交给主区域')
+        await page.close()
+    })
+
     await close()
     t.done()
 }
