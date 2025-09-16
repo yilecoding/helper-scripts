@@ -21,9 +21,11 @@
     }
     // 页面自己的按键记录：用来确认哪些键被脚本放行了
     window.__pageKeys = []
+    window.__pageKeyups = []
     window.addEventListener('keydown', (e) => {
         window.__pageKeys.push({ key: e.key, prevented: e.defaultPrevented })
     })
+    window.addEventListener('keyup', (e) => window.__pageKeyups.push(e.key))
 </script>
 </body>
 </html>

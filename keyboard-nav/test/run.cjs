@@ -145,6 +145,59 @@ async function main() {
         await page.close()
     })
 
+    await t.test('gg 到顶、G 到底（整页和内部 div 都对）', async () => {
+        const page = await open(browser, 'long.html')
+        await press(page, ['Shift+G'])
+        const max = await page.evaluate(() => document.documentElement.scrollHeight - innerHeight)
+        t.eq((await waitScrollIdle(page)).y, max)
+        await press(page, ['g', 'g'])
+        t.eq((await waitScrollIdle(page)).y, 0)
+        await page.close()
+
+        const inner = await open(browser, 'inner.html')
+        await press(inner, ['Shift+G'])
+        const imax = await inner.evaluate(() => { const m = document.getElementById('main'); return m.scrollHeight - m.clientHeight })
+        t.eq((await waitScrollIdle(inner, '#main')).y, imax)
+        await press(inner, ['g', 'g'])
+        t.eq((await waitScrollIdle(inner, '#main')).y, 0)
+        await inner.close()
+    })
+
+    await t.test('数字前缀：5j 滚五步、12j 两位数、2d 滚一屏；数字本身照常传给页面', async () => {
+        const page = await open(browser, 'long.html')
+        await press(page, ['5', 'j'])
+        t.eq((await waitScrollIdle(page)).y, STEP * 5)
+        await press(page, ['1', '2', 'j'])
+        t.eq((await waitScrollIdle(page)).y, STEP * 17)
+        await press(page, ['2', 'k'])
+        t.eq((await waitScrollIdle(page)).y, STEP * 15)
+        await press(page, ['g', 'g', '2', 'd'])
+        t.eq((await waitScrollIdle(page)).y, 700)
+        const digits = (await page.evaluate(() => window.__pageKeys)).filter((k) => /\d/.test(k.key))
+        t.eq(digits.map((k) => k.key).join(''), '51222')
+        t.assert(digits.every((k) => !k.prevented))
+        await page.close()
+    })
+
+    await t.test('序列断了按单键处理（g 后按 j 照样滚），超时后前缀作废', async () => {
+        const page = await open(browser, 'long.html')
+        await press(page, ['g', 'j'])
+        t.eq((await waitScrollIdle(page)).y, STEP)
+        await press(page, ['Shift+G', 'g'])
+        await page.waitForTimeout(1700)
+        await press(page, ['g'])
+        const max = await page.evaluate(() => document.documentElement.scrollHeight - innerHeight)
+        t.eq((await waitScrollIdle(page)).y, max, '两次 g 隔了超时，不算 gg')
+        await page.close()
+    })
+
+    await t.test('吃掉的键 keyup 也不给页面，放行的键 keyup 照常', async () => {
+        const page = await open(browser, 'long.html')
+        await press(page, ['j', 'x', 'g', 'g'])
+        t.eq(await page.evaluate(() => window.__pageKeyups), ['x'])
+        await page.close()
+    })
+
     await close()
     t.done()
 }

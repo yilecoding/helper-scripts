@@ -3,10 +3,10 @@
 // @name:zh-CN   键盘浏览
 // @name:en      Keyboard Nav — Vimium-style Keyboard Browsing
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.09.13.2
-// @description  Vimium 风格的轻量键盘浏览：j/k 小步、d/u 半屏、h/l 横向滚动，自动找到页面真正在滚的区域（body 不滚、内部 div 滚的站点也行）。焦点在输入框里、带 Ctrl/Alt/Meta 的组合键一律不拦。
-// @description:zh-CN  Vimium 风格的轻量键盘浏览：j/k 小步、d/u 半屏、h/l 横向滚动，自动找到页面真正在滚的区域（body 不滚、内部 div 滚的站点也行）。焦点在输入框里、带 Ctrl/Alt/Meta 的组合键一律不拦。
-// @description:en  Lightweight Vimium-style keyboard browsing: j/k, d/u (half page) and h/l scrolling that finds the area that actually scrolls (works on sites where an inner div scrolls instead of the page). Keys typed into inputs and Ctrl/Alt/Meta combos are never intercepted.
+// @version      2025.09.16.3
+// @description  Vimium 风格的轻量键盘浏览：j/k 小步、d/u 半屏、h/l 横向、gg/G 顶部底部，支持数字前缀（5j），自动找到页面真正在滚的区域（body 不滚、内部 div 滚的站点也行）。焦点在输入框里、带 Ctrl/Alt/Meta 的组合键一律不拦。
+// @description:zh-CN  Vimium 风格的轻量键盘浏览：j/k 小步、d/u 半屏、h/l 横向、gg/G 顶部底部，支持数字前缀（5j），自动找到页面真正在滚的区域（body 不滚、内部 div 滚的站点也行）。焦点在输入框里、带 Ctrl/Alt/Meta 的组合键一律不拦。
+// @description:en  Lightweight Vimium-style keyboard browsing: j/k, d/u (half page), h/l and gg/G scrolling with count prefixes (5j) that finds the area that actually scrolls (works on sites where an inner div scrolls instead of the page). Keys typed into inputs and Ctrl/Alt/Meta combos are never intercepted.
 // @author       壹樂（V：ita1125）
 // @match        http://*/*
 // @match        https://*/*
@@ -35,6 +35,8 @@
 
     const CONFIG = {
         scrollStep: 60,         // j/k 一下滚多少像素
+        sequenceTimeout: 1500,  // 多键序列（gg、yy）和数字前缀，两键之间最多等这么久
+        maxCount: 999,          // 数字前缀上限，手滑按出 99999j 也不至于卡死
     };
 
     // =========================================================================
@@ -195,6 +197,13 @@
             return axis === 'y' ? el.clientHeight : el.clientWidth;
         }
 
+        /** 滚到某一端：pos 为 0 是开头，Infinity 是末尾。 */
+        function to(axis, p) {
+            const el = target(axis, p === 0 ? -1 : 1);
+            if (!el) return;
+            setPos(el, axis, Math.max(0, Math.min(maxPos(el, axis), p)));
+        }
+
         /** delta 可以是函数：拿到滚动容器后再算（半屏要知道容器多高）。 */
         function by(axis, delta) {
             const probe = typeof delta === 'function' ? 1 : Math.sign(delta) || 1;
@@ -208,47 +217,139 @@
             activated = (e.composedPath && e.composedPath()[0]) || e.target;
         }, true);
 
-        return { by, viewSize };
+        return { by, to, viewSize };
     })();
 
     // =========================================================================
     // 命令
     // =========================================================================
 
-    const half = (sign) => (el) => sign * Math.round(Scroll.viewSize(el, 'y') / 2);
+    const half = (sign, n) => (el) => sign * n * Math.round(Scroll.viewSize(el, 'y') / 2);
 
-    const COMMANDS = {
-        j: () => Scroll.by('y', CONFIG.scrollStep),
-        k: () => Scroll.by('y', -CONFIG.scrollStep),
-        h: () => Scroll.by('x', -CONFIG.scrollStep),
-        l: () => Scroll.by('x', CONFIG.scrollStep),
-        d: () => Scroll.by('y', half(1)),
-        u: () => Scroll.by('y', half(-1)),
-    };
+    /**
+     * 命令表。keys 是按键序列（区分大小写，Shift+g 就是 G）；run 收到数字前缀（没有时为 1）；
+     * repeat 表示长按时自动重复的 keydown 也执行 —— 只给滚动用，长按 f 不该开一堆提示。
+     */
+    const COMMANDS = [
+        { keys: 'j', group: '滚动', desc: '向下滚动', repeat: true, run: (n) => Scroll.by('y', n * CONFIG.scrollStep) },
+        { keys: 'k', group: '滚动', desc: '向上滚动', repeat: true, run: (n) => Scroll.by('y', -n * CONFIG.scrollStep) },
+        { keys: 'h', group: '滚动', desc: '向左滚动', repeat: true, run: (n) => Scroll.by('x', -n * CONFIG.scrollStep) },
+        { keys: 'l', group: '滚动', desc: '向右滚动', repeat: true, run: (n) => Scroll.by('x', n * CONFIG.scrollStep) },
+        { keys: 'd', group: '滚动', desc: '向下半屏', repeat: true, run: (n) => Scroll.by('y', half(1, n)) },
+        { keys: 'u', group: '滚动', desc: '向上半屏', repeat: true, run: (n) => Scroll.by('y', half(-1, n)) },
+        { keys: 'gg', group: '滚动', desc: '滚到顶部', run: () => Scroll.to('y', 0) },
+        { keys: 'G', group: '滚动', desc: '滚到底部', run: () => Scroll.to('y', Infinity) },
+    ];
+
+    const BINDINGS = new Map(COMMANDS.map((c) => [c.keys, c]));
+    /** 所有多键序列的真前缀（g、y …）：按下后要等下一个键。 */
+    const PREFIXES = new Set(COMMANDS.flatMap((c) => Array.from(c.keys).slice(0, -1).map((_, i) => c.keys.slice(0, i + 1))));
+
+    function run(cmd, n) {
+        try {
+            cmd.run(n);
+        } catch (err) {
+            console.error(TAG, cmd.keys, err);
+        }
+    }
 
     // =========================================================================
     // 按键分发
     // =========================================================================
 
+    const Keys = (() => {
+        let pending = '';   // 多键序列已按下的部分
+        let count = '';     // 数字前缀
+        let timer = 0;
+
+        function reset() {
+            pending = '';
+            count = '';
+            clearTimeout(timer);
+        }
+
+        function arm() {
+            clearTimeout(timer);
+            timer = setTimeout(reset, CONFIG.sequenceTimeout);
+        }
+
+        /**
+         * 喂一个键，返回 'run' | 'wait' | 'count' | null（不认识，放给页面）。
+         * 序列断了（g 后面跟了个 j）就丢掉前缀，把这个键当单键重新解释 —— 不然 gj 会把 j 吞掉。
+         */
+        function feed(key) {
+            if (!pending && /^[0-9]$/.test(key) && (count || key !== '0')) {
+                count = String(Math.min(Number(count + key), CONFIG.maxCount));
+                arm();
+                return 'count';
+            }
+            const seq = pending + key;
+            const cmd = BINDINGS.get(seq);
+            if (cmd) {
+                const n = count ? Number(count) : 1;
+                reset();
+                run(cmd, n);
+                return 'run';
+            }
+            if (PREFIXES.has(seq)) {
+                pending = seq;
+                arm();
+                return 'wait';
+            }
+            if (pending) {
+                const keepCount = count;
+                reset();
+                count = keepCount;
+                return feed(key);
+            }
+            reset();
+            return null;
+        }
+
+        /** 长按产生的重复 keydown：只有单键滚动命令跟着重复，其余已绑定的键吞掉不处理。 */
+        function feedRepeat(key) {
+            const cmd = BINDINGS.get(key);
+            if (!pending && cmd && cmd.repeat) {
+                run(cmd, 1);
+                return 'run';
+            }
+            return cmd || PREFIXES.has(key) ? 'wait' : null;
+        }
+
+        return { feed, feedRepeat, reset };
+    })();
+
+    /**
+     * 吃掉了 keydown 的键，配套的 keypress / keyup 也不给页面：
+     * 有的站点在 keyup 或 keypress 上绑快捷键，只拦 keydown 会两边一起触发。
+     */
+    const swallowed = new Set();
+
     function onKeyDown(e) {
         // 输入法组字中（中文输入法下按 j 是在打拼音）
         if (e.isComposing || e.keyCode === 229) return;
-        if (e.ctrlKey || e.altKey || e.metaKey) return;
+        if (e.ctrlKey || e.altKey || e.metaKey) return Keys.reset();
         // keydown 的 target 被 shadow DOM 重定向成 host，composedPath()[0] 才是真正的输入框
         const target = (e.composedPath && e.composedPath()[0]) || e.target;
-        if (isEditable(target) || isEditable(deepActiveElement())) return;
+        if (isEditable(target) || isEditable(deepActiveElement())) return Keys.reset();
 
-        const cmd = COMMANDS[e.key];
-        if (!cmd) return;
+        const result = e.repeat ? Keys.feedRepeat(e.key) : Keys.feed(e.key);
+        // 数字前缀记下但不拦：YouTube 这类站点的数字键照常生效
+        if (!result || result === 'count') return;
         e.preventDefault();
         e.stopImmediatePropagation();
-        try {
-            cmd();
-        } catch (err) {
-            console.error(TAG, e.key, err);
-        }
+        swallowed.add(e.code);
     }
 
+    function onKeyPressOrUp(e) {
+        if (!swallowed.has(e.code)) return;
+        if (e.type === 'keyup') swallowed.delete(e.code);
+        e.preventDefault();
+        e.stopImmediatePropagation();
+    }
+
+    window.addEventListener('keypress', onKeyPressOrUp, true);
+    window.addEventListener('keyup', onKeyPressOrUp, true);
     // 捕获阶段挂在 window 上、document-start 就注册：排在页面自己的 keydown 监听前面
     window.addEventListener('keydown', onKeyDown, true);
 })();
