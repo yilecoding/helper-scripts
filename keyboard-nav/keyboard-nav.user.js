@@ -3,10 +3,10 @@
 // @name:zh-CN   键盘浏览
 // @name:en      Keyboard Nav — Vimium-style Keyboard Browsing
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.09.16.3
-// @description  Vimium 风格的轻量键盘浏览：j/k 小步、d/u 半屏、h/l 横向、gg/G 顶部底部，支持数字前缀（5j），自动找到页面真正在滚的区域（body 不滚、内部 div 滚的站点也行）。焦点在输入框里、带 Ctrl/Alt/Meta 的组合键一律不拦。
-// @description:zh-CN  Vimium 风格的轻量键盘浏览：j/k 小步、d/u 半屏、h/l 横向、gg/G 顶部底部，支持数字前缀（5j），自动找到页面真正在滚的区域（body 不滚、内部 div 滚的站点也行）。焦点在输入框里、带 Ctrl/Alt/Meta 的组合键一律不拦。
-// @description:en  Lightweight Vimium-style keyboard browsing: j/k, d/u (half page), h/l and gg/G scrolling with count prefixes (5j) that finds the area that actually scrolls (works on sites where an inner div scrolls instead of the page). Keys typed into inputs and Ctrl/Alt/Meta combos are never intercepted.
+// @version      2025.09.16.4
+// @description  Vimium 风格的轻量键盘浏览：j/k 小步、d/u 半屏、h/l 横向、gg/G 顶部底部，平滑滚动、长按连续滚动不卡，支持数字前缀（5j），自动找到页面真正在滚的区域（body 不滚、内部 div 滚的站点也行）。焦点在输入框里、带 Ctrl/Alt/Meta 的组合键一律不拦。
+// @description:zh-CN  Vimium 风格的轻量键盘浏览：j/k 小步、d/u 半屏、h/l 横向、gg/G 顶部底部，平滑滚动、长按连续滚动不卡，支持数字前缀（5j），自动找到页面真正在滚的区域（body 不滚、内部 div 滚的站点也行）。焦点在输入框里、带 Ctrl/Alt/Meta 的组合键一律不拦。
+// @description:en  Lightweight Vimium-style keyboard browsing: j/k, d/u (half page), h/l and gg/G scrolling with smooth, stutter-free continuous scrolling while a key is held, count prefixes (5j) that finds the area that actually scrolls (works on sites where an inner div scrolls instead of the page). Keys typed into inputs and Ctrl/Alt/Meta combos are never intercepted.
 // @author       壹樂（V：ita1125）
 // @match        http://*/*
 // @match        https://*/*
@@ -37,6 +37,8 @@
         scrollStep: 60,         // j/k 一下滚多少像素
         sequenceTimeout: 1500,  // 多键序列（gg、yy）和数字前缀，两键之间最多等这么久
         maxCount: 999,          // 数字前缀上限，手滑按出 99999j 也不至于卡死
+        smooth: true,           // 平滑滚动（系统开了「减少动态效果」时自动关）
+        smoothFactor: 0.25,     // 平滑滚动每 16.7ms 追上剩余距离的这么多比例
     };
 
     // =========================================================================
@@ -186,22 +188,79 @@
         }
 
         function setPos(el, axis, v) {
+            // 'instant' 而不是 'auto'：页面 CSS 写了 scroll-behavior: smooth 时 'auto' 也会变成平滑滚动
             const opt = { [axis === 'y' ? 'top' : 'left']: v, behavior: 'instant' };
             if (el === root()) window.scrollTo(opt);
             else el.scrollTo(opt);
         }
 
-        /** 半屏：按容器自己的可视高度算，不是窗口高度。 */
-        function viewSize(el, axis) {
-            if (el === root()) return axis === 'y' ? window.innerHeight : window.innerWidth;
-            return axis === 'y' ? el.clientHeight : el.clientWidth;
+        // ---------------------------------------------------------------------
+        // 平滑滚动
+        //
+        // 不用 scrollBy({ behavior: 'smooth' })：动画途中再调一次，原生实现从「当前位置」重新算，
+        // 实测快速连按两下 j 只滚了 120 而不是 180；长按时每个重复 keydown 都把动画打断重来，一顿一顿。
+        // 这里给每个（容器, 方向）记一个目标位置，新按键只往目标上累加，rAF 每帧追剩余距离的一部分 ——
+        // 长按时目标匀速前移、动画一直追着跑，就是连续的匀速滚动。
+        // ---------------------------------------------------------------------
+
+        const anims = [];   // { el, axis, target, last }
+        let raf = 0;
+        let lastFrame = 0;
+        const reduceMotion = window.matchMedia ? window.matchMedia('(prefers-reduced-motion: reduce)') : null;
+
+        const animOf = (el, axis) => anims.find((a) => a.el === el && a.axis === axis);
+
+        function animateTo(el, axis, target) {
+            if (!CONFIG.smooth || (reduceMotion && reduceMotion.matches)) {
+                setPos(el, axis, target);
+                return;
+            }
+            let a = animOf(el, axis);
+            if (!a) anims.push((a = { el, axis, target, last: null }));
+            a.target = target;
+            if (!raf) {
+                lastFrame = performance.now();
+                raf = requestAnimationFrame(frame);
+            }
         }
+
+        function frame(now) {
+            // 按时间算比例：120Hz 屏上每帧追得少一点，整体速度和 60Hz 一样
+            const dt = Math.min(Math.max(now - lastFrame, 1), 100);
+            lastFrame = now;
+            const k = 1 - Math.pow(1 - CONFIG.smoothFactor, dt / 16.7);
+            for (let i = anims.length - 1; i >= 0; i--) {
+                const a = anims[i];
+                const cur = pos(a.el, a.axis);
+                // 动画途中用户自己滚了（滚轮、拖滚动条）：让给用户，不往回拽
+                const hijacked = a.last !== null && Math.abs(cur - a.last) > 2;
+                const diff = a.target - cur;
+                if (hijacked || !a.el.isConnected || Math.abs(diff) < 1) {
+                    if (!hijacked && a.el.isConnected) setPos(a.el, a.axis, a.target);
+                    anims.splice(i, 1);
+                    continue;
+                }
+                const move = Math.abs(diff * k) < 1 ? Math.sign(diff) : diff * k;
+                setPos(a.el, a.axis, cur + move);
+                a.last = pos(a.el, a.axis);
+                // 设了没动（内容在动画途中变短了之类）：别空转
+                if (a.last === cur) anims.splice(i, 1);
+            }
+            raf = anims.length ? requestAnimationFrame(frame) : 0;
+        }
+
+        /** 动画中的目标位置优先：连按时在上一次的目标上累加，而不是在半路的当前位置上。 */
+        function basePos(el, axis) {
+            const a = animOf(el, axis);
+            return a ? a.target : pos(el, axis);
+        }
+
+        const clamp = (el, axis, v) => Math.max(0, Math.min(maxPos(el, axis), v));
 
         /** 滚到某一端：pos 为 0 是开头，Infinity 是末尾。 */
         function to(axis, p) {
             const el = target(axis, p === 0 ? -1 : 1);
-            if (!el) return;
-            setPos(el, axis, Math.max(0, Math.min(maxPos(el, axis), p)));
+            if (el) animateTo(el, axis, clamp(el, axis, p));
         }
 
         /** delta 可以是函数：拿到滚动容器后再算（半屏要知道容器多高）。 */
@@ -210,7 +269,13 @@
             const el = target(axis, probe);
             if (!el) return;
             const d = typeof delta === 'function' ? delta(el) : delta;
-            setPos(el, axis, Math.max(0, Math.min(maxPos(el, axis), pos(el, axis) + d)));
+            animateTo(el, axis, clamp(el, axis, basePos(el, axis) + d));
+        }
+
+        /** 半屏：按容器自己的可视高度算，不是窗口高度。 */
+        function viewSize(el, axis) {
+            if (el === root()) return axis === 'y' ? window.innerHeight : window.innerWidth;
+            return axis === 'y' ? el.clientHeight : el.clientWidth;
         }
 
         window.addEventListener('mousedown', (e) => {

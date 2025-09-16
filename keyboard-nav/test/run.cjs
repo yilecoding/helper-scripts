@@ -198,6 +198,59 @@ async function main() {
         await page.close()
     })
 
+    await t.test('平滑滚动：快速连按不丢距离（原生 smooth 会丢），中途每帧都在动', async () => {
+        const page = await open(browser, 'long.html')
+        const frames = await page.evaluate(() => new Promise((resolve) => {
+            const ys = []
+            const tick = () => { ys.push(scrollY); if (ys.length < 40) requestAnimationFrame(tick); else resolve(ys) }
+            requestAnimationFrame(tick)
+            for (let i = 0; i < 3; i++) document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'j', code: 'KeyJ', bubbles: true }))
+        }))
+        t.eq((await waitScrollIdle(page)).y, STEP * 3)
+        t.assert(frames.some((y) => y > 0 && y < STEP * 3), '应该有中间位置（是平滑滚动不是瞬移）: ' + frames.join(','))
+        await page.close()
+    })
+
+    await t.test('长按 j（自动重复的 keydown）连续匀速滚动：单调、不停顿、松手后停在累计位置', async () => {
+        const page = await open(browser, 'long.html')
+        // 页面自己开了 scroll-behavior: smooth，动画每帧的瞬时设置不能被它变成又一层平滑
+        await page.addStyleTag({ content: 'html { scroll-behavior: smooth }' })
+        const ys = await page.evaluate(() => new Promise((resolve) => {
+            const ys = []
+            const send = (repeat) => document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'j', code: 'KeyJ', repeat, bubbles: true }))
+            send(false)
+            let n = 0
+            const iv = setInterval(() => {
+                send(true)
+                if (++n === 20) clearInterval(iv)
+            }, 33)
+            const tick = () => { ys.push(scrollY); if (ys.length < 60) requestAnimationFrame(tick); else resolve(ys) }
+            requestAnimationFrame(tick)
+        }))
+        for (let i = 1; i < ys.length; i++) t.assert(ys[i] >= ys[i - 1], '滚动位置应单调不减: ' + ys.join(','))
+        // 第一次动起来之后、到达终点之前，不应该有停住不动的帧
+        const start = ys.findIndex((y) => y > 0)
+        const end = ys.indexOf(STEP * 21)
+        const stopEnd = end === -1 ? ys.length : end
+        const stalls = ys.slice(start, stopEnd).filter((y, i, a) => i > 0 && y === a[i - 1]).length
+        t.assert(stalls <= 1, `滚动途中停顿了 ${stalls} 帧: ` + ys.join(','))
+        t.eq((await waitScrollIdle(page)).y, STEP * 21)
+        await page.close()
+    })
+
+    await t.test('长按 g / gg 这类非滚动键：重复的 keydown 不触发命令', async () => {
+        const page = await open(browser, 'long.html')
+        await page.evaluate(() => scrollTo(0, 600))
+        await page.evaluate(() => {
+            const send = (repeat) => document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'g', code: 'KeyG', repeat, bubbles: true }))
+            send(false)
+            send(true)
+            send(true)
+        })
+        t.eq((await waitScrollIdle(page)).y, 600, '长按 g 不该被当成 gg')
+        await page.close()
+    })
+
     await close()
     t.done()
 }
