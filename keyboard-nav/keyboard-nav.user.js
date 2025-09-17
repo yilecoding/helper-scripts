@@ -3,10 +3,10 @@
 // @name:zh-CN   键盘浏览
 // @name:en      Keyboard Nav — Vimium-style Keyboard Browsing
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.09.16.4
-// @description  Vimium 风格的轻量键盘浏览：j/k 小步、d/u 半屏、h/l 横向、gg/G 顶部底部，平滑滚动、长按连续滚动不卡，支持数字前缀（5j），自动找到页面真正在滚的区域（body 不滚、内部 div 滚的站点也行）。焦点在输入框里、带 Ctrl/Alt/Meta 的组合键一律不拦。
-// @description:zh-CN  Vimium 风格的轻量键盘浏览：j/k 小步、d/u 半屏、h/l 横向、gg/G 顶部底部，平滑滚动、长按连续滚动不卡，支持数字前缀（5j），自动找到页面真正在滚的区域（body 不滚、内部 div 滚的站点也行）。焦点在输入框里、带 Ctrl/Alt/Meta 的组合键一律不拦。
-// @description:en  Lightweight Vimium-style keyboard browsing: j/k, d/u (half page), h/l and gg/G scrolling with smooth, stutter-free continuous scrolling while a key is held, count prefixes (5j) that finds the area that actually scrolls (works on sites where an inner div scrolls instead of the page). Keys typed into inputs and Ctrl/Alt/Meta combos are never intercepted.
+// @version      2025.09.17.5
+// @description  Vimium 风格的轻量键盘浏览：j/k、d/u、h/l、gg/G 平滑滚动（自动找到真正在滚的区域，长按连续不卡，支持 5j 数字前缀）；f 链接提示（最短无冲突标签，被遮挡的不出提示，输入框聚焦、其余派发真实点击）。焦点在输入框里、带 Ctrl/Alt/Meta 的组合键一律不拦。
+// @description:zh-CN  Vimium 风格的轻量键盘浏览：j/k、d/u、h/l、gg/G 平滑滚动（自动找到真正在滚的区域，长按连续不卡，支持 5j 数字前缀）；f 链接提示（最短无冲突标签，被遮挡的不出提示，输入框聚焦、其余派发真实点击）。焦点在输入框里、带 Ctrl/Alt/Meta 的组合键一律不拦。
+// @description:en  Lightweight Vimium-style keyboard browsing: smooth j/k, d/u, h/l and gg/G scrolling that finds the area that actually scrolls (stutter-free while a key is held, count prefixes like 5j); f shows link hints (shortest prefix-free labels, covered elements skipped, inputs get focus, everything else gets a real click sequence). Keys typed into inputs and Ctrl/Alt/Meta combos are never intercepted.
 // @author       壹樂（V：ita1125）
 // @match        http://*/*
 // @match        https://*/*
@@ -39,6 +39,7 @@
         maxCount: 999,          // 数字前缀上限，手滑按出 99999j 也不至于卡死
         smooth: true,           // 平滑滚动（系统开了「减少动态效果」时自动关）
         smoothFactor: 0.25,     // 平滑滚动每 16.7ms 追上剩余距离的这么多比例
+        hintChars: 'sadfjklewcmpgh',    // 链接提示标签用的字母，靠前的更常用
     };
 
     // =========================================================================
@@ -286,6 +287,263 @@
     })();
 
     // =========================================================================
+    // 界面：脚本自己的浮层都放在 shadow DOM 里，页面样式进不来、我们的样式也漏不出去
+    // =========================================================================
+
+    const UI_ATTR = 'data-kbnav-ui';
+
+    function createLayer(id, css) {
+        const host = document.createElement('div');
+        host.id = id;
+        host.setAttribute(UI_ATTR, '');
+        host.style.cssText = 'all: initial; position: fixed; inset: 0; z-index: 2147483647; pointer-events: none;';
+        const root = host.attachShadow({ mode: 'open' });
+        const style = document.createElement('style');
+        style.textContent = css;
+        root.appendChild(style);
+        (document.body || document.documentElement).appendChild(host);
+        return root;
+    }
+
+    // =========================================================================
+    // 链接提示
+    // =========================================================================
+
+    /**
+     * 最短、互不为前缀的标签：把字母表当成一棵树，每次把最浅的叶子展开成下一层，
+     * 直到叶子数够用。展开过的节点不再当标签，所以任何标签都不是另一个的前缀 ——
+     * 输完一个标签就能立刻触发，不用等超时。
+     */
+    function hintLabels(n, chars) {
+        if (n <= 0) return [];
+        const queue = [''];
+        let head = 0;
+        while (queue.length - head < n || queue.length === 1) {
+            const p = queue[head++];
+            for (const c of chars) queue.push(p + c);
+        }
+        return queue.slice(head, head + n);
+    }
+
+    const Hints = (() => {
+        const CLICKABLE = [
+            'a[href]', 'area[href]', 'button', 'input:not([type=hidden])', 'select', 'textarea', 'summary', 'label',
+            '[role=button]', '[role=link]', '[role=checkbox]', '[role=radio]', '[role=switch]', '[role=tab]',
+            '[role=menuitem]', '[role=option]', '[onclick]', '[contenteditable=""]', '[contenteditable=true]',
+            // tabindex=-1 是框架给容器打的「可编程聚焦」标记（整块正文、弹窗外壳），不是可点击的东西
+            '[tabindex]:not([tabindex^="-"])',
+        ].join(',');
+
+        const CSS = `
+            .hint {
+                position: fixed; padding: 1px 4px; border-radius: 3px;
+                font: bold 12px/1.2 ui-monospace, Menlo, Consolas, monospace; letter-spacing: .5px;
+                text-transform: uppercase; color: #302505; white-space: nowrap;
+                background: linear-gradient(#fff7c4, #ffd76e); border: 1px solid #c38a22;
+                box-shadow: 0 2px 4px rgba(0, 0, 0, .3);
+            }
+            .hint .typed { color: #b58a21; }
+            .hint.hidden { display: none; }
+        `;
+
+        let state = null;   // { newTab, hints: [{ el, label, node }], typed, root }
+
+        function isDisabled(el) {
+            return el.disabled === true || el.getAttribute('aria-disabled') === 'true';
+        }
+
+        /** 点击点所在的那一层：元素在 shadow DOM 里时要用它自己的 root 查，document 只能查到 host。 */
+        function hitTest(el, x, y) {
+            const root = el.getRootNode();
+            const hit = (root.elementFromPoint ? root : document).elementFromPoint(x, y);
+            return !!hit && (hit === el || el.contains(hit));
+        }
+
+        /**
+         * 第一块在视口里、而且真的露在最上面的矩形。折行的链接有多块矩形，任何一块能点到就行。
+         * 被遮挡的判断用 elementFromPoint：透明遮罩、弹窗背后、被 overflow 裁掉的部分都会打到别的元素上。
+         * 只查中心不够 —— 卡片角上的「×」可能正好压在链接中心，所以再试两个角附近的点。
+         */
+        function visibleRect(el) {
+            const vw = window.innerWidth;
+            const vh = window.innerHeight;
+            for (const r of el.getClientRects()) {
+                const left = Math.max(r.left, 0);
+                const top = Math.max(r.top, 0);
+                const right = Math.min(r.right, vw);
+                const bottom = Math.min(r.bottom, vh);
+                if (right - left < 3 || bottom - top < 3) continue;
+                const points = [
+                    [(left + right) / 2, (top + bottom) / 2],
+                    [left + 2, top + 2],
+                    [right - 2, bottom - 2],
+                ];
+                if (points.some(([x, y]) => hitTest(el, x, y))) return { left, top, right, bottom };
+            }
+            return null;
+        }
+
+        function candidates() {
+            return Array.from(document.querySelectorAll(CLICKABLE));
+        }
+
+        function collect(linksOnly) {
+            const out = [];
+            const seen = new Set();
+            for (const el of candidates()) {
+                if (el.closest('[' + UI_ATTR + ']') || isDisabled(el)) continue;
+                if (linksOnly && !el.href) continue;
+                const st = getComputedStyle(el);
+                if (st.visibility === 'hidden' || st.visibility === 'collapse') continue;
+                const rect = visibleRect(el);
+                if (!rect) continue;
+                // 包着可见控件的 <label>：控件自己有提示，label 再来一个就重复了
+                if (el.tagName === 'LABEL' && el.control && seen.has(el.control)) continue;
+                // <a><button>…</button></a> 这类同一块区域嵌套两层的，只留外层
+                const prev = out[out.length - 1];
+                if (prev && prev.el.contains(el) && sameBox(prev.rect, rect)) continue;
+                out.push({ el, rect });
+                seen.add(el);
+            }
+            // label 在控件前面时上面的判断还没见到控件，这里补一遍
+            return out.filter((h) => !(h.el.tagName === 'LABEL' && h.el.control && seen.has(h.el.control)));
+        }
+
+        function sameBox(a, b) {
+            return Math.abs(a.left - b.left) < 4 && Math.abs(a.top - b.top) < 4
+                && Math.abs(a.right - b.right) < 4 && Math.abs(a.bottom - b.bottom) < 4;
+        }
+
+        function start(newTab) {
+            exit();
+            const found = collect(newTab);
+            if (!found.length) return;
+            const labels = hintLabels(found.length, CONFIG.hintChars);
+            const root = createLayer('kbnav-hints', CSS);
+            const hints = found.map(({ el, rect }, i) => {
+                const node = document.createElement('div');
+                node.className = 'hint';
+                node.dataset.label = labels[i];
+                node.style.left = Math.min(rect.left, window.innerWidth - 40) + 'px';
+                node.style.top = Math.min(rect.top, window.innerHeight - 20) + 'px';
+                root.appendChild(node);
+                return { el, label: labels[i], node };
+            });
+            state = { newTab, hints, typed: '', root };
+            render();
+            window.addEventListener('scroll', onScroll, true);
+            window.addEventListener('resize', exit, true);
+            window.addEventListener('blur', exit, true);
+            window.addEventListener('mousedown', exit, true);
+        }
+
+        function exit() {
+            if (!state) return;
+            state.root.host.remove();
+            state = null;
+            window.removeEventListener('scroll', onScroll, true);
+            window.removeEventListener('resize', exit, true);
+            window.removeEventListener('blur', exit, true);
+            window.removeEventListener('mousedown', exit, true);
+        }
+
+        function render() {
+            for (const h of state.hints) {
+                const match = h.label.startsWith(state.typed);
+                h.node.classList.toggle('hidden', !match);
+                if (!match) continue;
+                h.node.textContent = '';
+                const typed = document.createElement('span');
+                typed.className = 'typed';
+                typed.textContent = state.typed;
+                h.node.append(typed, h.label.slice(state.typed.length));
+            }
+        }
+
+        /** 提示开着时页面滚了（平滑滚动的尾巴、页面自己滚）：跟着元素挪，挪出视口的藏起来。 */
+        let scrollRaf = 0;
+        function onScroll() {
+            if (scrollRaf) return;
+            scrollRaf = requestAnimationFrame(() => {
+                scrollRaf = 0;
+                if (!state) return;
+                for (const h of state.hints) {
+                    const r = h.el.getClientRects()[0];
+                    const out = !r || r.bottom < 0 || r.top > window.innerHeight || r.right < 0 || r.left > window.innerWidth;
+                    h.node.style.visibility = out ? 'hidden' : '';
+                    if (out) continue;
+                    h.node.style.left = Math.min(Math.max(r.left, 0), window.innerWidth - 40) + 'px';
+                    h.node.style.top = Math.min(Math.max(r.top, 0), window.innerHeight - 20) + 'px';
+                }
+            });
+        }
+
+        /** 提示模式下的按键：全部吃掉，只认标签字母、Backspace、Esc。 */
+        function onKey(e) {
+            if (e.ctrlKey || e.altKey || e.metaKey) {
+                exit();
+                return false;
+            }
+            const key = e.key;
+            if (key === 'Escape') {
+                exit();
+            } else if (key === 'Backspace') {
+                state.typed = state.typed.slice(0, -1);
+                render();
+            } else if (key.length === 1 && CONFIG.hintChars.includes(key.toLowerCase())) {
+                const typed = state.typed + key.toLowerCase();
+                const hit = state.hints.find((h) => h.label === typed);
+                if (hit) {
+                    const newTab = state.newTab;
+                    exit();
+                    activate(hit.el, newTab);
+                } else if (state.hints.some((h) => h.label.startsWith(typed))) {
+                    state.typed = typed;
+                    render();
+                }
+                // 不是任何标签的前缀：当作按错，忽略
+            }
+            return true;
+        }
+
+        return { start, exit, onKey, get active() { return !!state; } };
+    })();
+
+    // =========================================================================
+    // 激活元素：输入框聚焦，其余派发一套真实的点击事件
+    // =========================================================================
+
+    /**
+     * 只调 el.click() 不够：很多组件（下拉菜单、React 的 onMouseDown 按钮、拖拽库）只认 mousedown/pointerdown，
+     * 光有 click 没反应。按真实点击的顺序派发 pointer/mouse 全套，坐标给元素中心。
+     */
+    function simulateClick(el) {
+        const r = el.getBoundingClientRect();
+        const base = {
+            bubbles: true, cancelable: true, composed: true, view: window,
+            clientX: r.left + r.width / 2, clientY: r.top + r.height / 2, button: 0,
+        };
+        const pointer = { ...base, pointerId: 1, pointerType: 'mouse', isPrimary: true };
+        el.dispatchEvent(new PointerEvent('pointerover', pointer));
+        el.dispatchEvent(new MouseEvent('mouseover', base));
+        el.dispatchEvent(new PointerEvent('pointerdown', { ...pointer, buttons: 1 }));
+        const down = el.dispatchEvent(new MouseEvent('mousedown', { ...base, buttons: 1, detail: 1 }));
+        // 合成的 mousedown 没有默认行为，真实点击会在这一步把焦点给元素（页面 preventDefault 了就不给）
+        if (down && typeof el.focus === 'function') el.focus({ preventScroll: true });
+        el.dispatchEvent(new PointerEvent('pointerup', pointer));
+        el.dispatchEvent(new MouseEvent('mouseup', { ...base, detail: 1 }));
+        el.dispatchEvent(new MouseEvent('click', { ...base, detail: 1 }));
+    }
+
+    function activate(el, newTab) {
+        if (isEditable(el)) {
+            el.focus();
+            return;
+        }
+        simulateClick(el);
+    }
+
+    // =========================================================================
     // 命令
     // =========================================================================
 
@@ -304,6 +562,7 @@
         { keys: 'u', group: '滚动', desc: '向上半屏', repeat: true, run: (n) => Scroll.by('y', half(-1, n)) },
         { keys: 'gg', group: '滚动', desc: '滚到顶部', run: () => Scroll.to('y', 0) },
         { keys: 'G', group: '滚动', desc: '滚到底部', run: () => Scroll.to('y', Infinity) },
+        { keys: 'f', group: '链接', desc: '链接提示：在当前页打开 / 点击', run: () => Hints.start(false) },
     ];
 
     const BINDINGS = new Map(COMMANDS.map((c) => [c.keys, c]));
@@ -393,6 +652,10 @@
     function onKeyDown(e) {
         // 输入法组字中（中文输入法下按 j 是在打拼音）
         if (e.isComposing || e.keyCode === 229) return;
+        if (Hints.active) {
+            if (Hints.onKey(e)) consume(e);
+            return;
+        }
         if (e.ctrlKey || e.altKey || e.metaKey) return Keys.reset();
         // keydown 的 target 被 shadow DOM 重定向成 host，composedPath()[0] 才是真正的输入框
         const target = (e.composedPath && e.composedPath()[0]) || e.target;
@@ -401,6 +664,10 @@
         const result = e.repeat ? Keys.feedRepeat(e.key) : Keys.feed(e.key);
         // 数字前缀记下但不拦：YouTube 这类站点的数字键照常生效
         if (!result || result === 'count') return;
+        consume(e);
+    }
+
+    function consume(e) {
         e.preventDefault();
         e.stopImmediatePropagation();
         swallowed.add(e.code);

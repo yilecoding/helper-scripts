@@ -62,6 +62,38 @@ async function press(page, keys) {
     for (const k of keys) await page.keyboard.press(k)
 }
 
+/** 当前显示的提示：[{ label, left, top }]（隐藏的不算）。 */
+function hints(page) {
+    return page.evaluate(() => {
+        const host = document.getElementById('kbnav-hints')
+        if (!host) return []
+        return Array.from(host.shadowRoot.querySelectorAll('.hint:not(.hidden)')).map((n) => ({
+            label: n.dataset.label,
+            left: parseFloat(n.style.left),
+            top: parseFloat(n.style.top),
+        }))
+    })
+}
+
+/** 每个匹配元素的提示标签（按位置对应：提示放在元素可见部分的左上角），没有提示的是 null。 */
+async function hintsFor(page, sel) {
+    const list = await hints(page)
+    const boxes = await page.evaluate((sel) => Array.from(document.querySelectorAll(sel)).map((el) => {
+        const r = el.getClientRects()[0]
+        if (!r) return null
+        return { left: Math.min(Math.max(r.left, 0), innerWidth - 40), top: Math.min(Math.max(r.top, 0), innerHeight - 20) }
+    }), sel)
+    return boxes.map((b) => {
+        if (!b) return null
+        const hit = list.find((x) => Math.abs(x.left - b.left) < 1 && Math.abs(x.top - b.top) < 1)
+        return hit ? hit.label : null
+    })
+}
+
+async function typeLabel(page, label) {
+    for (const c of label) await page.keyboard.press(c)
+}
+
 async function main() {
     const { browser, close } = await h.setup(FIXTURES)
     console.log('keyboard-nav')
@@ -248,6 +280,91 @@ async function main() {
             send(true)
         })
         t.eq((await waitScrollIdle(page)).y, 600, '长按 g 不该被当成 gg')
+        await page.close()
+    })
+
+    await t.test('f：可见可点的元素都有提示，标签互不为前缀且尽量短', async () => {
+        const page = await open(browser, 'hints.html')
+        await press(page, ['f'])
+        const list = await hints(page)
+        const visible = await hintsFor(page, '.v')
+        t.assert(visible.every(Boolean), '每个 .v 都该有提示: ' + JSON.stringify(visible))
+        t.eq(list.length, visible.length, '提示数量 = 可见可点元素数量')
+        const labels = list.map((x) => x.label)
+        t.eq(new Set(labels).size, labels.length, '标签不重复')
+        for (const a of labels) for (const b of labels) {
+            if (a !== b) t.assert(!b.startsWith(a), `标签 ${a} 是 ${b} 的前缀`)
+        }
+        // 30 个元素、14 个字母：单字母用不完时才出双字母
+        t.eq(labels.filter((l) => l.length === 1).length, 12)
+        t.assert(labels.every((l) => l.length <= 2))
+        await page.close()
+    })
+
+    // 嵌套同一块的里层（#outer 里的 <a>）和外层位置相同，没法按位置区分；上一条的「数量相等」已经证明它被去重了
+    await t.test('被遮挡 / 被裁掉 / 不可见 / 视口外 / 禁用 / tabindex=-1：都不出提示', async () => {
+        const page = await open(browser, 'hints.html')
+        await press(page, ['f'])
+        const hidden = await hintsFor(page, '.x')
+        t.eq(hidden, hidden.map(() => null))
+        // 有可见控件的 <label for> 不重复出提示
+        t.eq(await hintsFor(page, 'label[for=name2]'), [null])
+        await page.close()
+    })
+
+    await t.test('输入标签触发真实点击序列；提示随即消失', async () => {
+        const page = await open(browser, 'hints.html')
+        await press(page, ['f'])
+        const [label] = await hintsFor(page, '#btn')
+        await typeLabel(page, label)
+        t.eq(await page.evaluate(() => window.__events), ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'])
+        t.eq(await hints(page), [])
+        t.eq(await page.evaluate(() => document.activeElement.id), 'btn', '真实点击会让按钮获得焦点')
+        await page.close()
+    })
+
+    await t.test('输入框：聚焦而不是点击，之后按 j 是打字', async () => {
+        const page = await open(browser, 'hints.html')
+        await press(page, ['f'])
+        const [label] = await hintsFor(page, '#name')
+        await typeLabel(page, label)
+        t.eq(await page.evaluate(() => document.activeElement.id), 'name')
+        await press(page, ['j'])
+        t.eq(await page.inputValue('#name'), 'j')
+        await page.close()
+    })
+
+    await t.test('链接：点击后导航；label 包着隐藏的复选框：点 label 切换复选框', async () => {
+        const page = await open(browser, 'hints.html')
+        await press(page, ['f'])
+        const [cb] = await hintsFor(page, '#cblabel')
+        await typeLabel(page, cb)
+        t.eq(await page.evaluate(() => document.getElementById('cb').checked), true)
+        await press(page, ['f'])
+        const [link] = await hintsFor(page, '#links a:nth-child(3)')
+        await Promise.all([page.waitForURL(/page2\.html\?n=3$/), typeLabel(page, link)])
+        t.eq(await page.title(), '第二页')
+        await page.close()
+    })
+
+    await t.test('输入过滤、Backspace 撤回、按错的字母忽略、Esc 退出', async () => {
+        const page = await open(browser, 'hints.html')
+        await press(page, ['f'])
+        const all = await hints(page)
+        await press(page, ['s'])
+        const filtered = await hints(page)
+        t.assert(filtered.length > 1 && filtered.length < all.length, '输入 s 后只剩 s 开头的')
+        t.assert(filtered.every((x) => x.label.startsWith('s')))
+        await press(page, ['z'])   // 不在字母表里
+        t.eq((await hints(page)).length, filtered.length)
+        await press(page, ['Backspace'])
+        t.eq((await hints(page)).length, all.length)
+        await press(page, ['Escape'])
+        t.eq(await hints(page), [])
+        t.eq(await page.evaluate(() => window.__events), [], '退出不点任何东西')
+        // 退出后 j 恢复滚动
+        await press(page, ['j'])
+        t.eq((await waitScrollIdle(page)).y, STEP)
         await page.close()
     })
 
