@@ -3,15 +3,16 @@
 // @name:zh-CN   键盘浏览
 // @name:en      Keyboard Nav — Vimium-style Keyboard Browsing
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.09.17.6
-// @description  Vimium 风格的轻量键盘浏览：j/k、d/u、h/l、gg/G 平滑滚动（自动找到真正在滚的区域，长按连续不卡，支持 5j 数字前缀）；f/F 链接提示（当前页 / 新标签打开，能提示到 open shadow DOM 里的按钮，最短无冲突标签，被遮挡的不出提示，输入框聚焦、其余派发真实点击）。焦点在输入框里、带 Ctrl/Alt/Meta 的组合键一律不拦。
-// @description:zh-CN  Vimium 风格的轻量键盘浏览：j/k、d/u、h/l、gg/G 平滑滚动（自动找到真正在滚的区域，长按连续不卡，支持 5j 数字前缀）；f/F 链接提示（当前页 / 新标签打开，能提示到 open shadow DOM 里的按钮，最短无冲突标签，被遮挡的不出提示，输入框聚焦、其余派发真实点击）。焦点在输入框里、带 Ctrl/Alt/Meta 的组合键一律不拦。
-// @description:en  Lightweight Vimium-style keyboard browsing: smooth j/k, d/u, h/l and gg/G scrolling that finds the area that actually scrolls (stutter-free while a key is held, count prefixes like 5j); f/F show link hints (open in place or in a new tab, reaching into open shadow DOM, shortest prefix-free labels, covered elements skipped, inputs get focus, everything else gets a real click sequence). Keys typed into inputs and Ctrl/Alt/Meta combos are never intercepted.
+// @version      2025.09.17.7
+// @description  Vimium 风格的轻量键盘浏览：j/k、d/u、h/l、gg/G 平滑滚动（自动找到真正在滚的区域，长按连续不卡，支持 5j 数字前缀）；f/F 链接提示（当前页 / 新标签打开，能提示到 open shadow DOM 里的按钮，最短无冲突标签，被遮挡的不出提示，输入框聚焦、其余派发真实点击）；H/L 后退前进、r 刷新、yy 复制网址、gi 聚焦输入框。焦点在输入框里、带 Ctrl/Alt/Meta 的组合键一律不拦。
+// @description:zh-CN  Vimium 风格的轻量键盘浏览：j/k、d/u、h/l、gg/G 平滑滚动（自动找到真正在滚的区域，长按连续不卡，支持 5j 数字前缀）；f/F 链接提示（当前页 / 新标签打开，能提示到 open shadow DOM 里的按钮，最短无冲突标签，被遮挡的不出提示，输入框聚焦、其余派发真实点击）；H/L 后退前进、r 刷新、yy 复制网址、gi 聚焦输入框。焦点在输入框里、带 Ctrl/Alt/Meta 的组合键一律不拦。
+// @description:en  Lightweight Vimium-style keyboard browsing: smooth j/k, d/u, h/l and gg/G scrolling that finds the area that actually scrolls (stutter-free while a key is held, count prefixes like 5j); f/F show link hints (open in place or in a new tab, reaching into open shadow DOM, shortest prefix-free labels, covered elements skipped, inputs get focus, everything else gets a real click sequence); H/L back/forward, r reload, yy copy URL, gi focus the first input. Keys typed into inputs and Ctrl/Alt/Meta combos are never intercepted.
 // @author       壹樂（V：ita1125）
 // @match        http://*/*
 // @match        https://*/*
 // @noframes
 // @grant        GM_openInTab
+// @grant        GM_setClipboard
 // @license      CC BY-NC-SA
 // @run-at       document-start
 // @homepageURL  https://github.com/yilecoding/helper-scripts
@@ -305,6 +306,31 @@
         return root;
     }
 
+    /** 右下角的小提示条（「已复制」之类），过几秒自己消失。 */
+    const Toast = (() => {
+        let root = null;
+        let timer = 0;
+        const CSS = `
+            .toast {
+                position: fixed; right: 16px; bottom: 16px; max-width: 60vw; padding: 6px 12px;
+                border-radius: 6px; background: rgba(32, 33, 36, .92); color: #fff;
+                font: 13px/1.5 system-ui, sans-serif; box-shadow: 0 2px 8px rgba(0, 0, 0, .3);
+                overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+            }
+        `;
+        function show(text, ms = 2000) {
+            if (!root || !root.host.isConnected) root = createLayer('kbnav-toast', CSS);
+            root.querySelector('.toast')?.remove();
+            const el = document.createElement('div');
+            el.className = 'toast';
+            el.textContent = text;
+            root.appendChild(el);
+            clearTimeout(timer);
+            timer = setTimeout(() => el.remove(), ms);
+        }
+        return { show };
+    })();
+
     // =========================================================================
     // 链接提示
     // =========================================================================
@@ -569,6 +595,40 @@
     }
 
     // =========================================================================
+    // gi：聚焦第 n 个输入框
+    // =========================================================================
+
+    /** 页面上能打字的输入框（含 open shadow DOM 里的），按文档顺序；不可见、禁用、只读的跳过。 */
+    function textInputs() {
+        const out = [];
+        const walk = (root) => {
+            for (const el of root.querySelectorAll('*')) {
+                if (el.hasAttribute(UI_ATTR)) continue;
+                if (el.tagName !== 'SELECT' && isEditable(el) && usable(el)) out.push(el);
+                if (el.shadowRoot) walk(el.shadowRoot);
+            }
+        };
+        const usable = (el) => !el.disabled && !el.readOnly && el.getClientRects().length > 0
+            && getComputedStyle(el).visibility === 'visible';
+        walk(document);
+        // contenteditable 的子元素也是 isContentEditable，只留最外层
+        return out.filter((el) => !(el.parentElement && el.parentElement.isContentEditable));
+    }
+
+    function focusInput(n) {
+        const list = textInputs();
+        if (!list.length) return Toast.show('页面上没有输入框');
+        const el = list[Math.min(n, list.length) - 1];
+        el.focus();
+        // 把光标放到末尾，接着已有内容往下打
+        if (typeof el.setSelectionRange === 'function' && typeof el.value === 'string') {
+            try {
+                el.setSelectionRange(el.value.length, el.value.length);
+            } catch (e) { /* email / number 等类型不支持选区 */ }
+        }
+    }
+
+    // =========================================================================
     // 命令
     // =========================================================================
 
@@ -589,7 +649,17 @@
         { keys: 'G', group: '滚动', desc: '滚到底部', run: () => Scroll.to('y', Infinity) },
         { keys: 'f', group: '链接', desc: '链接提示：在当前页打开 / 点击', run: () => Hints.start(false) },
         { keys: 'F', group: '链接', desc: '链接提示：在新标签打开', run: () => Hints.start(true) },
+        { keys: 'gi', group: '链接', desc: '聚焦第一个输入框（3gi 第三个）', run: (n) => focusInput(n) },
+        { keys: 'H', group: '页面', desc: '后退', run: (n) => history.go(-n) },
+        { keys: 'L', group: '页面', desc: '前进', run: (n) => history.go(n) },
+        { keys: 'r', group: '页面', desc: '刷新', run: () => location.reload() },
+        { keys: 'yy', group: '页面', desc: '复制当前网址', run: copyUrl },
     ];
+
+    function copyUrl() {
+        GM_setClipboard(location.href, 'text');
+        Toast.show('已复制：' + location.href);
+    }
 
     const BINDINGS = new Map(COMMANDS.map((c) => [c.keys, c]));
     /** 所有多键序列的真前缀（g、y …）：按下后要等下一个键。 */

@@ -412,6 +412,43 @@ async function main() {
         await page.close()
     })
 
+    await t.test('gi 聚焦第一个能打字的输入框（跳过隐藏/禁用/只读/复选框/下拉），光标在末尾；2gi、3gi 依次往后', async () => {
+        const page = await open(browser, 'inputs.html')
+        await press(page, ['g', 'i'])
+        t.eq(await page.evaluate(() => document.activeElement.id), 'a')
+        t.eq(await page.evaluate(() => document.activeElement.selectionStart), 4)
+        await page.evaluate(() => document.activeElement.blur())
+        await press(page, ['2', 'g', 'i'])
+        t.eq(await page.evaluate(() => document.activeElement.id), 'b')
+        await page.evaluate(() => document.activeElement.blur())
+        await press(page, ['9', 'g', 'i'])
+        t.eq(await page.evaluate(() => document.activeElement.id), 'c', '超出个数取最后一个')
+        await page.close()
+    })
+
+    await t.test('yy 复制当前网址（GM_setClipboard），右下角提示', async () => {
+        const page = await open(browser, 'long.html')
+        await press(page, ['y', 'y'])
+        t.eq((await h.gm(page)).clipboard, { text: SITE + '/long.html', type: 'text' })
+        const toast = await page.evaluate(() => document.getElementById('kbnav-toast').shadowRoot.querySelector('.toast').textContent)
+        t.assert(toast.includes('已复制'), toast)
+        await page.close()
+    })
+
+    await t.test('H 后退、L 前进、r 刷新', async () => {
+        const page = await open(browser, 'long.html')
+        await page.goto(SITE + '/page2.html')
+        await page.waitForLoadState('load')
+        await Promise.all([page.waitForURL(SITE + '/long.html'), press(page, ['Shift+H'])])
+        await page.waitForLoadState('load')
+        await Promise.all([page.waitForURL(SITE + '/page2.html'), press(page, ['Shift+L'])])
+        await page.waitForLoadState('load')
+        await page.evaluate(() => { window.__marker = 1 })
+        await Promise.all([page.waitForEvent('load'), press(page, ['r'])])
+        t.eq(await page.evaluate(() => window.__marker), undefined, '刷新后页面上的变量没了')
+        await page.close()
+    })
+
     await close()
     t.done()
 }
