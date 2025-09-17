@@ -90,6 +90,19 @@ async function hintsFor(page, sel) {
     })
 }
 
+/** shadow DOM 里的元素：path 是一串选择器，每一级进入上一级的 shadowRoot。返回它的提示标签。 */
+async function hintForPath(page, path) {
+    const list = await hints(page)
+    const b = await page.evaluate((path) => {
+        let el = document.querySelector(path[0])
+        for (const sel of path.slice(1)) el = el.shadowRoot.querySelector(sel)
+        const r = el.getClientRects()[0]
+        return { left: r.left, top: r.top }
+    }, path)
+    const hit = list.find((x) => Math.abs(x.left - b.left) < 1 && Math.abs(x.top - b.top) < 1)
+    return hit ? hit.label : null
+}
+
 async function typeLabel(page, label) {
     for (const c of label) await page.keyboard.press(c)
 }
@@ -365,6 +378,37 @@ async function main() {
         // 退出后 j 恢复滚动
         await press(page, ['j'])
         t.eq((await waitScrollIdle(page)).y, STEP)
+        await page.close()
+    })
+
+    await t.test('open shadow DOM（含嵌套两层）里的按钮能提示到、能点；closed shadow root 拿不到', async () => {
+        const page = await open(browser, 'shadow.html')
+        await press(page, ['f'])
+        // plain、js、sbtn、slink、deep —— 5 个；closed 里的按钮不在其中
+        t.eq((await hints(page)).length, 5)
+        const sbtn = await hintForPath(page, ['#bar', '#sbtn'])
+        const deep = await hintForPath(page, ['#bar', '#nested', '#deep'])
+        t.assert(sbtn && deep, `shadow 按钮应有提示: ${sbtn} ${deep}`)
+        await typeLabel(page, sbtn)
+        await press(page, ['f'])
+        await typeLabel(page, deep)
+        t.eq(await page.evaluate(() => window.__events), ['sbtn', 'deep'])
+        t.eq(h.errors(page).map(String), [])
+        await page.close()
+    })
+
+    await t.test('F：只提示能打开的链接（含 shadow 里的），GM_openInTab 后台打开，当前页不动', async () => {
+        const page = await open(browser, 'shadow.html')
+        await press(page, ['Shift+F'])
+        const list = await hints(page)
+        t.eq(list.length, 2, '普通链接 + shadow 链接；javascript: 链接和按钮不算')
+        const slink = await hintForPath(page, ['#bar', '#slink'])
+        await typeLabel(page, slink)
+        const gm = await h.gm(page)
+        t.eq(gm.opened.map((o) => o.url), [SITE + '/page2.html?shadow'])
+        t.eq(gm.opened[0].options.active, false)
+        t.eq(page.url(), SITE + '/shadow.html')
+        t.eq(await hints(page), [])
         await page.close()
     })
 

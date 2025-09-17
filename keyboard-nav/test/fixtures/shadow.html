@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>shadow DOM 里的按钮</title>
+<style>body { margin: 0; padding: 8px; font: 14px/1.6 sans-serif; }</style>
+</head>
+<body>
+<a id="plain" href="page2.html?plain">普通链接</a>
+<a id="js" href="javascript:void(0)">javascript: 链接</a>
+<x-toolbar id="bar"></x-toolbar>
+<x-closed id="closed"></x-closed>
+<script>
+    window.__events = []
+    customElements.define('x-toolbar', class extends HTMLElement {
+        constructor() {
+            super()
+            const root = this.attachShadow({ mode: 'open' })
+            root.innerHTML = `
+                <style>:host { display: flex; gap: 12px; margin: 12px 0; }</style>
+                <button id="sbtn">shadow 按钮</button>
+                <a id="slink" href="page2.html?shadow">shadow 链接</a>
+                <x-inner id="nested"></x-inner>`
+            root.getElementById('sbtn').addEventListener('click', () => window.__events.push('sbtn'))
+        }
+    })
+    customElements.define('x-inner', class extends HTMLElement {
+        constructor() {
+            super()
+            const root = this.attachShadow({ mode: 'open' })
+            root.innerHTML = '<button id="deep">嵌套两层的按钮</button>'
+            root.getElementById('deep').addEventListener('click', () => window.__events.push('deep'))
+        }
+    })
+    customElements.define('x-closed', class extends HTMLElement {
+        constructor() {
+            super()
+            this.attachShadow({ mode: 'closed' }).innerHTML = '<button>closed shadow 里的按钮</button>'
+        }
+    })
+</script>
+</body>
+</html>

@@ -3,15 +3,15 @@
 // @name:zh-CN   键盘浏览
 // @name:en      Keyboard Nav — Vimium-style Keyboard Browsing
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.09.17.5
-// @description  Vimium 风格的轻量键盘浏览：j/k、d/u、h/l、gg/G 平滑滚动（自动找到真正在滚的区域，长按连续不卡，支持 5j 数字前缀）；f 链接提示（最短无冲突标签，被遮挡的不出提示，输入框聚焦、其余派发真实点击）。焦点在输入框里、带 Ctrl/Alt/Meta 的组合键一律不拦。
-// @description:zh-CN  Vimium 风格的轻量键盘浏览：j/k、d/u、h/l、gg/G 平滑滚动（自动找到真正在滚的区域，长按连续不卡，支持 5j 数字前缀）；f 链接提示（最短无冲突标签，被遮挡的不出提示，输入框聚焦、其余派发真实点击）。焦点在输入框里、带 Ctrl/Alt/Meta 的组合键一律不拦。
-// @description:en  Lightweight Vimium-style keyboard browsing: smooth j/k, d/u, h/l and gg/G scrolling that finds the area that actually scrolls (stutter-free while a key is held, count prefixes like 5j); f shows link hints (shortest prefix-free labels, covered elements skipped, inputs get focus, everything else gets a real click sequence). Keys typed into inputs and Ctrl/Alt/Meta combos are never intercepted.
+// @version      2025.09.17.6
+// @description  Vimium 风格的轻量键盘浏览：j/k、d/u、h/l、gg/G 平滑滚动（自动找到真正在滚的区域，长按连续不卡，支持 5j 数字前缀）；f/F 链接提示（当前页 / 新标签打开，能提示到 open shadow DOM 里的按钮，最短无冲突标签，被遮挡的不出提示，输入框聚焦、其余派发真实点击）。焦点在输入框里、带 Ctrl/Alt/Meta 的组合键一律不拦。
+// @description:zh-CN  Vimium 风格的轻量键盘浏览：j/k、d/u、h/l、gg/G 平滑滚动（自动找到真正在滚的区域，长按连续不卡，支持 5j 数字前缀）；f/F 链接提示（当前页 / 新标签打开，能提示到 open shadow DOM 里的按钮，最短无冲突标签，被遮挡的不出提示，输入框聚焦、其余派发真实点击）。焦点在输入框里、带 Ctrl/Alt/Meta 的组合键一律不拦。
+// @description:en  Lightweight Vimium-style keyboard browsing: smooth j/k, d/u, h/l and gg/G scrolling that finds the area that actually scrolls (stutter-free while a key is held, count prefixes like 5j); f/F show link hints (open in place or in a new tab, reaching into open shadow DOM, shortest prefix-free labels, covered elements skipped, inputs get focus, everything else gets a real click sequence). Keys typed into inputs and Ctrl/Alt/Meta combos are never intercepted.
 // @author       壹樂（V：ita1125）
 // @match        http://*/*
 // @match        https://*/*
 // @noframes
-// @grant        none
+// @grant        GM_openInTab
 // @license      CC BY-NC-SA
 // @run-at       document-start
 // @homepageURL  https://github.com/yilecoding/helper-scripts
@@ -383,16 +383,35 @@
             return null;
         }
 
+        /**
+         * 按文档顺序收集，遇到 open shadow root 就钻进去（Web Components 做的按钮、工具栏）。
+         * closed shadow root 从外面拿不到，只能放弃。
+         */
         function candidates() {
-            return Array.from(document.querySelectorAll(CLICKABLE));
+            const out = [];
+            const walk = (root) => {
+                for (const el of root.querySelectorAll('*')) {
+                    if (el.hasAttribute(UI_ATTR)) continue;
+                    if (el.matches(CLICKABLE)) out.push(el);
+                    if (el.shadowRoot) walk(el.shadowRoot);
+                }
+            };
+            walk(document);
+            return out;
+        }
+
+        /** 能在新标签打开的地址；javascript: 链接和 SVG 里的 <a>（href 不是字符串）不算。 */
+        function linkUrl(el) {
+            if (!(el instanceof HTMLAnchorElement || el instanceof HTMLAreaElement)) return null;
+            return el.href && !/^javascript:/i.test(el.href) ? el.href : null;
         }
 
         function collect(linksOnly) {
             const out = [];
             const seen = new Set();
             for (const el of candidates()) {
-                if (el.closest('[' + UI_ATTR + ']') || isDisabled(el)) continue;
-                if (linksOnly && !el.href) continue;
+                if (isDisabled(el)) continue;
+                if (linksOnly && !linkUrl(el)) continue;
                 const st = getComputedStyle(el);
                 if (st.visibility === 'hidden' || st.visibility === 'collapse') continue;
                 const rect = visibleRect(el);
@@ -506,7 +525,7 @@
             return true;
         }
 
-        return { start, exit, onKey, get active() { return !!state; } };
+        return { start, exit, onKey, linkUrl, get active() { return !!state; } };
     })();
 
     // =========================================================================
@@ -536,6 +555,12 @@
     }
 
     function activate(el, newTab) {
+        const url = newTab && Hints.linkUrl(el);
+        if (url) {
+            // 后台打开、插在当前标签右边，和中键点链接的习惯一致
+            GM_openInTab(url, { active: false, insert: true, setParent: true });
+            return;
+        }
         if (isEditable(el)) {
             el.focus();
             return;
@@ -563,6 +588,7 @@
         { keys: 'gg', group: '滚动', desc: '滚到顶部', run: () => Scroll.to('y', 0) },
         { keys: 'G', group: '滚动', desc: '滚到底部', run: () => Scroll.to('y', Infinity) },
         { keys: 'f', group: '链接', desc: '链接提示：在当前页打开 / 点击', run: () => Hints.start(false) },
+        { keys: 'F', group: '链接', desc: '链接提示：在新标签打开', run: () => Hints.start(true) },
     ];
 
     const BINDINGS = new Map(COMMANDS.map((c) => [c.keys, c]));
