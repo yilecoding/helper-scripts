@@ -3,16 +3,20 @@
 // @name:zh-CN   键盘浏览
 // @name:en      Keyboard Nav — Vimium-style Keyboard Browsing
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.09.17.7
-// @description  Vimium 风格的轻量键盘浏览：j/k、d/u、h/l、gg/G 平滑滚动（自动找到真正在滚的区域，长按连续不卡，支持 5j 数字前缀）；f/F 链接提示（当前页 / 新标签打开，能提示到 open shadow DOM 里的按钮，最短无冲突标签，被遮挡的不出提示，输入框聚焦、其余派发真实点击）；H/L 后退前进、r 刷新、yy 复制网址、gi 聚焦输入框。焦点在输入框里、带 Ctrl/Alt/Meta 的组合键一律不拦。
-// @description:zh-CN  Vimium 风格的轻量键盘浏览：j/k、d/u、h/l、gg/G 平滑滚动（自动找到真正在滚的区域，长按连续不卡，支持 5j 数字前缀）；f/F 链接提示（当前页 / 新标签打开，能提示到 open shadow DOM 里的按钮，最短无冲突标签，被遮挡的不出提示，输入框聚焦、其余派发真实点击）；H/L 后退前进、r 刷新、yy 复制网址、gi 聚焦输入框。焦点在输入框里、带 Ctrl/Alt/Meta 的组合键一律不拦。
-// @description:en  Lightweight Vimium-style keyboard browsing: smooth j/k, d/u, h/l and gg/G scrolling that finds the area that actually scrolls (stutter-free while a key is held, count prefixes like 5j); f/F show link hints (open in place or in a new tab, reaching into open shadow DOM, shortest prefix-free labels, covered elements skipped, inputs get focus, everything else gets a real click sequence); H/L back/forward, r reload, yy copy URL, gi focus the first input. Keys typed into inputs and Ctrl/Alt/Meta combos are never intercepted.
+// @version      2025.09.18.8
+// @description  Vimium 风格的轻量键盘浏览：j/k、d/u、h/l、gg/G 平滑滚动（自动找到真正在滚的区域，长按连续不卡，支持 5j 数字前缀）；f/F 链接提示（当前页 / 新标签打开，能提示到 open shadow DOM 里的按钮，最短无冲突标签，被遮挡的不出提示，输入框聚焦、其余派发真实点击）；H/L 后退前进、r 刷新、yy 复制网址、gi 聚焦输入框。不打扰：焦点在输入框里、带 Ctrl/Alt/Meta 的组合键一律不拦，Gmail、在线文档等自带快捷键的站点默认停用（菜单按站点切换），i 进入直通模式把按键临时交给页面。
+// @description:zh-CN  Vimium 风格的轻量键盘浏览：j/k、d/u、h/l、gg/G 平滑滚动（自动找到真正在滚的区域，长按连续不卡，支持 5j 数字前缀）；f/F 链接提示（当前页 / 新标签打开，能提示到 open shadow DOM 里的按钮，最短无冲突标签，被遮挡的不出提示，输入框聚焦、其余派发真实点击）；H/L 后退前进、r 刷新、yy 复制网址、gi 聚焦输入框。不打扰：焦点在输入框里、带 Ctrl/Alt/Meta 的组合键一律不拦，Gmail、在线文档等自带快捷键的站点默认停用（菜单按站点切换），i 进入直通模式把按键临时交给页面。
+// @description:en  Lightweight Vimium-style keyboard browsing: smooth j/k, d/u, h/l and gg/G scrolling that finds the area that actually scrolls (stutter-free while a key is held, count prefixes like 5j); f/F show link hints (open in place or in a new tab, reaching into open shadow DOM, shortest prefix-free labels, covered elements skipped, inputs get focus, everything else gets a real click sequence); H/L back/forward, r reload, yy copy URL, gi focus the first input. Stays out of the way: keys typed into inputs and Ctrl/Alt/Meta combos are never intercepted, sites with their own shortcuts (Gmail, online docs) are off by default (toggle per site from the menu), and i enters pass-through mode.
 // @author       壹樂（V：ita1125）
 // @match        http://*/*
 // @match        https://*/*
 // @noframes
 // @grant        GM_openInTab
 // @grant        GM_setClipboard
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_registerMenuCommand
+// @grant        GM_unregisterMenuCommand
 // @license      CC BY-NC-SA
 // @run-at       document-start
 // @homepageURL  https://github.com/yilecoding/helper-scripts
@@ -41,7 +45,42 @@
         smooth: true,           // 平滑滚动（系统开了「减少动态效果」时自动关）
         smoothFactor: 0.25,     // 平滑滚动每 16.7ms 追上剩余距离的这么多比例
         hintChars: 'sadfjklewcmpgh',    // 链接提示标签用的字母，靠前的更常用
+        escBlurs: true,         // 焦点在输入框里时 Esc 让它失焦，回到快捷键状态
+        // 自带整套快捷键的站点默认不启用（含子域名）；菜单里可以按站点改
+        blockedSites: [
+            'mail.google.com', 'docs.google.com', 'outlook.live.com', 'outlook.office.com', 'outlook.office365.com',
+            'notion.so', 'figma.com', 'docs.qq.com', 'yuque.com', 'feishu.cn', 'larksuite.com', 'shimo.im', 'kdocs.cn',
+        ],
     };
+
+    // =========================================================================
+    // 站点开关（GM 存储）
+    // =========================================================================
+
+    /**
+     * 只存「和默认不一样」的站点：sites[host] = 'on' | 'off'。
+     * 切回默认状态时删掉这条，这样以后默认黑名单增删站点，没手动改过的站点能跟着变。
+     */
+    const Sites = (() => {
+        const host = location.hostname;
+        const blockedByDefault = CONFIG.blockedSites.some((d) => host === d || host.endsWith('.' + d));
+
+        function enabled() {
+            const v = GM_getValue('sites', {})[host];
+            return v ? v === 'on' : !blockedByDefault;
+        }
+
+        function toggle() {
+            const sites = GM_getValue('sites', {});
+            const next = !enabled();
+            if (next === !blockedByDefault) delete sites[host];
+            else sites[host] = next ? 'on' : 'off';
+            GM_setValue('sites', sites);
+            return next;
+        }
+
+        return { host, enabled, toggle };
+    })();
 
     // =========================================================================
     // 焦点判断
@@ -306,29 +345,54 @@
         return root;
     }
 
-    /** 右下角的小提示条（「已复制」之类），过几秒自己消失。 */
-    const Toast = (() => {
+    /**
+     * 右下角状态区：上面是一闪而过的提示（「已复制」），下面是模式指示（直通 / 链接提示 / 已按下的前缀键）。
+     * 平时什么都不显示 —— 普通模式不需要提醒。
+     */
+    const Status = (() => {
         let root = null;
         let timer = 0;
         const CSS = `
-            .toast {
-                position: fixed; right: 16px; bottom: 16px; max-width: 60vw; padding: 6px 12px;
-                border-radius: 6px; background: rgba(32, 33, 36, .92); color: #fff;
-                font: 13px/1.5 system-ui, sans-serif; box-shadow: 0 2px 8px rgba(0, 0, 0, .3);
+            .wrap {
+                position: fixed; right: 16px; bottom: 16px; display: flex; flex-direction: column;
+                align-items: flex-end; gap: 6px; font: 13px/1.5 system-ui, sans-serif;
+            }
+            .toast, .mode {
+                max-width: 60vw; padding: 4px 10px; border-radius: 6px; box-shadow: 0 2px 8px rgba(0, 0, 0, .3);
                 overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
             }
+            .toast { background: rgba(32, 33, 36, .92); color: #fff; }
+            .mode { background: #fff7c4; color: #302505; border: 1px solid #c38a22; opacity: .92; }
+            [hidden] { display: none; }
         `;
-        function show(text, ms = 2000) {
-            if (!root || !root.host.isConnected) root = createLayer('kbnav-toast', CSS);
-            root.querySelector('.toast')?.remove();
-            const el = document.createElement('div');
-            el.className = 'toast';
-            el.textContent = text;
-            root.appendChild(el);
-            clearTimeout(timer);
-            timer = setTimeout(() => el.remove(), ms);
+
+        function ensure() {
+            if (root && root.host.isConnected) return root;
+            root = createLayer('kbnav-status', CSS);
+            const wrap = document.createElement('div');
+            wrap.className = 'wrap';
+            wrap.innerHTML = '<div class="toast" hidden></div><div class="mode" hidden></div>';
+            root.appendChild(wrap);
+            return root;
         }
-        return { show };
+
+        function toast(text, ms = 2000) {
+            const el = ensure().querySelector('.toast');
+            el.textContent = text;
+            el.hidden = false;
+            clearTimeout(timer);
+            timer = setTimeout(() => { el.hidden = true; }, ms);
+        }
+
+        function mode(text) {
+            // 不需要显示时也别为了「隐藏」去创建浮层
+            if (!text && !root) return;
+            const el = ensure().querySelector('.mode');
+            el.textContent = text || '';
+            el.hidden = !text;
+        }
+
+        return { toast, mode };
     })();
 
     // =========================================================================
@@ -462,7 +526,10 @@
         function start(newTab) {
             exit();
             const found = collect(newTab);
-            if (!found.length) return;
+            if (!found.length) {
+                Status.toast(newTab ? '视口里没有可打开的链接' : '视口里没有可点击的元素');
+                return;
+            }
             const labels = hintLabels(found.length, CONFIG.hintChars);
             const root = createLayer('kbnav-hints', CSS);
             const hints = found.map(({ el, rect }, i) => {
@@ -476,6 +543,7 @@
             });
             state = { newTab, hints, typed: '', root };
             render();
+            updateIndicator();
             window.addEventListener('scroll', onScroll, true);
             window.addEventListener('resize', exit, true);
             window.addEventListener('blur', exit, true);
@@ -486,6 +554,7 @@
             if (!state) return;
             state.root.host.remove();
             state = null;
+            updateIndicator();
             window.removeEventListener('scroll', onScroll, true);
             window.removeEventListener('resize', exit, true);
             window.removeEventListener('blur', exit, true);
@@ -617,7 +686,7 @@
 
     function focusInput(n) {
         const list = textInputs();
-        if (!list.length) return Toast.show('页面上没有输入框');
+        if (!list.length) return Status.toast('页面上没有输入框');
         const el = list[Math.min(n, list.length) - 1];
         el.focus();
         // 把光标放到末尾，接着已有内容往下打
@@ -654,11 +723,12 @@
         { keys: 'L', group: '页面', desc: '前进', run: (n) => history.go(n) },
         { keys: 'r', group: '页面', desc: '刷新', run: () => location.reload() },
         { keys: 'yy', group: '页面', desc: '复制当前网址', run: copyUrl },
+        { keys: 'i', group: '模式', desc: '直通模式：所有按键交给页面，Esc 退出', run: () => setPass(true) },
     ];
 
     function copyUrl() {
         GM_setClipboard(location.href, 'text');
-        Toast.show('已复制：' + location.href);
+        Status.toast('已复制：' + location.href);
     }
 
     const BINDINGS = new Map(COMMANDS.map((c) => [c.keys, c]));
@@ -690,7 +760,10 @@
 
         function arm() {
             clearTimeout(timer);
-            timer = setTimeout(reset, CONFIG.sequenceTimeout);
+            timer = setTimeout(() => {
+                reset();
+                updateIndicator();
+            }, CONFIG.sequenceTimeout);
         }
 
         /**
@@ -736,7 +809,7 @@
             return cmd || PREFIXES.has(key) ? 'wait' : null;
         }
 
-        return { feed, feedRepeat, reset };
+        return { feed, feedRepeat, reset, get display() { return count + pending; } };
     })();
 
     /**
@@ -745,22 +818,71 @@
      */
     const swallowed = new Set();
 
+    // =========================================================================
+    // 模式
+    // =========================================================================
+
+    let passMode = false;   // 直通模式：除 Esc 外所有键交给页面
+
+    function setPass(on) {
+        passMode = on;
+        Keys.reset();
+        updateIndicator();
+    }
+
+    function updateIndicator() {
+        let text = '';
+        if (!enabled) text = '';
+        else if (passMode) text = '直通模式 · Esc 退出';
+        else if (Hints.active) text = '链接提示 · Esc 退出';
+        else if (Keys.display) text = Keys.display;
+        Status.mode(text);
+    }
+
     function onKeyDown(e) {
         // 输入法组字中（中文输入法下按 j 是在打拼音）
         if (e.isComposing || e.keyCode === 229) return;
+        if (!enabled) return;
         if (Hints.active) {
             if (Hints.onKey(e)) consume(e);
             return;
         }
-        if (e.ctrlKey || e.altKey || e.metaKey) return Keys.reset();
+        const plainEsc = e.key === 'Escape' && !e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey;
+        if (passMode) {
+            if (plainEsc) {
+                setPass(false);
+                consume(e);
+            }
+            return;
+        }
+        if (e.ctrlKey || e.altKey || e.metaKey) return resetKeys();
         // keydown 的 target 被 shadow DOM 重定向成 host，composedPath()[0] 才是真正的输入框
         const target = (e.composedPath && e.composedPath()[0]) || e.target;
-        if (isEditable(target) || isEditable(deepActiveElement())) return Keys.reset();
+        const active = deepActiveElement();
+        if (isEditable(target) || isEditable(active)) {
+            // 只让它失焦，不拦 Esc：输入框里的 Esc 往往还有站点自己的用途（关下拉、关弹窗）
+            if (plainEsc && CONFIG.escBlurs) (isEditable(target) ? target : active).blur();
+            return resetKeys();
+        }
+        if (plainEsc) {
+            // 有前缀没按完时 Esc 只取消前缀；否则 Esc 是页面的
+            if (Keys.display) {
+                resetKeys();
+                consume(e);
+            }
+            return;
+        }
 
         const result = e.repeat ? Keys.feedRepeat(e.key) : Keys.feed(e.key);
+        updateIndicator();
         // 数字前缀记下但不拦：YouTube 这类站点的数字键照常生效
         if (!result || result === 'count') return;
         consume(e);
+    }
+
+    function resetKeys() {
+        Keys.reset();
+        updateIndicator();
     }
 
     function consume(e) {
@@ -775,6 +897,26 @@
         e.preventDefault();
         e.stopImmediatePropagation();
     }
+
+    // =========================================================================
+    // 菜单 & 启动
+    // =========================================================================
+
+    let enabled = Sites.enabled();
+    let menuId = null;
+
+    function registerMenu() {
+        if (menuId !== null) GM_unregisterMenuCommand(menuId);
+        menuId = GM_registerMenuCommand(enabled ? '在本站停用键盘浏览' : '在本站启用键盘浏览', () => {
+            enabled = Sites.toggle();
+            Hints.exit();
+            setPass(false);
+            Status.toast(enabled ? '键盘浏览：已在 ' + Sites.host + ' 启用' : '键盘浏览：已在 ' + Sites.host + ' 停用');
+            registerMenu();
+        });
+    }
+
+    registerMenu();
 
     window.addEventListener('keypress', onKeyPressOrUp, true);
     window.addEventListener('keyup', onKeyPressOrUp, true);

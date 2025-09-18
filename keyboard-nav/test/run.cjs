@@ -103,6 +103,15 @@ async function hintForPath(page, path) {
     return hit ? hit.label : null
 }
 
+/** 右下角状态区的文字（.toast 或 .mode），没显示时为 null。 */
+function statusText(page, sel) {
+    return page.evaluate((sel) => {
+        const host = document.getElementById('kbnav-status')
+        const el = host && host.shadowRoot.querySelector(sel)
+        return el && !el.hidden ? el.textContent : null
+    }, sel)
+}
+
 async function typeLabel(page, label) {
     for (const c of label) await page.keyboard.press(c)
 }
@@ -430,8 +439,8 @@ async function main() {
         const page = await open(browser, 'long.html')
         await press(page, ['y', 'y'])
         t.eq((await h.gm(page)).clipboard, { text: SITE + '/long.html', type: 'text' })
-        const toast = await page.evaluate(() => document.getElementById('kbnav-toast').shadowRoot.querySelector('.toast').textContent)
-        t.assert(toast.includes('已复制'), toast)
+        const toast = await statusText(page, '.toast')
+        t.assert(toast && toast.includes('已复制'), toast)
         await page.close()
     })
 
@@ -446,6 +455,90 @@ async function main() {
         await page.evaluate(() => { window.__marker = 1 })
         await Promise.all([page.waitForEvent('load'), press(page, ['r'])])
         t.eq(await page.evaluate(() => window.__marker), undefined, '刷新后页面上的变量没了')
+        await page.close()
+    })
+
+    await t.test('输入框里按 Esc 失焦，之后 j 恢复滚动', async () => {
+        const page = await open(browser, 'long.html')
+        await page.focus('#q')
+        await press(page, ['Escape', 'j'])
+        t.eq(await page.evaluate(() => document.activeElement === document.body), true)
+        t.eq((await waitScrollIdle(page)).y, STEP)
+        t.eq(await page.inputValue('#q'), '')
+        await page.close()
+    })
+
+    await t.test('右下角模式指示：前缀键、链接提示；普通状态不显示', async () => {
+        const page = await open(browser, 'long.html')
+        t.eq(await statusText(page, '.mode'), null)
+        await press(page, ['5', 'g'])
+        t.eq(await statusText(page, '.mode'), '5g')
+        await press(page, ['Escape'])
+        t.eq(await statusText(page, '.mode'), null, 'Esc 取消前缀')
+        await press(page, ['j'])
+        t.eq((await waitScrollIdle(page)).y, STEP, 'Esc 取消后数字前缀不残留')
+        // 视口里什么可点的都没有（输入框滚出去了）：给个提示，不进提示模式
+        await press(page, ['f'])
+        t.eq(await statusText(page, '.mode'), null)
+        t.eq(await statusText(page, '.toast'), '视口里没有可点击的元素')
+        await press(page, ['j'])
+        t.eq((await waitScrollIdle(page)).y, STEP * 2)
+        await page.close()
+
+        const hp = await open(browser, 'hints.html')
+        await press(hp, ['f'])
+        t.assert((await statusText(hp, '.mode')).includes('链接提示'))
+        await press(hp, ['Escape'])
+        t.eq(await statusText(hp, '.mode'), null)
+        await hp.close()
+    })
+
+    await t.test('i 直通模式：按键全部交给页面（j 不滚、f 不出提示），Esc 退出后恢复', async () => {
+        const page = await open(browser, 'long.html')
+        await press(page, ['i'])
+        t.assert((await statusText(page, '.mode')).includes('直通'))
+        await press(page, ['j', 'f', 'g', 'g'])
+        t.eq((await waitScrollIdle(page)).y, 0)
+        t.eq(await hints(page), [])
+        const keys = (await page.evaluate(() => window.__pageKeys)).map((k) => k.key)
+        t.eq(keys.slice(-4), ['j', 'f', 'g', 'g'], '页面收到了直通的按键')
+        await press(page, ['Escape'])
+        t.eq(await statusText(page, '.mode'), null)
+        t.eq((await page.evaluate(() => window.__pageKeys)).slice(-1)[0].key, 'g', '退出直通的 Esc 被脚本吃掉')
+        await press(page, ['j'])
+        t.eq((await waitScrollIdle(page)).y, STEP)
+        await page.close()
+    })
+
+    await t.test('黑名单站点（mail.google.com）默认不响应，菜单「在本站启用」后响应', async () => {
+        const page = await open(browser, 'long.html', { site: 'https://mail.google.com' })
+        await press(page, ['j', 'f'])
+        t.eq((await waitScrollIdle(page)).y, 0)
+        t.eq(await hints(page), [])
+        const keys = await page.evaluate(() => window.__pageKeys)
+        t.eq(keys.map((k) => [k.key, k.prevented]), [['j', false], ['f', false]])
+        t.eq((await h.gm(page)).menu, ['在本站启用键盘浏览'])
+        await h.menu(page, '在本站启用')
+        await press(page, ['j'])
+        t.eq((await waitScrollIdle(page)).y, STEP)
+        t.eq((await h.gm(page)).menu, ['在本站停用键盘浏览'])
+        await page.close()
+    })
+
+    await t.test('普通站点菜单「在本站停用」：立即生效、刷新后仍停用；再启用恢复默认（删掉覆盖项）', async () => {
+        const page = await open(browser, 'long.html')
+        await h.menu(page, '在本站停用')
+        await press(page, ['j'])
+        t.eq((await waitScrollIdle(page)).y, 0)
+        t.eq(await page.evaluate(() => JSON.parse(localStorage.getItem('__gm:sites'))), { 'example.com': 'off' })
+        await page.reload()
+        await page.waitForLoadState('load')
+        await press(page, ['j'])
+        t.eq((await waitScrollIdle(page)).y, 0, '刷新后仍停用')
+        await h.menu(page, '在本站启用')
+        t.eq(await page.evaluate(() => JSON.parse(localStorage.getItem('__gm:sites'))), {})
+        await press(page, ['j'])
+        t.eq((await waitScrollIdle(page)).y, STEP)
         await page.close()
     })
 
