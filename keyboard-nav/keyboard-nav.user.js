@@ -3,10 +3,10 @@
 // @name:zh-CN   键盘浏览
 // @name:en      Keyboard Nav — Vimium-style Keyboard Browsing
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.09.18.8
-// @description  Vimium 风格的轻量键盘浏览：j/k、d/u、h/l、gg/G 平滑滚动（自动找到真正在滚的区域，长按连续不卡，支持 5j 数字前缀）；f/F 链接提示（当前页 / 新标签打开，能提示到 open shadow DOM 里的按钮，最短无冲突标签，被遮挡的不出提示，输入框聚焦、其余派发真实点击）；H/L 后退前进、r 刷新、yy 复制网址、gi 聚焦输入框。不打扰：焦点在输入框里、带 Ctrl/Alt/Meta 的组合键一律不拦，Gmail、在线文档等自带快捷键的站点默认停用（菜单按站点切换），i 进入直通模式把按键临时交给页面。
-// @description:zh-CN  Vimium 风格的轻量键盘浏览：j/k、d/u、h/l、gg/G 平滑滚动（自动找到真正在滚的区域，长按连续不卡，支持 5j 数字前缀）；f/F 链接提示（当前页 / 新标签打开，能提示到 open shadow DOM 里的按钮，最短无冲突标签，被遮挡的不出提示，输入框聚焦、其余派发真实点击）；H/L 后退前进、r 刷新、yy 复制网址、gi 聚焦输入框。不打扰：焦点在输入框里、带 Ctrl/Alt/Meta 的组合键一律不拦，Gmail、在线文档等自带快捷键的站点默认停用（菜单按站点切换），i 进入直通模式把按键临时交给页面。
-// @description:en  Lightweight Vimium-style keyboard browsing: smooth j/k, d/u, h/l and gg/G scrolling that finds the area that actually scrolls (stutter-free while a key is held, count prefixes like 5j); f/F show link hints (open in place or in a new tab, reaching into open shadow DOM, shortest prefix-free labels, covered elements skipped, inputs get focus, everything else gets a real click sequence); H/L back/forward, r reload, yy copy URL, gi focus the first input. Stays out of the way: keys typed into inputs and Ctrl/Alt/Meta combos are never intercepted, sites with their own shortcuts (Gmail, online docs) are off by default (toggle per site from the menu), and i enters pass-through mode.
+// @version      2025.09.18.9
+// @description  Vimium 风格的轻量键盘浏览：j/k、d/u、h/l、gg/G 平滑滚动（自动找到真正在滚的区域，长按连续不卡，支持 5j 数字前缀）；f/F 链接提示（当前页 / 新标签打开，能提示到 open shadow DOM 里的按钮，最短无冲突标签，被遮挡的不出提示，输入框聚焦、其余派发真实点击）；H/L 后退前进、r 刷新、yy 复制网址、gi 聚焦输入框。不打扰：焦点在输入框里、带 Ctrl/Alt/Meta 的组合键一律不拦，Gmail、在线文档等自带快捷键的站点默认停用（菜单按站点切换），i 进入直通模式把按键临时交给页面。? 显示全部快捷键。
+// @description:zh-CN  Vimium 风格的轻量键盘浏览：j/k、d/u、h/l、gg/G 平滑滚动（自动找到真正在滚的区域，长按连续不卡，支持 5j 数字前缀）；f/F 链接提示（当前页 / 新标签打开，能提示到 open shadow DOM 里的按钮，最短无冲突标签，被遮挡的不出提示，输入框聚焦、其余派发真实点击）；H/L 后退前进、r 刷新、yy 复制网址、gi 聚焦输入框。不打扰：焦点在输入框里、带 Ctrl/Alt/Meta 的组合键一律不拦，Gmail、在线文档等自带快捷键的站点默认停用（菜单按站点切换），i 进入直通模式把按键临时交给页面。? 显示全部快捷键。
+// @description:en  Lightweight Vimium-style keyboard browsing: smooth j/k, d/u, h/l and gg/G scrolling that finds the area that actually scrolls (stutter-free while a key is held, count prefixes like 5j); f/F show link hints (open in place or in a new tab, reaching into open shadow DOM, shortest prefix-free labels, covered elements skipped, inputs get focus, everything else gets a real click sequence); H/L back/forward, r reload, yy copy URL, gi focus the first input. Stays out of the way: keys typed into inputs and Ctrl/Alt/Meta combos are never intercepted, sites with their own shortcuts (Gmail, online docs) are off by default (toggle per site from the menu), and i enters pass-through mode. Press ? for the full key list.
 // @author       壹樂（V：ita1125）
 // @match        http://*/*
 // @match        https://*/*
@@ -724,6 +724,7 @@
         { keys: 'r', group: '页面', desc: '刷新', run: () => location.reload() },
         { keys: 'yy', group: '页面', desc: '复制当前网址', run: copyUrl },
         { keys: 'i', group: '模式', desc: '直通模式：所有按键交给页面，Esc 退出', run: () => setPass(true) },
+        { keys: '?', group: '模式', desc: '显示 / 关闭这份帮助', run: () => Help.toggle() },
     ];
 
     function copyUrl() {
@@ -819,6 +820,99 @@
     const swallowed = new Set();
 
     // =========================================================================
+    // 帮助浮层：直接从命令表生成，加命令不用再改这里
+    // =========================================================================
+
+    const Help = (() => {
+        const CSS = `
+            .backdrop {
+                position: fixed; inset: 0; pointer-events: auto; background: rgba(0, 0, 0, .35);
+                display: flex; align-items: center; justify-content: center;
+            }
+            .panel {
+                width: min(720px, 92vw); box-sizing: border-box; max-height: 86vh; overflow: auto; padding: 18px 22px;
+                background: #fff; color: #202124; border-radius: 10px; box-shadow: 0 8px 32px rgba(0, 0, 0, .35);
+                font: 14px/1.6 system-ui, sans-serif;
+            }
+            h1 { font-size: 16px; margin: 0 0 10px; }
+            .groups { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 4px 28px; }
+            h2 { font-size: 13px; color: #5f6368; margin: 10px 0 4px; font-weight: 600; }
+            .row { display: flex; gap: 10px; align-items: baseline; padding: 1px 0; }
+            kbd {
+                min-width: 28px; text-align: center; padding: 0 5px; border: 1px solid #c8c8c8; border-bottom-width: 2px;
+                border-radius: 4px; background: #f6f6f6; font: 12px/1.6 ui-monospace, Menlo, Consolas, monospace;
+            }
+            .foot { margin-top: 12px; color: #5f6368; font-size: 12px; }
+        `;
+
+        /** 不在命令表里、但用户需要知道的按键。 */
+        const EXTRA = [
+            { keys: '5j', group: '模式', desc: '数字前缀：重复 / 第 n 个（5j、3gi、2H）' },
+            { keys: 'Esc', group: '模式', desc: '取消前缀键 / 关闭提示 / 输入框失焦' },
+        ];
+
+        let root = null;
+
+        function open() {
+            if (root) return;
+            root = createLayer('kbnav-help', CSS);
+            const backdrop = document.createElement('div');
+            backdrop.className = 'backdrop';
+            const panel = document.createElement('div');
+            panel.className = 'panel';
+            const title = document.createElement('h1');
+            title.textContent = '键盘浏览 · 快捷键';
+            const groups = document.createElement('div');
+            groups.className = 'groups';
+            const all = COMMANDS.concat(EXTRA);
+            for (const name of [...new Set(all.map((c) => c.group))]) {
+                const box = document.createElement('div');
+                const h2 = document.createElement('h2');
+                h2.textContent = name;
+                box.appendChild(h2);
+                for (const c of all.filter((x) => x.group === name)) {
+                    const row = document.createElement('div');
+                    row.className = 'row';
+                    const kbd = document.createElement('kbd');
+                    kbd.textContent = c.keys;
+                    const desc = document.createElement('span');
+                    desc.textContent = c.desc;
+                    row.append(kbd, desc);
+                    box.appendChild(row);
+                }
+                groups.appendChild(box);
+            }
+            const foot = document.createElement('div');
+            foot.className = 'foot';
+            foot.textContent = '焦点在输入框里、带 Ctrl / Alt / Meta 的组合键不拦截。页内查找请用浏览器自带的 Ctrl+F。';
+            panel.append(title, groups, foot);
+            backdrop.appendChild(panel);
+            backdrop.addEventListener('mousedown', (e) => { if (e.target === backdrop) close(); });
+            root.appendChild(backdrop);
+        }
+
+        function close() {
+            if (!root) return;
+            root.host.remove();
+            root = null;
+        }
+
+        function toggle() {
+            if (root) close();
+            else open();
+        }
+
+        /** 帮助开着时：Esc / ? / q 关闭，其余按键吃掉（别让页面在浮层背后动）。 */
+        function onKey(e) {
+            if (e.ctrlKey || e.altKey || e.metaKey) return false;
+            if (e.key === 'Escape' || e.key === '?' || e.key === 'q') close();
+            return true;
+        }
+
+        return { toggle, close, onKey, get open() { return !!root; } };
+    })();
+
+    // =========================================================================
     // 模式
     // =========================================================================
 
@@ -845,6 +939,10 @@
         if (!enabled) return;
         if (Hints.active) {
             if (Hints.onKey(e)) consume(e);
+            return;
+        }
+        if (Help.open) {
+            if (Help.onKey(e)) consume(e);
             return;
         }
         const plainEsc = e.key === 'Escape' && !e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey;
@@ -910,6 +1008,7 @@
         menuId = GM_registerMenuCommand(enabled ? '在本站停用键盘浏览' : '在本站启用键盘浏览', () => {
             enabled = Sites.toggle();
             Hints.exit();
+            Help.close();
             setPass(false);
             Status.toast(enabled ? '键盘浏览：已在 ' + Sites.host + ' 启用' : '键盘浏览：已在 ' + Sites.host + ' 停用');
             registerMenu();

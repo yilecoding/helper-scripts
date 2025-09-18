@@ -542,6 +542,31 @@ async function main() {
         await page.close()
     })
 
+    await t.test('? 帮助浮层：列出命令表里的每个按键；开着时 j 不滚页面；Esc / ? / 点背景关闭', async () => {
+        const page = await open(browser, 'long.html')
+        await press(page, ['Shift+?'])
+        const keys = await page.evaluate(() => {
+            const host = document.getElementById('kbnav-help')
+            return host ? Array.from(host.shadowRoot.querySelectorAll('kbd')).map((k) => k.textContent) : null
+        })
+        for (const k of ['j', 'k', 'h', 'l', 'd', 'u', 'gg', 'G', 'f', 'F', 'gi', 'H', 'L', 'r', 'yy', 'i', '?', '5j', 'Esc']) {
+            t.assert(keys && keys.includes(k), `帮助里缺 ${k}: ${keys}`)
+        }
+        await press(page, ['j'])
+        t.eq((await waitScrollIdle(page)).y, 0)
+        await press(page, ['Escape'])
+        t.eq(await page.evaluate(() => !!document.getElementById('kbnav-help')), false)
+        await press(page, ['Shift+?'])
+        await press(page, ['Shift+?'])
+        t.eq(await page.evaluate(() => !!document.getElementById('kbnav-help')), false, '再按 ? 关闭')
+        await press(page, ['Shift+?'])
+        await page.mouse.click(5, 5)
+        t.eq(await page.evaluate(() => !!document.getElementById('kbnav-help')), false, '点背景关闭')
+        await press(page, ['j'])
+        t.eq((await waitScrollIdle(page)).y, STEP)
+        await page.close()
+    })
+
     await close()
     t.done()
 }
