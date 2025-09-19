@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>页面底部有个能滚的代码块</title>
+<style>
+    body { margin: 0; font: 14px/1.6 sans-serif; }
+    .block { height: 400px; border-bottom: 1px solid #ccc; }
+    pre { height: 600px; overflow: auto; margin: 0; background: #f6f8fa; }
+</style>
+</head>
+<body>
+<div id="blocks"></div>
+<pre id="code"></pre>
+<script>
+    for (let i = 1; i <= 6; i++) {
+        const d = document.createElement('div')
+        d.className = 'block'
+        document.getElementById('blocks').appendChild(d)
+    }
+    document.getElementById('code').textContent = Array.from({ length: 200 }, (_, i) => 'line ' + i).join('\n')
+</script>
+</body>
+</html>

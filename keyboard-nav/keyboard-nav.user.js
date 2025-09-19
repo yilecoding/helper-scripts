@@ -3,7 +3,7 @@
 // @name:zh-CN   键盘浏览
 // @name:en      Keyboard Nav — Vimium-style Keyboard Browsing
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.09.18.9
+// @version      2025.09.19.10
 // @description  Vimium 风格的轻量键盘浏览：j/k、d/u、h/l、gg/G 平滑滚动（自动找到真正在滚的区域，长按连续不卡，支持 5j 数字前缀）；f/F 链接提示（当前页 / 新标签打开，能提示到 open shadow DOM 里的按钮，最短无冲突标签，被遮挡的不出提示，输入框聚焦、其余派发真实点击）；H/L 后退前进、r 刷新、yy 复制网址、gi 聚焦输入框。不打扰：焦点在输入框里、带 Ctrl/Alt/Meta 的组合键一律不拦，Gmail、在线文档等自带快捷键的站点默认停用（菜单按站点切换），i 进入直通模式把按键临时交给页面。? 显示全部快捷键。
 // @description:zh-CN  Vimium 风格的轻量键盘浏览：j/k、d/u、h/l、gg/G 平滑滚动（自动找到真正在滚的区域，长按连续不卡，支持 5j 数字前缀）；f/F 链接提示（当前页 / 新标签打开，能提示到 open shadow DOM 里的按钮，最短无冲突标签，被遮挡的不出提示，输入框聚焦、其余派发真实点击）；H/L 后退前进、r 刷新、yy 复制网址、gi 聚焦输入框。不打扰：焦点在输入框里、带 Ctrl/Alt/Meta 的组合键一律不拦，Gmail、在线文档等自带快捷键的站点默认停用（菜单按站点切换），i 进入直通模式把按键临时交给页面。? 显示全部快捷键。
 // @description:en  Lightweight Vimium-style keyboard browsing: smooth j/k, d/u, h/l and gg/G scrolling that finds the area that actually scrolls (stutter-free while a key is held, count prefixes like 5j); f/F show link hints (open in place or in a new tab, reaching into open shadow DOM, shortest prefix-free labels, covered elements skipped, inputs get focus, everything else gets a real click sequence); H/L back/forward, r reload, yy copy URL, gi focus the first input. Stays out of the way: keys typed into inputs and Ctrl/Alt/Meta combos are never intercepted, sites with their own shortcuts (Gmail, online docs) are off by default (toggle per site from the menu), and i enters pass-through mode. Press ? for the full key list.
@@ -140,6 +140,9 @@
 
         function scrollable(el, axis) {
             if (el === root()) return rootScrollable(axis);
+            // html 是 visible 时 body 的 overflow 已经传给了视口，body 本身不是滚动容器（设它的 scrollTop 没用）；
+            // 只有 html 自己设了 overflow（常见于 html, body { height: 100% } 的写法）body 才是独立的滚动容器
+            if (el === document.body && getComputedStyle(document.documentElement)[prop(axis)] === 'visible') return false;
             const room = axis === 'y' ? el.scrollHeight - el.clientHeight : el.scrollWidth - el.clientWidth;
             if (room < 1) return false;
             const v = getComputedStyle(el)[prop(axis)];
@@ -179,7 +182,7 @@
         function ancestors(el, axis) {
             const out = [];
             for (let n = el; n; n = parentOf(n)) {
-                if (n === document.documentElement || n === document.body) continue;
+                if (n === document.documentElement || n === root()) continue;
                 if (scrollable(n, axis)) out.push(n);
             }
             if (rootScrollable(axis)) out.push(root());
@@ -304,10 +307,12 @@
             if (el) animateTo(el, axis, clamp(el, axis, p));
         }
 
-        /** delta 可以是函数：拿到滚动容器后再算（半屏要知道容器多高）。 */
-        function by(axis, delta) {
-            const probe = typeof delta === 'function' ? 1 : Math.sign(delta) || 1;
-            const el = target(axis, probe);
+        /**
+         * delta 可以是函数：拿到滚动容器后再算（半屏要知道容器多高）。
+         * 这时方向要单独传 —— 选容器时要的是「还能往这个方向滚」的那个，方向错了 u 会选中一个只能往下滚的容器。
+         */
+        function by(axis, delta, dir) {
+            const el = target(axis, dir || Math.sign(delta) || 1);
             if (!el) return;
             const d = typeof delta === 'function' ? delta(el) : delta;
             animateTo(el, axis, clamp(el, axis, basePos(el, axis) + d));
@@ -500,7 +505,8 @@
             const out = [];
             const seen = new Set();
             for (const el of candidates()) {
-                if (isDisabled(el)) continue;
+                // <body onclick> 之类的全局委托：整页都「可点」，提示出在左上角毫无意义
+                if (el === document.body || el === document.documentElement || isDisabled(el)) continue;
                 if (linksOnly && !linkUrl(el)) continue;
                 const st = getComputedStyle(el);
                 if (st.visibility === 'hidden' || st.visibility === 'collapse') continue;
@@ -702,6 +708,7 @@
     // =========================================================================
 
     const half = (sign, n) => (el) => sign * n * Math.round(Scroll.viewSize(el, 'y') / 2);
+    const scrollHalf = (sign, n) => Scroll.by('y', half(sign, n), sign);
 
     /**
      * 命令表。keys 是按键序列（区分大小写，Shift+g 就是 G）；run 收到数字前缀（没有时为 1）；
@@ -712,8 +719,8 @@
         { keys: 'k', group: '滚动', desc: '向上滚动', repeat: true, run: (n) => Scroll.by('y', -n * CONFIG.scrollStep) },
         { keys: 'h', group: '滚动', desc: '向左滚动', repeat: true, run: (n) => Scroll.by('x', -n * CONFIG.scrollStep) },
         { keys: 'l', group: '滚动', desc: '向右滚动', repeat: true, run: (n) => Scroll.by('x', n * CONFIG.scrollStep) },
-        { keys: 'd', group: '滚动', desc: '向下半屏', repeat: true, run: (n) => Scroll.by('y', half(1, n)) },
-        { keys: 'u', group: '滚动', desc: '向上半屏', repeat: true, run: (n) => Scroll.by('y', half(-1, n)) },
+        { keys: 'd', group: '滚动', desc: '向下半屏', repeat: true, run: (n) => scrollHalf(1, n) },
+        { keys: 'u', group: '滚动', desc: '向上半屏', repeat: true, run: (n) => scrollHalf(-1, n) },
         { keys: 'gg', group: '滚动', desc: '滚到顶部', run: () => Scroll.to('y', 0) },
         { keys: 'G', group: '滚动', desc: '滚到底部', run: () => Scroll.to('y', Infinity) },
         { keys: 'f', group: '链接', desc: '链接提示：在当前页打开 / 点击', run: () => Hints.start(false) },

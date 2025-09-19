@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>body 自己是滚动容器</title>
+<style>
+    /* 一些站点的写法：html 定高 + overflow 非 visible，body 的 overflow 就不传给视口，body 自己滚 */
+    html { height: 100%; overflow: hidden; }
+    body { height: 100%; overflow: auto; margin: 0; font: 14px/1.6 sans-serif; }
+    .block { height: 400px; border-bottom: 1px solid #ccc; }
+</style>
+</head>
+<body>
+<script>
+    for (let i = 1; i <= 20; i++) {
+        const d = document.createElement('div')
+        d.className = 'block'
+        d.textContent = '第 ' + i + ' 块'
+        document.body.appendChild(d)
+    }
+</script>
+</body>
+</html>

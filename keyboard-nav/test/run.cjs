@@ -567,6 +567,59 @@ async function main() {
         await page.close()
     })
 
+    await t.test('边界：html 定高 + overflow:hidden、body 自己滚的页面，j/G 滚 body', async () => {
+        const page = await open(browser, 'body-scroll.html')
+        await press(page, ['j'])
+        t.eq((await waitScrollIdle(page, 'body')).y, STEP)
+        await press(page, ['Shift+G'])
+        const max = await page.evaluate(() => document.body.scrollHeight - document.body.clientHeight)
+        t.eq((await waitScrollIdle(page, 'body')).y, max)
+        await page.close()
+    })
+
+    await t.test('边界：页面到底时视口中央是个能往下滚的代码块，u 仍然往上滚页面', async () => {
+        const page = await open(browser, 'code.html')
+        await press(page, ['Shift+G'])
+        const max = await page.evaluate(() => document.documentElement.scrollHeight - innerHeight)
+        t.eq((await waitScrollIdle(page)).y, max)
+        await press(page, ['u'])
+        t.eq((await waitScrollIdle(page)).y, max - 350)
+        t.eq((await scrollPos(page, '#code')).y, 0)
+        // 回到底部后 j：页面滚不动了，代码块还能滚，交给代码块
+        await press(page, ['Shift+G'])
+        await waitScrollIdle(page)
+        await press(page, ['j'])
+        t.eq((await waitScrollIdle(page, '#code')).y, STEP)
+        await page.close()
+    })
+
+    await t.test('边界：内部列表滚过之后，被固定顶栏盖住、被容器裁掉的条目不出提示；body 上的 onclick 不出提示', async () => {
+        const page = await open(browser, 'edge.html')
+        await page.evaluate(() => { document.getElementById('list').scrollTop = 45 })
+        await press(page, ['f'])
+        const labels = await hintsFor(page, '#list a')
+        // 列表可视区 50~350，scrollTop=45：条目 1 完全在顶栏下面（被裁掉），条目 2 只露出下半截
+        t.eq(labels[0], null, '条目 1 被裁掉')
+        t.assert(labels[1], '条目 2 露出一半，应有提示')
+        t.eq(labels.slice(12), labels.slice(12).map(() => null), '列表可视区以下的条目没有提示')
+        const all = await hints(page)
+        t.assert(!all.some((x) => x.left === 0 && x.top === 0), 'body[onclick] 不该在左上角出一个提示')
+        await page.close()
+    })
+
+    await t.test('边界：焦点在 shadow DOM 里的输入框 / contenteditable 里，j 是打字不是滚动', async () => {
+        const page = await open(browser, 'edge.html')
+        await page.locator('#field input').focus()
+        await press(page, ['j'])
+        t.eq((await waitScrollIdle(page)).y, 0)
+        t.eq(await page.locator('#field input').inputValue(), 'j')
+        await page.focus('#editor')
+        await press(page, ['k'])
+        t.eq((await waitScrollIdle(page)).y, 0)
+        t.assert((await page.textContent('#editor')).includes('k'))
+        await page.close()
+    })
+
     await close()
     t.done()
 }
