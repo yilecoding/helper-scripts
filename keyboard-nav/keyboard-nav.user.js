@@ -3,7 +3,7 @@
 // @name:zh-CN   键盘浏览
 // @name:en      Keyboard Nav — Vimium-style Keyboard Browsing
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.09.19.10
+// @version      2025.09.22.11
 // @description  Vimium 风格的轻量键盘浏览：j/k、d/u、h/l、gg/G 平滑滚动（自动找到真正在滚的区域，长按连续不卡，支持 5j 数字前缀）；f/F 链接提示（当前页 / 新标签打开，能提示到 open shadow DOM 里的按钮，最短无冲突标签，被遮挡的不出提示，输入框聚焦、其余派发真实点击）；H/L 后退前进、r 刷新、yy 复制网址、gi 聚焦输入框。不打扰：焦点在输入框里、带 Ctrl/Alt/Meta 的组合键一律不拦，Gmail、在线文档等自带快捷键的站点默认停用（菜单按站点切换），i 进入直通模式把按键临时交给页面。? 显示全部快捷键。
 // @description:zh-CN  Vimium 风格的轻量键盘浏览：j/k、d/u、h/l、gg/G 平滑滚动（自动找到真正在滚的区域，长按连续不卡，支持 5j 数字前缀）；f/F 链接提示（当前页 / 新标签打开，能提示到 open shadow DOM 里的按钮，最短无冲突标签，被遮挡的不出提示，输入框聚焦、其余派发真实点击）；H/L 后退前进、r 刷新、yy 复制网址、gi 聚焦输入框。不打扰：焦点在输入框里、带 Ctrl/Alt/Meta 的组合键一律不拦，Gmail、在线文档等自带快捷键的站点默认停用（菜单按站点切换），i 进入直通模式把按键临时交给页面。? 显示全部快捷键。
 // @description:en  Lightweight Vimium-style keyboard browsing: smooth j/k, d/u, h/l and gg/G scrolling that finds the area that actually scrolls (stutter-free while a key is held, count prefixes like 5j); f/F show link hints (open in place or in a new tab, reaching into open shadow DOM, shortest prefix-free labels, covered elements skipped, inputs get focus, everything else gets a real click sequence); H/L back/forward, r reload, yy copy URL, gi focus the first input. Stays out of the way: keys typed into inputs and Ctrl/Alt/Meta combos are never intercepted, sites with their own shortcuts (Gmail, online docs) are off by default (toggle per site from the menu), and i enters pass-through mode. Press ? for the full key list.
@@ -242,7 +242,7 @@
         // 平滑滚动
         //
         // 不用 scrollBy({ behavior: 'smooth' })：动画途中再调一次，原生实现从「当前位置」重新算，
-        // 实测快速连按两下 j 只滚了 120 而不是 180；长按时每个重复 keydown 都把动画打断重来，一顿一顿。
+        // 实测停在 60 时快速连按两下 j，最后停在 120 而不是 180；长按时每个重复 keydown 都把动画打断重来，一顿一顿。
         // 这里给每个（容器, 方向）记一个目标位置，新按键只往目标上累加，rAF 每帧追剩余距离的一部分 ——
         // 长按时目标匀速前移、动画一直追着跑，就是连续的匀速滚动。
         // ---------------------------------------------------------------------
