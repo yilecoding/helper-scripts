@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>长页面</title>
+<style>
+    body { margin: 0; font: 16px/1.6 sans-serif; }
+    .block { height: 400px; border-bottom: 1px solid #ccc; padding: 8px; box-sizing: border-box; }
+</style>
+</head>
+<body>
+<input id="q" type="text" placeholder="搜索">
+<div id="blocks"></div>
+<script>
+    const box = document.getElementById('blocks')
+    for (let i = 1; i <= 20; i++) {
+        const d = document.createElement('div')
+        d.className = 'block'
+        d.textContent = '第 ' + i + ' 块'
+        box.appendChild(d)
+    }
+    // 页面自己的按键记录：用来确认哪些键被脚本放行了
+    window.__pageKeys = []
+    window.__pageKeyups = []
+    window.addEventListener('keydown', (e) => {
+        window.__pageKeys.push({ key: e.key, prevented: e.defaultPrevented })
+    })
+    window.addEventListener('keyup', (e) => window.__pageKeyups.push(e.key))
+</script>
+</body>
+</html>
