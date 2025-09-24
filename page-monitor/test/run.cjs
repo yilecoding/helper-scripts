@@ -75,6 +75,37 @@ async function pick(page, selector) {
     await inHost(page, '[data-act="cancel"]').waitFor()
 }
 
+/** 在 node 这边轮询（页面里的计时器被 page.clock 接管了，不能靠页面里的 waitForFunction）。 */
+async function waitFor(fn, msg = '等待超时', timeout = 3000) {
+    const end = Date.now() + timeout
+    let last
+    while (Date.now() < end) {
+        last = await fn()
+        if (last) return last
+        await new Promise((r) => setTimeout(r, 30))
+    }
+    throw new Error(`${msg}（最后一次：${JSON.stringify(last)}）`)
+}
+
+/** 推进页面时钟，再给 xhr 桥（真实异步）一点时间跑完。 */
+async function advance(page, ms) {
+    await page.clock.runFor(ms)
+    await new Promise((r) => setTimeout(r, 150))
+}
+
+const T0 = new Date('2026-10-29T09:00:00+08:00')
+const MIN = 60 * 1000
+
+/** 拾取并保存一个抓取型监控，等新建后那次校准抓取回来。 */
+async function addFetchMonitor(page, site, selector) {
+    const before = site.requests.length
+    await pick(page, selector)
+    await inHost(page, '[data-act="save-fetch"]').click()
+    await waitFor(() => site.requests.length > before, '新建后应立即抓一次做校准')
+    await waitFor(async () => (await monitors(page)).every((m) => m.lastCheck), '校准结果写回存储')
+    return (await monitors(page)).at(-1)
+}
+
 async function main() {
     const { browser, close } = await h.setup(FIXTURES)
     console.log('page-monitor')
@@ -146,6 +177,54 @@ async function main() {
         // 退出后点击恢复正常
         await page.click('.notices a')
         await page.waitForURL(ORIGIN + '/promo')
+        await ctx.close()
+    })
+
+    await t.test('抓取型：间隔没到不抓；服务器内容变了，时钟推进到点后检测到变化并通知，点通知打开该页', async () => {
+        const site = createSite({ '/item/42': fixture('shop.html') })
+        const ctx = await browser.newContext()
+        const page = await open(ctx, site, '/item/42', { clock: T0 })
+        const m = await addFetchMonitor(page, site, '#stock')
+        t.eq(site.requests, [ORIGIN + '/item/42'])
+
+        await advance(page, 4 * MIN)
+        t.eq(site.requests.length, 1, '4 分钟时还不该抓')
+        t.eq((await h.gm(page)).notifications, [])
+
+        site.files['/item/42'] = fixture('shop.html').replace('>有货<', '>缺货<')
+        await advance(page, 1 * MIN + 5000)
+        t.eq(site.requests.length, 2, '5 分钟到点抓了一次')
+        const notes = await waitFor(async () => (await h.gm(page)).notifications.length && (await h.gm(page)).notifications)
+        t.eq(notes.length, 1)
+        t.assert(notes[0].title.includes('示例商品'), notes[0].title)
+        t.eq(notes[0].text, '有货\n→ 缺货')
+        const stored = (await monitors(page))[0]
+        t.eq([stored.prevValue, stored.lastValue, stored.baseline], ['有货', '缺货', '有货'])
+        t.eq(await page.locator('#stock').textContent(), '有货', '不刷新、不改动当前页面')
+
+        // 没再变：下一轮不重复通知
+        await advance(page, 5 * MIN + 5000)
+        t.eq(site.requests.length, 3)
+        t.eq((await h.gm(page)).notifications.length, 1)
+
+        await page.evaluate(() => window.__gm.notifications[0].onclick())
+        t.eq((await h.gm(page)).opened.map((o) => o.url), [m.url])
+        t.eq(h.errors(page).map(String), [])
+        await ctx.close()
+    })
+
+    await t.test('抓取型：新建后用服务器直出的 HTML 校准基线，前端补过的文字不会第一次检查就报变化', async () => {
+        const site = createSite({ '/r': fixture('rendered.html') })
+        const ctx = await browser.newContext()
+        const page = await open(ctx, site, '/r', { clock: T0 })
+        await pick(page, '#stock')
+        t.eq(await inHost(page, '.text').textContent(), '有货（剩 3 件）', '拾取时看到的是活页面')
+        await inHost(page, '[data-act="save-fetch"]').click()
+        await waitFor(async () => (await monitors(page))[0]?.lastCheck)
+        t.eq((await monitors(page))[0].baseline, '有货')
+        await advance(page, 5 * MIN + 5000)
+        t.eq(site.requests.length, 2)
+        t.eq((await h.gm(page)).notifications, [])
         await ctx.close()
     })
 

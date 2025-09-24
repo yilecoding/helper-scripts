@@ -3,7 +3,7 @@
 // @name:zh-CN   网页变化监控
 // @name:en      Page Monitor — Watch Any Part of a Page for Changes
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.09.24.1
+// @version      2025.09.24.2
 // @description  选中页面上的一块区域（价格、库存、公告、成绩、工单状态），内容变化时通知你。
 // @description:zh-CN  选中页面上的一块区域（价格、库存、公告、成绩、工单状态），内容变化时通知你。
 // @description:en  Pick any part of a page (price, stock, notice, grades, ticket status) and get notified when it changes.
@@ -15,6 +15,10 @@
 // @grant        GM_deleteValue
 // @grant        GM_listValues
 // @grant        GM_registerMenuCommand
+// @grant        GM_xmlhttpRequest
+// @grant        GM_notification
+// @grant        GM_openInTab
+// @connect      self
 // @license      CC BY-NC-SA
 // @run-at       document-idle
 // @homepageURL  https://github.com/yilecoding/helper-scripts
@@ -41,6 +45,8 @@
         minInterval: 30,        // 秒。再短就是在给对方服务器施压了
         maxTextLength: 4000,    // 快照文字上限（存 GM，历史里每条存新旧两份）
         previewLength: 60,      // 列表 / 提示里显示的文字长度
+        tickMs: 5000,           // 调度器多久看一次「谁到点了」
+        requestTimeout: 20000,  // 抓取超时（毫秒）
     };
 
     const HOST_ID = 'page-monitor-host';
@@ -412,6 +418,7 @@
             console.info(TAG, '新增监控', mon.selector, Text.preview(text));
             stop();
             UI.toast('已开始监控：' + Text.preview(text, 30));
+            if (mode === 'fetch') Checker.calibrate(mon.id);
             return mon;
         }
 
@@ -492,6 +499,165 @@
     })();
 
     // =========================================================================
+    // 抓取与比较
+    // =========================================================================
+
+    /**
+     * GM_xmlhttpRequest 的 Promise 包装。超时自己计时：
+     * 不同管理器对 timeout/ontimeout 的支持不一致，不兜底的话请求可能永远挂着。
+     * 默认带 cookie（不设 anonymous），成绩、工单这类要登录的页面才抓得到。
+     */
+    function request(url) {
+        return new Promise((resolve, reject) => {
+            let done = false;
+            const finish = (fn, arg) => {
+                if (done) return;
+                done = true;
+                clearTimeout(timer);
+                fn(arg);
+            };
+            const req = GM_xmlhttpRequest({
+                method: 'GET',
+                url,
+                headers: { 'Cache-Control': 'no-cache', Pragma: 'no-cache' },
+                timeout: CONFIG.requestTimeout,
+                onload: (r) => {
+                    if (r.status >= 200 && r.status < 300) finish(resolve, r.responseText || '');
+                    else finish(reject, new Error(`HTTP ${r.status}`));
+                },
+                onerror: () => finish(reject, new Error('网络错误')),
+                ontimeout: () => finish(reject, new Error('请求超时')),
+            });
+            const timer = setTimeout(() => {
+                try { req && req.abort && req.abort(); } catch (e) { /* 已结束 */ }
+                finish(reject, new Error('请求超时'));
+            }, CONFIG.requestTimeout + 1000);
+        });
+    }
+
+    /** 抓 mon.url，按选择器取出规范化后的文字。找不到元素就抛错，不当成「变成了空」。 */
+    async function fetchText(mon) {
+        const html = await request(mon.url);
+        const doc = new DOMParser().parseFromString(html, 'text/html');
+        let el = null;
+        try {
+            el = doc.querySelector(mon.selector);
+        } catch (e) {
+            throw new Error('选择器无效：' + mon.selector);
+        }
+        if (!el) throw new Error('抓到的页面里找不到这个元素（页面改版、登录失效，或内容由 JS 渲染）');
+        return Text.normalize(Text.of(el));
+    }
+
+    const Notify = (() => {
+        function change(mon, oldText, newText) {
+            const title = '网页变化：' + Text.preview(mon.title, 30);
+            const text = `${Text.preview(oldText, 40) || '（空）'}\n→ ${Text.preview(newText, 80) || '（空）'}`;
+            if (typeof GM_notification !== 'function') return;
+            GM_notification({
+                title,
+                text,
+                // 抓取型的标签页内容是旧的（脚本不刷新它），点通知开一个新标签看最新内容
+                onclick: () => GM_openInTab(mon.url, { active: true, setParent: true }),
+            });
+        }
+        return { change };
+    })();
+
+    const Checker = (() => {
+        /** 每次都从存储里重新读：别的标签、面板操作随时可能改了它。 */
+        function apply(id, text) {
+            const mon = Store.get(id);
+            if (!mon) return null;
+            const now = Date.now();
+            if (text === mon.lastValue) {
+                return Store.patch(id, { lastCheck: now, status: 'ok', error: '' });
+            }
+            Store.patch(id, { lastCheck: now, status: 'ok', error: '', lastValue: text, prevValue: mon.lastValue, lastChange: now });
+            console.info(TAG, '检测到变化', mon.selector, Text.preview(mon.lastValue), '→', Text.preview(text));
+            Notify.change(mon, mon.lastValue, text);
+            return Store.get(id);
+        }
+
+        function fail(id, err) {
+            console.warn(TAG, '检查失败', id, err && err.message);
+            return Store.patch(id, { lastCheck: Date.now(), status: 'error', error: String((err && err.message) || err) });
+        }
+
+        async function check(id) {
+            const mon = Store.get(id);
+            if (!mon) return null;
+            try {
+                return apply(id, await fetchText(mon));
+            } catch (e) {
+                return fail(id, e);
+            }
+        }
+
+        /**
+         * 新建后马上抓一次，把基线换成「抓下来的版本」。活页面上看到的文字和服务器直出的 HTML
+         * 不一定一样（站点脚本改过、懒加载补过），不校准的话第一次定时检查就会报一个假变化。
+         */
+        async function calibrate(id) {
+            const mon = Store.get(id);
+            if (!mon) return null;
+            try {
+                const text = await fetchText(mon);
+                return Store.patch(id, { baseline: text, lastValue: text, lastCheck: Date.now(), status: 'ok', error: '' });
+            } catch (e) {
+                return fail(id, e);
+            }
+        }
+
+        return { check, calibrate };
+    })();
+
+    // =========================================================================
+    // 调度：只检查「本页」的监控项
+    // =========================================================================
+
+    /**
+     * 只有打开着该 URL 的标签页才检查它：这是用户脚本的天然限制（没有常驻后台），
+     * 也是刻意的 —— 让任意标签页都去抓全部监控项，开十个标签就是十份请求在抢。
+     */
+    const Scheduler = (() => {
+        const running = new Set();
+
+        function due(mon, now) {
+            const last = mon.lastCheck || mon.createdAt || 0;
+            return now - last >= mon.interval * 1000;
+        }
+
+        function mine() {
+            const url = pageUrl();
+            return Store.all().filter((m) => m.url === url);
+        }
+
+        function tick() {
+            const now = Date.now();
+            for (const mon of mine()) {
+                if (!mon.enabled || mon.mode !== 'fetch' || running.has(mon.id) || !due(mon, now)) continue;
+                running.add(mon.id);
+                Checker.check(mon.id).finally(() => running.delete(mon.id));
+            }
+        }
+
+        function start() {
+            const loop = () => {
+                try {
+                    tick();
+                } catch (e) {
+                    console.error(TAG, '调度出错', e);
+                }
+                setTimeout(loop, CONFIG.tickMs);
+            };
+            setTimeout(loop, CONFIG.tickMs);
+        }
+
+        return { start, mine };
+    })();
+
+    // =========================================================================
     // 启动
     // =========================================================================
 
@@ -499,6 +665,7 @@
         if (typeof GM_registerMenuCommand === 'function') {
             GM_registerMenuCommand('选取要监控的区域', () => Picker.start());
         }
+        Scheduler.start();
     }
 
     boot();
