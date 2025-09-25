@@ -3,7 +3,7 @@
 // @name:zh-CN   网页变化监控
 // @name:en      Page Monitor — Watch Any Part of a Page for Changes
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.09.25.3
+// @version      2025.09.25.4
 // @description  选中页面上的一块区域（价格、库存、公告、成绩、工单状态），内容变化时通知你。
 // @description:zh-CN  选中页面上的一块区域（价格、库存、公告、成绩、工单状态），内容变化时通知你。
 // @description:en  Pick any part of a page (price, stock, notice, grades, ticket status) and get notified when it changes.
@@ -68,7 +68,7 @@
                 .filter((k) => k.startsWith(PREFIX))
                 .map((k) => GM_getValue(k, null))
                 .filter(Boolean)
-                .sort((a, b) => a.createdAt - b.createdAt);
+                .sort((a, b) => a.createdAt - b.createdAt || (a.id < b.id ? -1 : 1));
         }
 
         function get(id) {
@@ -146,6 +146,84 @@
         }
 
         return { of, normalize, preview };
+    })();
+
+    // =========================================================================
+    // 比较规则：噪声、关键词、数字阈值
+    // =========================================================================
+
+    const Rules = (() => {
+        /**
+         * 噪声：每行一个正则，匹配到的部分在比较前删掉（「更新于 09:12」「浏览 1234 次」）。
+         * 写成 /…/i 带标志也行。只在比较时去掉，存储和显示的仍是原文。
+         */
+        function parseNoise(src) {
+            const list = [];
+            const errors = [];
+            for (const line of String(src || '').split('\n')) {
+                const raw = line.trim();
+                if (!raw) continue;
+                const m = /^\/(.+)\/([a-z]*)$/.exec(raw);
+                try {
+                    const flags = m ? m[2].replace(/g/g, '') + 'g' : 'g';
+                    list.push(new RegExp(m ? m[1] : raw, flags));
+                } catch (e) {
+                    errors.push(`${raw}：${e.message}`);
+                }
+            }
+            return { list, errors };
+        }
+
+        /** 比较用的文字：去噪声后再折叠一次空白（删掉中间一段会留下两个空格）。 */
+        function clean(text, mon) {
+            let s = Text.normalize(text);
+            for (const re of parseNoise(mon.noise).list) s = s.replace(re, ' ');
+            return Text.normalize(s);
+        }
+
+        /**
+         * 取文字里的第一个数字。千分位逗号只认「逗号后正好三位」，
+         * 免得把「3,4 号楼」读成 34。负号兼容全角减号。
+         */
+        function firstNumber(text) {
+            const m = /[-−]?\d{1,3}(?:,\d{3})+(?:\.\d+)?|[-−]?\d+(?:\.\d+)?/.exec(text || '');
+            return m ? Number(m[0].replace(/,/g, '').replace('−', '-')) : null;
+        }
+
+        /** 阈值写法：「10」= 变化至少 10；「5%」= 变化至少 5%。空 = 不限。 */
+        function parseThreshold(src) {
+            const m = /^\s*(\d+(?:\.\d+)?)\s*(%?)\s*$/.exec(String(src || ''));
+            if (!m) return null;
+            return { value: Number(m[1]), percent: !!m[2] };
+        }
+
+        /**
+         * 这次变化要不要通知。ref 是「上次通知时的文字」而不是上次检查的：
+         * 价格每次跌 1 块、阈值 5 块时，和上次检查比永远不够 5，和上次通知比才会在累计够 5 时响。
+         */
+        function shouldNotify(mon, refText, newText) {
+            const kw = mon.keyword || {};
+            const word = (kw.text || '').trim().toLowerCase();
+            if (word && kw.mode !== 'any') {
+                const has = clean(newText, mon).toLowerCase().includes(word);
+                if (kw.mode === 'contains' && !has) return { ok: false, reason: `不含「${kw.text}」` };
+                if (kw.mode === 'excludes' && has) return { ok: false, reason: `含有「${kw.text}」` };
+            }
+            const thr = parseThreshold(mon.threshold);
+            if (thr) {
+                const a = firstNumber(clean(refText, mon));
+                const b = firstNumber(clean(newText, mon));
+                // 数字出现或消失（「缺货」↔「¥99」）本身就值得说一声
+                if (a !== null && b !== null) {
+                    const diff = Math.abs(b - a);
+                    const enough = thr.percent ? (a === 0 ? diff > 0 : (diff / Math.abs(a)) * 100 >= thr.value) : diff >= thr.value;
+                    if (!enough) return { ok: false, reason: `数字变化 ${a} → ${b} 未达阈值 ${mon.threshold}` };
+                }
+            }
+            return { ok: true };
+        }
+
+        return { parseNoise, clean, firstNumber, parseThreshold, shouldNotify };
     })();
 
     // =========================================================================
@@ -320,6 +398,11 @@
         .item .ctl input[type=number] { width: 64px; font: inherit; padding: 1px 4px; }
         .item button { padding: 1px 8px; font-size: 12px; }
         button.danger { color: #cf222e; }
+        .rules { margin-top: 6px; padding: 8px; border-radius: 6px; background: #f6f8fa; display: flex; flex-direction: column; gap: 6px; font-size: 12px; }
+        .rules textarea, .rules input, .rules select { font: 12px/1.4 ui-monospace, Consolas, monospace; padding: 2px 4px; border: 1px solid #d0d7de; border-radius: 4px; }
+        .rules textarea { width: 100%; resize: vertical; }
+        .rules .line { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+        .rules .hint { color: #57606a; }
     `;
 
     const UI = (() => {
@@ -600,15 +683,21 @@
             const mon = Store.get(id);
             if (!mon) return null;
             const now = Date.now();
-            if (text === mon.lastValue) {
-                return Store.patch(id, { lastCheck: now, status: 'ok', error: '' });
-            }
+            const ok = { lastCheck: now, status: 'ok', error: '' };
+            if (text === mon.lastValue) return Store.patch(id, ok);
+            // 只有空白 / 噪声变了：更新显示用的原文，不算变化
+            if (Rules.clean(text, mon) === Rules.clean(mon.lastValue, mon)) return Store.patch(id, { ...ok, lastValue: text });
+
+            const ref = mon.notifiedValue !== undefined ? mon.notifiedValue : mon.baseline;
+            const verdict = Rules.shouldNotify(mon, ref, text);
             Store.patch(id, {
-                lastCheck: now, status: 'ok', error: '',
-                lastValue: text, prevValue: mon.lastValue, lastChange: now, unread: (mon.unread || 0) + 1,
+                ...ok,
+                lastValue: text, prevValue: mon.lastValue, lastChange: now,
+                ...(verdict.ok ? { notifiedValue: text, unread: (mon.unread || 0) + 1 } : {}),
             });
-            console.info(TAG, '检测到变化', mon.selector, Text.preview(mon.lastValue), '→', Text.preview(text));
-            Notify.change(mon, mon.lastValue, text);
+            console.info(TAG, '检测到变化', mon.selector, Text.preview(mon.lastValue), '→', Text.preview(text),
+                verdict.ok ? '' : `（不通知：${verdict.reason}）`);
+            if (verdict.ok) Notify.change(mon, mon.lastValue, text);
             return Store.get(id);
         }
 
@@ -715,6 +804,7 @@
         let badge = null;
         const armed = new Set();     // 点过一次「删除」、等确认的监控项
         let fresh = new Set();       // 打开面板时还未读的：未读数已清零，但这次打开期间仍标出来
+        const drafts = new Map();    // 正在编辑规则的监控项 → 草稿。定时重绘不能把没保存的输入冲掉
 
         function statusOf(mon) {
             if (!mon.enabled) return { text: '已暂停' };
@@ -737,6 +827,81 @@
             if (!after) return;
             if (after.status === 'error') UI.toast('检查失败：' + after.error);
             else UI.toast(after.lastValue !== before.lastValue ? '检测到变化' : '没有变化');
+        }
+
+        function editRules(mon) {
+            if (drafts.has(mon.id)) drafts.delete(mon.id);
+            else {
+                drafts.set(mon.id, {
+                    noise: mon.noise || '',
+                    kwMode: (mon.keyword && mon.keyword.mode) || 'any',
+                    kwText: (mon.keyword && mon.keyword.text) || '',
+                    threshold: mon.threshold || '',
+                    error: '',
+                });
+            }
+            render();
+        }
+
+        function saveRules(id) {
+            const d = drafts.get(id);
+            const { errors } = Rules.parseNoise(d.noise);
+            if (errors.length) d.error = '噪声正则有误：' + errors.join('；');
+            else if (d.threshold.trim() && !Rules.parseThreshold(d.threshold)) d.error = '阈值写数字（如 10）或百分比（如 5%）';
+            else {
+                Store.patch(id, {
+                    noise: d.noise.trim(),
+                    keyword: { mode: d.kwMode, text: d.kwText.trim() },
+                    threshold: d.threshold.trim(),
+                });
+                drafts.delete(id);
+            }
+            render();
+        }
+
+        function rulesView(mon) {
+            const d = drafts.get(mon.id);
+            const bind = (key) => (e) => { d[key] = e.target.value; };
+            const select = UI.el('select', { 'data-field': 'kw-mode', onchange: bind('kwMode') }, [
+                UI.el('option', { value: 'any', text: '任何变化都通知' }),
+                UI.el('option', { value: 'contains', text: '变化后包含关键词才通知' }),
+                UI.el('option', { value: 'excludes', text: '变化后不含关键词才通知' }),
+            ]);
+            select.value = d.kwMode;
+            const noise = UI.el('textarea', {
+                'data-field': 'noise', rows: 2, placeholder: '例：更新于 \\d+:\\d+\n/浏览 \\d+ 次/i',
+                oninput: bind('noise'),
+            });
+            noise.value = d.noise;
+            return UI.el('div', { class: 'rules', 'data-role': 'rules' }, [
+                UI.el('label', { text: '忽略的噪声（每行一个正则，比较前删掉）' }),
+                noise,
+                UI.el('div', { class: 'line' }, [
+                    select,
+                    UI.el('input', { 'data-field': 'kw-text', placeholder: '关键词', value: d.kwText, oninput: bind('kwText') }),
+                ]),
+                UI.el('div', { class: 'line' }, [
+                    UI.el('span', { text: '数字变化至少' }),
+                    UI.el('input', { 'data-field': 'threshold', placeholder: '10 或 5%', value: d.threshold, oninput: bind('threshold') }),
+                    UI.el('span', { class: 'hint', text: '取文字里第一个数字（如价格）' }),
+                ]),
+                d.error ? UI.el('div', { class: 'err', 'data-role': 'rule-error', text: d.error }) : null,
+                UI.el('div', { class: 'line' }, [
+                    UI.el('button', { 'data-act': 'save-rules', class: 'primary', text: '保存规则', onclick: () => saveRules(mon.id) }),
+                    UI.el('button', { 'data-act': 'cancel-rules', text: '取消', onclick: () => editRules(mon) }),
+                ]),
+            ]);
+        }
+
+        function rulesSummary(mon) {
+            const parts = [];
+            const n = Rules.parseNoise(mon.noise).list.length;
+            if (n) parts.push(`忽略 ${n} 条噪声`);
+            const kw = mon.keyword || {};
+            if (kw.text && kw.mode === 'contains') parts.push(`含「${kw.text}」才通知`);
+            if (kw.text && kw.mode === 'excludes') parts.push(`不含「${kw.text}」才通知`);
+            if (mon.threshold) parts.push(`数字变化 ≥ ${mon.threshold}`);
+            return parts.join(' · ');
         }
 
         function remove(id) {
@@ -766,6 +931,7 @@
                     st.text ? ` · ${st.text}` : null,
                 ]),
                 st.error ? UI.el('div', { class: 'err', 'data-role': 'error', text: st.error }) : null,
+                rulesSummary(mon) ? UI.el('div', { class: 'meta', 'data-role': 'rules-summary', text: rulesSummary(mon) }) : null,
                 UI.el('div', { class: 'ctl' }, [
                     UI.el('label', {}, [
                         UI.el('input', {
@@ -789,11 +955,13 @@
                         disabled: !isHere, title: isHere ? null : '在该页面打开时才能检查',
                         onclick: (e) => checkNow(mon.id, e.target),
                     }),
+                    UI.el('button', { 'data-act': 'rules', text: '规则', onclick: () => editRules(mon) }),
                     UI.el('button', {
                         'data-act': 'delete', class: 'danger', text: armed.has(mon.id) ? '确认删除' : '删除',
                         onclick: () => remove(mon.id),
                     }),
                 ]),
+                drafts.has(mon.id) ? rulesView(mon) : null,
             ]);
         }
 
@@ -854,6 +1022,7 @@
             panel = null;
             armed.clear();
             fresh.clear();
+            drafts.clear();
         }
 
         function toggle() {
@@ -862,12 +1031,12 @@
         }
 
         /**
-         * 定时重绘时，用户正在改间隔就先不动：整块重建会把输入框连同焦点一起换掉，
-         * 打到一半的数字就没了。
+         * 定时重绘时，焦点在输入框里就先不动：整块重建会把输入框连同焦点一起换掉，
+         * 光标和打到一半的字都会丢（没保存的规则另有草稿兜着）。
          */
         function refresh() {
             const active = panel && panel.getRootNode().activeElement;
-            if (active && panel.contains(active) && active.tagName === 'INPUT' && active.type === 'number') {
+            if (active && panel.contains(active) && /^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName)) {
                 renderBadge();
                 return;
             }

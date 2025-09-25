@@ -60,7 +60,7 @@ function monitors(page) {
     return page.evaluate(() => Object.keys(localStorage)
         .filter((k) => k.startsWith('__gm:mon:'))
         .map((k) => JSON.parse(localStorage.getItem(k)))
-        .sort((a, b) => a.createdAt - b.createdAt))
+        .sort((a, b) => a.createdAt - b.createdAt || (a.id < b.id ? -1 : 1)))
 }
 
 function inHost(page, sel) {
@@ -104,6 +104,25 @@ async function addFetchMonitor(page, site, selector) {
     await inHost(page, '[data-act="save-fetch"]').click()
     await waitFor(() => site.requests.length > before, '新建后应立即抓一次做校准')
     return waitFor(async () => (await monitors(page)).find((m) => !known.has(m.id) && m.lastCheck), '校准结果写回存储')
+}
+
+/** 直接写进存储的监控项（省掉拾取那几步），默认盯 /item/42 的 #stock，刚检查过。 */
+function seed(id, over = {}) {
+    return {
+        id, url: ORIGIN + '/item/42', title: '示例商品', selector: '#stock', mode: 'fetch', interval: 300, enabled: true,
+        baseline: '有货', lastValue: '有货', createdAt: T0.getTime(), lastCheck: T0.getTime(), ...over,
+    }
+}
+
+/** 改「服务器」上 /item/42 的某一段文字。 */
+function serve(site, replacements) {
+    let html = fixture('shop.html')
+    for (const [from, to] of replacements) html = html.replace(from, to)
+    site.files['/item/42'] = html
+}
+
+async function notificationCount(page) {
+    return (await h.gm(page)).notifications.length
 }
 
 async function main() {
@@ -292,6 +311,96 @@ async function main() {
         t.eq(await inHost(page, `[data-id="${m.id}"] .tag.new`).count(), 1)
         t.eq(await badge.textContent(), '◎ 监控中 1')
         t.eq((await monitors(page))[0].unread, 0)
+        await ctx.close()
+    })
+
+    await t.test('规范化与噪声：只有空白变了不报；面板里加时间戳噪声正则后，只改时间不报，正文变了才报', async () => {
+        const site = createSite({ '/item/42': fixture('shop.html') })
+        const ctx = await browser.newContext()
+        const page = await open(ctx, site, '/item/42', { clock: T0 })
+        const m = await addFetchMonitor(page, site, '#notice')
+        t.eq(m.baseline, '更新于 09:00 · 今日公告：正常营业')
+
+        serve(site, [['更新于 09:00 · 今日公告', '\n  更新于   09:00\n\t·  今日公告']])
+        await advance(page, 5 * MIN + 5000)
+        t.eq(site.requests.length, 2)
+        t.eq(await notificationCount(page), 0, '空白变化不算')
+
+        await h.menu(page, '监控面板')
+        const item = (sel) => inHost(page, `[data-id="${m.id}"] ${sel}`)
+        await item('[data-act="rules"]').click()
+        await item('[data-field="noise"]').fill('更新于 \\d{2}:\\d{2}\n(')
+        await item('[data-act="save-rules"]').click()
+        t.assert((await item('[data-role="rule-error"]').textContent()).includes('噪声正则有误'), '无效正则要报出来')
+        t.eq((await monitors(page))[0].noise, undefined, '有错不保存')
+        await item('[data-field="noise"]').fill('更新于 \\d{2}:\\d{2}')
+        await item('[data-act="save-rules"]').click()
+        t.eq((await monitors(page))[0].noise, '更新于 \\d{2}:\\d{2}')
+        t.eq(await item('[data-role="rules-summary"]').textContent(), '忽略 1 条噪声')
+
+        serve(site, [['09:00', '09:35']])
+        await advance(page, 5 * MIN + 5000)
+        t.eq(site.requests.length, 3)
+        t.eq(await notificationCount(page), 0, '只有时间戳变了')
+        t.eq((await monitors(page))[0].lastValue, '更新于 09:35 · 今日公告：正常营业', '显示的原文仍跟着更新')
+
+        serve(site, [['09:00', '10:10'], ['正常营业', '暂停营业']])
+        await advance(page, 5 * MIN + 5000)
+        await waitFor(async () => (await notificationCount(page)) === 1, '正文变了要通知')
+        t.eq(h.errors(page).map(String), [])
+        await ctx.close()
+    })
+
+    await t.test('关键词：「包含才通知」「不含才通知」；不通知的变化照样记下新值', async () => {
+        const site = createSite({ '/item/42': fixture('shop.html') })
+        const ctx = await browser.newContext()
+        const values = {
+            'mon:has': seed('has', { keyword: { mode: 'contains', text: '有货' } }),
+            'mon:not': seed('not', { keyword: { mode: 'excludes', text: '缺货' } }),
+        }
+        const page = await open(ctx, site, '/item/42', { clock: T0, values })
+        const titles = async () => (await h.gm(page)).notifications.length
+
+        serve(site, [['>有货<', '>缺货<']])
+        await advance(page, 5 * MIN + 5000)
+        t.eq(site.requests.length, 2)
+        t.eq(await titles(), 0, '有货→缺货：两个都不通知')
+        const all = await monitors(page)
+        t.eq(all.map((x) => [x.lastValue, x.unread || 0]), [['缺货', 0], ['缺货', 0]], '新值照样记下，但不算未读')
+
+        serve(site, [['>有货<', '>到货了，有货<']])
+        await advance(page, 5 * MIN + 5000)
+        await waitFor(async () => (await titles()) === 2, '缺货→有货：两个都通知')
+
+        serve(site, [['>有货<', '>预售<']])
+        await advance(page, 5 * MIN + 5000)
+        await waitFor(async () => (await titles()) === 3, '→预售：只有「不含缺货」的通知')
+        t.eq((await monitors(page)).map((x) => x.unread), [1, 2])
+        await ctx.close()
+    })
+
+    await t.test('数字阈值：取第一个数字（千分位），和上次通知时比；绝对值与百分比；数字消失也通知', async () => {
+        const site = createSite({ '/item/42': fixture('shop.html') })
+        const ctx = await browser.newContext()
+        const price = { selector: 'span.price', baseline: '¥199.00', lastValue: '¥199.00' }
+        const values = {
+            'mon:abs': seed('abs', { ...price, threshold: '10' }),
+            'mon:pct': seed('pct', { ...price, threshold: '5%' }),
+        }
+        const page = await open(ctx, site, '/item/42', { clock: T0, values })
+        const steps = [
+            ['¥195.00', 0],     // 差 4 / 2%
+            ['¥189.00', 2],     // 和上次通知（199）比：差 10 / 5.03%
+            ['¥185.00', 2],     // 和 189 比：差 4 / 2.1%（逐次累计不算，参照点是上次通知）
+            ['¥1,299.00', 4],   // 千分位
+            ['暂时缺货', 6],     // 数字没了
+        ]
+        for (const [text, expected] of steps) {
+            serve(site, [['¥199.00', text]])
+            await advance(page, 5 * MIN + 5000)
+            await waitFor(async () => (await monitors(page)).every((x) => x.lastValue === text), `检查到 ${text}`)
+            t.eq(await notificationCount(page), expected, `到 ${text} 时的通知数`)
+        }
         await ctx.close()
     })
 
