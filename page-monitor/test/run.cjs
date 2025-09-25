@@ -99,11 +99,11 @@ const MIN = 60 * 1000
 /** 拾取并保存一个抓取型监控，等新建后那次校准抓取回来。 */
 async function addFetchMonitor(page, site, selector) {
     const before = site.requests.length
+    const known = new Set((await monitors(page)).map((m) => m.id))
     await pick(page, selector)
     await inHost(page, '[data-act="save-fetch"]').click()
     await waitFor(() => site.requests.length > before, '新建后应立即抓一次做校准')
-    await waitFor(async () => (await monitors(page)).every((m) => m.lastCheck), '校准结果写回存储')
-    return (await monitors(page)).at(-1)
+    return waitFor(async () => (await monitors(page)).find((m) => !known.has(m.id) && m.lastCheck), '校准结果写回存储')
 }
 
 async function main() {
@@ -225,6 +225,73 @@ async function main() {
         await advance(page, 5 * MIN + 5000)
         t.eq(site.requests.length, 2)
         t.eq((await h.gm(page)).notifications, [])
+        await ctx.close()
+    })
+
+    await t.test('面板：列出全部监控项（本页排前）；暂停后到点不抓；改间隔不足 30 秒按 30 秒；立即检查；两步删除', async () => {
+        const site = createSite({ '/item/42': fixture('shop.html') })
+        const ctx = await browser.newContext()
+        const other = {
+            id: 'other1', url: ORIGIN + '/item/7', title: '别的商品', selector: '#stock', mode: 'fetch',
+            interval: 300, enabled: true, baseline: '有货', lastValue: '有货', createdAt: 1,
+        }
+        const page = await open(ctx, site, '/item/42', { clock: T0, values: { 'mon:other1': other } })
+        t.eq(await inHost(page, '[data-role="badge"]').count(), 0, '本页没有监控项时不显示角标')
+        const m = await addFetchMonitor(page, site, '#stock')
+        t.eq(await inHost(page, '[data-role="badge"]').textContent(), '◎ 监控中 1')
+
+        await h.menu(page, '监控面板')
+        const items = inHost(page, '.item')
+        t.eq(await items.evaluateAll((els) => els.map((e) => e.dataset.id)), [m.id, 'other1'])
+        t.eq(await inHost(page, '.panel .title').textContent(), '网页监控（2）')
+        t.eq(await inHost(page, '[data-id="other1"] [data-act="check"]').isDisabled(), true, '别的页面的监控项不在这里抓')
+        const item = (sel) => inHost(page, `[data-id="${m.id}"] ${sel}`)
+        t.eq(await item('[data-role="value"]').textContent(), '有货')
+
+        await item('[data-act="toggle"]').uncheck()
+        t.eq((await monitors(page)).find((x) => x.id === m.id).enabled, false)
+        await advance(page, 10 * MIN)
+        t.eq(site.requests.length, 1, '暂停的不抓')
+        await item('[data-act="toggle"]').check()
+
+        await item('[data-field="interval"]').fill('0.2')
+        await item('[data-field="interval"]').press('Tab')
+        t.eq((await monitors(page)).find((x) => x.id === m.id).interval, 30, '按最小间隔 30 秒')
+        t.eq(await item('[data-field="interval"]').inputValue(), '0.5')
+        await item('[data-field="interval"]').fill('1')
+        await item('[data-field="interval"]').press('Tab')
+        t.eq((await monitors(page)).find((x) => x.id === m.id).interval, 60)
+
+        site.files['/item/42'] = fixture('shop.html').replace('>有货<', '>仅剩 1 件<')
+        await item('[data-act="check"]').click()
+        await waitFor(async () => (await h.gm(page)).notifications.length === 1, '立即检查发现变化并通知')
+        await waitFor(async () => (await item('[data-role="value"]').textContent()) === '仅剩 1 件', '面板显示新值')
+        t.eq(await inHost(page, '.toast').textContent(), '检测到变化')
+
+        await item('[data-act="delete"]').click()
+        t.eq(await item('[data-act="delete"]').textContent(), '确认删除', '第一次点只是确认')
+        t.eq((await monitors(page)).length, 2)
+        await item('[data-act="delete"]').click()
+        t.eq((await monitors(page)).map((x) => x.id), ['other1'])
+        t.eq(await items.count(), 1)
+        t.eq(await inHost(page, '[data-role="badge"]').count(), 0, '本页没有监控项了，角标消失')
+        t.eq(h.errors(page).map(String), [])
+        await ctx.close()
+    })
+
+    await t.test('角标：有变化时显示未读数，点开面板标出变化项并清零', async () => {
+        const site = createSite({ '/item/42': fixture('shop.html') })
+        const ctx = await browser.newContext()
+        const page = await open(ctx, site, '/item/42', { clock: T0 })
+        const m = await addFetchMonitor(page, site, '#stock')
+        site.files['/item/42'] = fixture('shop.html').replace('>有货<', '>缺货<')
+        await advance(page, 5 * MIN + 5000)
+        const badge = inHost(page, '[data-role="badge"]')
+        await waitFor(async () => (await badge.textContent()) === '● 1 处变化', '角标显示未读')
+        await badge.click()
+        t.eq(await inHost(page, `[data-id="${m.id}"] .tag.new`).count(), 1)
+        t.eq(await badge.textContent(), '◎ 监控中 1')
+        t.eq((await monitors(page))[0].unread, 0)
         await ctx.close()
     })
 

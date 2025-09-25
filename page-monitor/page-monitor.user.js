@@ -3,7 +3,7 @@
 // @name:zh-CN   网页变化监控
 // @name:en      Page Monitor — Watch Any Part of a Page for Changes
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.09.24.2
+// @version      2025.09.25.3
 // @description  选中页面上的一块区域（价格、库存、公告、成绩、工单状态），内容变化时通知你。
 // @description:zh-CN  选中页面上的一块区域（价格、库存、公告、成绩、工单状态），内容变化时通知你。
 // @description:en  Pick any part of a page (price, stock, notice, grades, ticket status) and get notified when it changes.
@@ -288,9 +288,38 @@
         button.primary { background: #2563eb; border-color: #2563eb; color: #fff; }
         button:disabled { opacity: .5; cursor: default; }
         .toast {
-            position: fixed; z-index: 2147483647; right: 16px; bottom: 16px; padding: 8px 12px; border-radius: 8px;
+            position: fixed; z-index: 2147483647; right: 16px; bottom: 60px; padding: 8px 12px; border-radius: 8px;
             background: #1f2328; color: #fff; box-shadow: 0 4px 16px rgba(0,0,0,.2); max-width: 360px;
         }
+        .badge {
+            position: fixed; z-index: 2147483645; right: 16px; bottom: 16px; height: 28px; padding: 0 10px;
+            border-radius: 14px; border: 1px solid #d0d7de; background: #fff; color: #57606a; cursor: pointer;
+            box-shadow: 0 2px 8px rgba(0,0,0,.12); display: flex; align-items: center; gap: 4px; font-size: 12px;
+        }
+        .badge.unread { background: #dc2626; border-color: #dc2626; color: #fff; }
+        .panel {
+            position: fixed; z-index: 2147483646; right: 16px; top: 16px; width: 400px; max-width: calc(100vw - 32px);
+            max-height: calc(100vh - 32px); display: flex; flex-direction: column; background: #fff;
+            border: 1px solid #d0d7de; border-radius: 10px; box-shadow: 0 8px 32px rgba(0,0,0,.2);
+        }
+        .panel .head { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-bottom: 1px solid #eaeef2; }
+        .panel .head .title { font-weight: 600; flex: 1; }
+        .panel .list { overflow: auto; padding: 4px 0; }
+        .panel .empty { padding: 16px; color: #57606a; text-align: center; }
+        .item { padding: 8px 10px; border-bottom: 1px solid #f0f2f4; }
+        .item.off { opacity: .6; }
+        .item .name { display: flex; gap: 6px; align-items: baseline; }
+        .item .name a { color: #0969da; text-decoration: none; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .item .tag { font-size: 11px; padding: 0 6px; border-radius: 8px; background: #eef1f4; color: #57606a; white-space: nowrap; }
+        .item .tag.new { background: #dc2626; color: #fff; }
+        .item .sel { font: 11px/1.4 ui-monospace, Consolas, monospace; color: #57606a; word-break: break-all; }
+        .item .value { margin: 4px 0; word-break: break-all; }
+        .item .meta { font-size: 12px; color: #57606a; }
+        .item .err { font-size: 12px; color: #cf222e; word-break: break-all; }
+        .item .ctl { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-top: 6px; font-size: 12px; }
+        .item .ctl input[type=number] { width: 64px; font: inherit; padding: 1px 4px; }
+        .item button { padding: 1px 8px; font-size: 12px; }
+        button.danger { color: #cf222e; }
     `;
 
     const UI = (() => {
@@ -418,6 +447,7 @@
             console.info(TAG, '新增监控', mon.selector, Text.preview(text));
             stop();
             UI.toast('已开始监控：' + Text.preview(text, 30));
+            Panel.refresh();
             if (mode === 'fetch') Checker.calibrate(mon.id);
             return mon;
         }
@@ -573,7 +603,10 @@
             if (text === mon.lastValue) {
                 return Store.patch(id, { lastCheck: now, status: 'ok', error: '' });
             }
-            Store.patch(id, { lastCheck: now, status: 'ok', error: '', lastValue: text, prevValue: mon.lastValue, lastChange: now });
+            Store.patch(id, {
+                lastCheck: now, status: 'ok', error: '',
+                lastValue: text, prevValue: mon.lastValue, lastChange: now, unread: (mon.unread || 0) + 1,
+            });
             console.info(TAG, '检测到变化', mon.selector, Text.preview(mon.lastValue), '→', Text.preview(text));
             Notify.change(mon, mon.lastValue, text);
             return Store.get(id);
@@ -587,11 +620,14 @@
         async function check(id) {
             const mon = Store.get(id);
             if (!mon) return null;
+            let result;
             try {
-                return apply(id, await fetchText(mon));
+                result = apply(id, await fetchText(mon));
             } catch (e) {
-                return fail(id, e);
+                result = fail(id, e);
             }
+            Panel.refresh();
+            return result;
         }
 
         /**
@@ -601,12 +637,15 @@
         async function calibrate(id) {
             const mon = Store.get(id);
             if (!mon) return null;
+            let result;
             try {
                 const text = await fetchText(mon);
-                return Store.patch(id, { baseline: text, lastValue: text, lastCheck: Date.now(), status: 'ok', error: '' });
+                result = Store.patch(id, { baseline: text, lastValue: text, lastCheck: Date.now(), status: 'ok', error: '' });
             } catch (e) {
-                return fail(id, e);
+                result = fail(id, e);
             }
+            Panel.refresh();
+            return result;
         }
 
         return { check, calibrate };
@@ -634,6 +673,8 @@
         }
 
         function tick() {
+            // 别的标签页检查完写进存储的结果，这边靠定时重绘看到
+            Panel.refresh();
             const now = Date.now();
             for (const mon of mine()) {
                 if (!mon.enabled || mon.mode !== 'fetch' || running.has(mon.id) || !due(mon, now)) continue;
@@ -658,13 +699,194 @@
     })();
 
     // =========================================================================
+    // 面板与角标
+    // =========================================================================
+
+    function fmtTime(ts) {
+        if (!ts) return '—';
+        const d = new Date(ts);
+        const p = (n) => String(n).padStart(2, '0');
+        const time = `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+        return new Date().toDateString() === d.toDateString() ? time : `${d.getMonth() + 1}-${p(d.getDate())} ${time}`;
+    }
+
+    const Panel = (() => {
+        let panel = null;
+        let badge = null;
+        const armed = new Set();     // 点过一次「删除」、等确认的监控项
+        let fresh = new Set();       // 打开面板时还未读的：未读数已清零，但这次打开期间仍标出来
+
+        function statusOf(mon) {
+            if (!mon.enabled) return { text: '已暂停' };
+            if (mon.status === 'error') return { error: mon.error || '检查失败' };
+            if (!mon.lastCheck) return { text: '等待首次检查' };
+            return { text: '正常' };
+        }
+
+        function saveInterval(id, minutes) {
+            const sec = Math.max(CONFIG.minInterval, Math.round((Number(minutes) || 0) * 60));
+            Store.patch(id, { interval: sec });
+            render();
+        }
+
+        async function checkNow(id, btn) {
+            btn.disabled = true;
+            btn.textContent = '检查中…';
+            const before = Store.get(id);
+            const after = await Checker.check(id);
+            if (!after) return;
+            if (after.status === 'error') UI.toast('检查失败：' + after.error);
+            else UI.toast(after.lastValue !== before.lastValue ? '检测到变化' : '没有变化');
+        }
+
+        function remove(id) {
+            if (!armed.has(id)) {
+                armed.add(id);
+                render();
+                return;
+            }
+            armed.delete(id);
+            Store.remove(id);
+            render();
+        }
+
+        function itemView(mon, here) {
+            const st = statusOf(mon);
+            const isHere = here.has(mon.id);
+            return UI.el('div', { class: 'item' + (mon.enabled ? '' : ' off'), 'data-id': mon.id }, [
+                UI.el('div', { class: 'name' }, [
+                    UI.el('a', { href: mon.url, target: '_blank', rel: 'noopener', title: mon.url, text: mon.title || mon.url }),
+                    mon.unread || fresh.has(mon.id) ? UI.el('span', { class: 'tag new', text: '有新变化' }) : null,
+                    UI.el('span', { class: 'tag', text: mon.mode === 'observe' ? '本页观察' : '抓取' }),
+                ]),
+                UI.el('div', { class: 'sel', text: mon.selector }),
+                UI.el('div', { class: 'value', 'data-role': 'value', text: Text.preview(mon.lastValue, 160) || '（空）' }),
+                UI.el('div', { class: 'meta' }, [
+                    `上次检查 ${fmtTime(mon.lastCheck)} · 上次变化 ${fmtTime(mon.lastChange)}`,
+                    st.text ? ` · ${st.text}` : null,
+                ]),
+                st.error ? UI.el('div', { class: 'err', 'data-role': 'error', text: st.error }) : null,
+                UI.el('div', { class: 'ctl' }, [
+                    UI.el('label', {}, [
+                        UI.el('input', {
+                            type: 'checkbox', 'data-act': 'toggle', checked: mon.enabled,
+                            onchange: (e) => { Store.patch(mon.id, { enabled: e.target.checked }); render(); },
+                        }),
+                        ' 启用',
+                    ]),
+                    UI.el('label', {}, [
+                        '每 ',
+                        UI.el('input', {
+                            type: 'number', 'data-field': 'interval', min: CONFIG.minInterval / 60, step: 0.5,
+                            value: +(mon.interval / 60).toFixed(2),
+                            onchange: (e) => saveInterval(mon.id, e.target.value),
+                        }),
+                        ' 分钟',
+                    ]),
+                    UI.el('button', {
+                        'data-act': 'check', text: '立即检查',
+                        // 只在该页面上检查：抓别的站要额外的跨域授权，也不该替用户去碰没打开的站
+                        disabled: !isHere, title: isHere ? null : '在该页面打开时才能检查',
+                        onclick: (e) => checkNow(mon.id, e.target),
+                    }),
+                    UI.el('button', {
+                        'data-act': 'delete', class: 'danger', text: armed.has(mon.id) ? '确认删除' : '删除',
+                        onclick: () => remove(mon.id),
+                    }),
+                ]),
+            ]);
+        }
+
+        function render() {
+            renderBadge();
+            if (!panel) return;
+            const list = panel.querySelector('.list');
+            const all = Store.all();
+            const here = new Set(Scheduler.mine().map((m) => m.id));
+            // 当前页的排前面
+            all.sort((a, b) => here.has(b.id) - here.has(a.id));
+            panel.querySelector('.title').textContent = `网页监控（${all.length}）`;
+            list.textContent = '';
+            if (!all.length) list.append(UI.el('div', { class: 'empty', text: '还没有监控项。点「选取区域」在本页选一块。' }));
+            for (const mon of all) list.append(itemView(mon, here));
+        }
+
+        function renderBadge() {
+            const mine = Scheduler.mine();
+            if (!mine.length) {
+                if (badge) badge.remove();
+                badge = null;
+                return;
+            }
+            if (!badge) {
+                badge = UI.el('div', { class: 'badge', 'data-role': 'badge', title: '网页监控', onclick: () => toggle() });
+                UI.layer().append(badge);
+            }
+            const unread = mine.reduce((n, m) => n + (m.unread || 0), 0);
+            badge.classList.toggle('unread', unread > 0);
+            badge.textContent = unread ? `● ${unread} 处变化` : `◎ 监控中 ${mine.length}`;
+        }
+
+        /** 打开面板就算「看过了」，清掉未读。 */
+        function markRead() {
+            for (const mon of Store.all()) if (mon.unread) Store.patch(mon.id, { unread: 0 });
+        }
+
+        function open() {
+            if (!panel) {
+                panel = UI.el('div', { class: 'panel', 'data-role': 'panel' }, [
+                    UI.el('div', { class: 'head' }, [
+                        UI.el('span', { class: 'title' }),
+                        UI.el('button', { 'data-act': 'pick', text: '选取区域', onclick: () => { close(); Picker.start(); } }),
+                        UI.el('button', { 'data-act': 'close', text: '×', onclick: () => close() }),
+                    ]),
+                    UI.el('div', { class: 'list' }),
+                ]);
+                UI.layer().append(panel);
+            }
+            fresh = new Set(Store.all().filter((m) => m.unread).map((m) => m.id));
+            markRead();
+            render();
+        }
+
+        function close() {
+            if (panel) panel.remove();
+            panel = null;
+            armed.clear();
+            fresh.clear();
+        }
+
+        function toggle() {
+            if (panel) close();
+            else open();
+        }
+
+        /**
+         * 定时重绘时，用户正在改间隔就先不动：整块重建会把输入框连同焦点一起换掉，
+         * 打到一半的数字就没了。
+         */
+        function refresh() {
+            const active = panel && panel.getRootNode().activeElement;
+            if (active && panel.contains(active) && active.tagName === 'INPUT' && active.type === 'number') {
+                renderBadge();
+                return;
+            }
+            render();
+        }
+
+        return { open, close, toggle, refresh };
+    })();
+
+    // =========================================================================
     // 启动
     // =========================================================================
 
     function boot() {
         if (typeof GM_registerMenuCommand === 'function') {
             GM_registerMenuCommand('选取要监控的区域', () => Picker.start());
+            GM_registerMenuCommand('监控面板', () => Panel.toggle());
         }
+        Panel.refresh();
         Scheduler.start();
     }
 
