@@ -218,7 +218,8 @@ async function main() {
         t.assert(notes[0].title.includes('示例商品'), notes[0].title)
         t.eq(notes[0].text, '有货\n→ 缺货')
         const stored = (await monitors(page))[0]
-        t.eq([stored.prevValue, stored.lastValue, stored.baseline], ['有货', '缺货', '有货'])
+        t.eq([stored.lastValue, stored.baseline], ['缺货', '有货'])
+        t.eq(stored.history.map((x) => [x.old, x.new, x.notified]), [['有货', '缺货', true]])
         t.eq(await page.locator('#stock').textContent(), '有货', '不刷新、不改动当前页面')
 
         // 没再变：下一轮不重复通知
@@ -401,6 +402,39 @@ async function main() {
             await waitFor(async () => (await monitors(page)).every((x) => x.lastValue === text), `检查到 ${text}`)
             t.eq(await notificationCount(page), expected, `到 ${text} 时的通知数`)
         }
+        await ctx.close()
+    })
+
+    await t.test('历史：最多留 20 条（新的在前），面板里逐词 diff 高亮（中文按字、数字和英文按词），未通知的标出原因', async () => {
+        const site = createSite({ '/item/42': fixture('shop.html') })
+        const ctx = await browser.newContext()
+        const old = Array.from({ length: 20 }, (_, i) => ({ t: T0.getTime() - (i + 1) * MIN, old: `旧 ${i + 1}`, new: `旧 ${i}`, notified: true }))
+        const values = {
+            'mon:p': seed('p', { selector: '#notice', baseline: '更新于 09:00 · 今日公告：正常营业', lastValue: '更新于 09:00 · 今日公告：正常营业', history: old }),
+            'mon:s': seed('s', { keyword: { mode: 'contains', text: '有货' } }),
+        }
+        const page = await open(ctx, site, '/item/42', { clock: T0, values })
+        serve(site, [['09:00 · 今日公告：正常营业', '09:30 · 今日公告：暂停营业 Status: In progress'], ['>有货<', '>缺货<']])
+        await advance(page, 5 * MIN + 5000)
+        await waitFor(async () => (await monitors(page)).every((x) => x.history && x.history[0] && x.history[0].t > T0.getTime()), '两项都记下变化')
+
+        const p = (await monitors(page)).find((x) => x.id === 'p')
+        t.eq(p.history.length, 20, '封顶 20 条')
+        t.eq(p.history[0].new, '更新于 09:30 · 今日公告：暂停营业 Status: In progress')
+        t.eq(p.history[19].old, '旧 19', '最老的一条被挤掉')
+
+        await h.menu(page, '监控面板')
+        await inHost(page, '[data-id="p"] [data-act="history"]').click()
+        const first = inHost(page, '[data-id="p"] [data-role="diff"]').first()
+        t.eq(await first.locator('del').allTextContents(), ['00', '正常'])
+        t.eq(await first.locator('ins').allTextContents(), ['30', '暂停', ' Status: In progress'])
+        t.eq(await first.textContent(), '更新于 09:0030 · 今日公告：正常暂停营业 Status: In progress', '旧新交错拼起来，eq 部分不重复')
+
+        await inHost(page, '[data-id="s"] [data-act="history"]').click()
+        const s = inHost(page, '[data-id="s"] [data-role="history"]')
+        t.assert((await s.textContent()).includes('未通知（不含「有货」）'), await s.textContent())
+        t.eq(await s.locator('del').allTextContents(), ['有'])
+        t.eq(await s.locator('ins').allTextContents(), ['缺'])
         await ctx.close()
     })
 

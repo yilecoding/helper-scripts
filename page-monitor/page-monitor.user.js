@@ -3,7 +3,7 @@
 // @name:zh-CN   网页变化监控
 // @name:en      Page Monitor — Watch Any Part of a Page for Changes
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.09.25.4
+// @version      2025.09.26.5
 // @description  选中页面上的一块区域（价格、库存、公告、成绩、工单状态），内容变化时通知你。
 // @description:zh-CN  选中页面上的一块区域（价格、库存、公告、成绩、工单状态），内容变化时通知你。
 // @description:en  Pick any part of a page (price, stock, notice, grades, ticket status) and get notified when it changes.
@@ -47,6 +47,8 @@
         previewLength: 60,      // 列表 / 提示里显示的文字长度
         tickMs: 5000,           // 调度器多久看一次「谁到点了」
         requestTimeout: 20000,  // 抓取超时（毫秒）
+        historySize: 20,        // 每个监控项保留最近多少条变化
+        diffMaxCells: 1500000,  // 逐词 diff 的 LCS 表上限（词数之积），超了退化成整段替换
     };
 
     const HOST_ID = 'page-monitor-host';
@@ -227,6 +229,74 @@
     })();
 
     // =========================================================================
+    // 逐词 diff（LCS）
+    // =========================================================================
+
+    const Diff = (() => {
+        /**
+         * 分词：英文单词 / 数字（带小数点、千分位）算一个词，汉字一个字一个词，空白一段算一个词，
+         * 其余符号一个一个算。中文没有空格，按「词」切需要词典，按字切对「周末 → 今日」这种短改动已经够看。
+         */
+        const TOKEN = /[A-Za-z0-9_]+(?:[.,][0-9]+)*|\s+|[^]/gu;
+
+        function tokens(s) {
+            return String(s || '').match(TOKEN) || [];
+        }
+
+        function push(out, type, text) {
+            const last = out[out.length - 1];
+            if (last && last.type === type) last.text += text;
+            else out.push({ type, text });
+        }
+
+        /**
+         * 先剥掉相同的头尾（监控的文字通常只改一小段，剥完 LCS 表就很小），
+         * 中间段用 LCS 表从后往前填、从前往后走。相同长度时先删后加，读起来是「旧 → 新」。
+         */
+        function words(oldText, newText) {
+            const a = tokens(oldText);
+            const b = tokens(newText);
+            let start = 0;
+            while (start < a.length && start < b.length && a[start] === b[start]) start++;
+            let endA = a.length;
+            let endB = b.length;
+            while (endA > start && endB > start && a[endA - 1] === b[endB - 1]) { endA--; endB--; }
+
+            const out = [];
+            if (start) push(out, 'eq', a.slice(0, start).join(''));
+            const x = a.slice(start, endA);
+            const y = b.slice(start, endB);
+            const n = x.length;
+            const m = y.length;
+            if (n * m > CONFIG.diffMaxCells) {
+                if (n) push(out, 'del', x.join(''));
+                if (m) push(out, 'ins', y.join(''));
+            } else if (n || m) {
+                const w = m + 1;
+                const dp = new Uint32Array((n + 1) * w);
+                for (let i = n - 1; i >= 0; i--) {
+                    for (let j = m - 1; j >= 0; j--) {
+                        dp[i * w + j] = x[i] === y[j] ? dp[(i + 1) * w + j + 1] + 1 : Math.max(dp[(i + 1) * w + j], dp[i * w + j + 1]);
+                    }
+                }
+                let i = 0;
+                let j = 0;
+                while (i < n && j < m) {
+                    if (x[i] === y[j]) { push(out, 'eq', x[i]); i++; j++; }
+                    else if (dp[(i + 1) * w + j] >= dp[i * w + j + 1]) push(out, 'del', x[i++]);
+                    else push(out, 'ins', y[j++]);
+                }
+                while (i < n) push(out, 'del', x[i++]);
+                while (j < m) push(out, 'ins', y[j++]);
+            }
+            if (endA < a.length) push(out, 'eq', a.slice(endA).join(''));
+            return out;
+        }
+
+        return { words };
+    })();
+
+    // =========================================================================
     // 稳定选择器
     // =========================================================================
 
@@ -403,6 +473,12 @@
         .rules textarea { width: 100%; resize: vertical; }
         .rules .line { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
         .rules .hint { color: #57606a; }
+        .history { margin-top: 6px; max-height: 260px; overflow: auto; border-top: 1px dashed #d0d7de; }
+        .hist { padding: 6px 0; border-bottom: 1px dashed #eaeef2; }
+        .hist .muted { color: #9a6700; }
+        .diff { word-break: break-all; white-space: pre-wrap; }
+        .diff del { background: #ffebe9; color: #82071e; text-decoration: line-through; }
+        .diff ins { background: #dafbe1; color: #116329; text-decoration: none; }
     `;
 
     const UI = (() => {
@@ -690,9 +766,12 @@
 
             const ref = mon.notifiedValue !== undefined ? mon.notifiedValue : mon.baseline;
             const verdict = Rules.shouldNotify(mon, ref, text);
+            const entry = { t: now, old: mon.lastValue, new: text, notified: verdict.ok };
+            if (!verdict.ok) entry.reason = verdict.reason;
             Store.patch(id, {
                 ...ok,
-                lastValue: text, prevValue: mon.lastValue, lastChange: now,
+                lastValue: text, lastChange: now,
+                history: [entry, ...(mon.history || [])].slice(0, CONFIG.historySize),
                 ...(verdict.ok ? { notifiedValue: text, unread: (mon.unread || 0) + 1 } : {}),
             });
             console.info(TAG, '检测到变化', mon.selector, Text.preview(mon.lastValue), '→', Text.preview(text),
@@ -805,6 +884,7 @@
         const armed = new Set();     // 点过一次「删除」、等确认的监控项
         let fresh = new Set();       // 打开面板时还未读的：未读数已清零，但这次打开期间仍标出来
         const drafts = new Map();    // 正在编辑规则的监控项 → 草稿。定时重绘不能把没保存的输入冲掉
+        const showHistory = new Set();
 
         function statusOf(mon) {
             if (!mon.enabled) return { text: '已暂停' };
@@ -893,6 +973,34 @@
             ]);
         }
 
+        function diffView(oldText, newText) {
+            const box = UI.el('div', { class: 'diff', 'data-role': 'diff' });
+            for (const op of Diff.words(oldText, newText)) {
+                box.append(op.type === 'eq' ? op.text : UI.el(op.type, { text: op.text }));
+            }
+            return box;
+        }
+
+        function historyView(mon) {
+            const list = mon.history || [];
+            return UI.el('div', { class: 'history', 'data-role': 'history' },
+                list.length
+                    ? list.map((h) => UI.el('div', { class: 'hist' }, [
+                        UI.el('div', { class: 'meta' }, [
+                            fmtTime(h.t),
+                            h.notified ? null : UI.el('span', { class: 'muted', text: ` · 未通知（${h.reason || '不满足条件'}）` }),
+                        ]),
+                        diffView(h.old, h.new),
+                    ]))
+                    : [UI.el('div', { class: 'meta', text: '还没有检测到变化' })]);
+        }
+
+        function toggleHistory(id) {
+            if (showHistory.has(id)) showHistory.delete(id);
+            else showHistory.add(id);
+            render();
+        }
+
         function rulesSummary(mon) {
             const parts = [];
             const n = Rules.parseNoise(mon.noise).list.length;
@@ -955,6 +1063,7 @@
                         disabled: !isHere, title: isHere ? null : '在该页面打开时才能检查',
                         onclick: (e) => checkNow(mon.id, e.target),
                     }),
+                    UI.el('button', { 'data-act': 'history', text: `历史 ${(mon.history || []).length}`, onclick: () => toggleHistory(mon.id) }),
                     UI.el('button', { 'data-act': 'rules', text: '规则', onclick: () => editRules(mon) }),
                     UI.el('button', {
                         'data-act': 'delete', class: 'danger', text: armed.has(mon.id) ? '确认删除' : '删除',
@@ -962,6 +1071,7 @@
                     }),
                 ]),
                 drafts.has(mon.id) ? rulesView(mon) : null,
+                showHistory.has(mon.id) ? historyView(mon) : null,
             ]);
         }
 
@@ -1023,6 +1133,7 @@
             armed.clear();
             fresh.clear();
             drafts.clear();
+            showHistory.clear();
         }
 
         function toggle() {
