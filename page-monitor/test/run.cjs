@@ -438,6 +438,44 @@ async function main() {
         await ctx.close()
     })
 
+    await t.test('本页观察：JS 渲染的元素，改文字和整块重渲染都能发现，不发请求；只改无关部分不报', async () => {
+        const site = createSite({ '/ticket/1024': fixture('ticket.html') })
+        const ctx = await browser.newContext()
+        const page = await open(ctx, site, '/ticket/1024', { clock: T0 })
+        await pick(page, '.status')
+        await inHost(page, '[data-act="save-observe"]').click()
+        const [m] = await monitors(page)
+        t.eq([m.mode, m.baseline, m.selector], ['observe', '状态：排队中', 'p.status'])
+
+        await page.evaluate(() => { document.querySelector('.status').firstChild.data = '状态：处理中' })
+        await advance(page, 1500)
+        await waitFor(async () => (await notificationCount(page)) === 1, '改文字节点要发现')
+        t.eq((await monitors(page))[0].lastValue, '状态：处理中')
+
+        await page.evaluate(() => window.renderTicket('已完成'))
+        await advance(page, 1500)
+        await waitFor(async () => (await notificationCount(page)) === 2, '整块换掉也要发现')
+        const notes = (await h.gm(page)).notifications
+        t.eq(notes[1].text, '状态：处理中\n→ 状态：已完成')
+        await page.evaluate(() => window.__gm.notifications[1].onclick())
+        t.eq((await h.gm(page)).opened, [], '变化就在本标签页上，点通知不另开标签')
+
+        // 页面别处变化：观察器会被触发，但这一块没变，不报
+        await page.evaluate(() => document.body.append(Object.assign(document.createElement('p'), { textContent: '新评论' })))
+        await advance(page, 1500)
+        t.eq(await notificationCount(page), 2)
+
+        // 持续变化（每 500ms 改一次）时最多 5 秒也要比较一次
+        await page.evaluate(() => { let n = 0; setInterval(() => { document.title = String(n++); document.body.dataset.n = n; document.body.append('.') }, 500) })
+        await page.evaluate(() => window.renderTicket('已关闭'))
+        await advance(page, 5500)
+        await waitFor(async () => (await notificationCount(page)) === 3, '持续变化时到最长等待也要比较')
+
+        t.eq(site.requests, [], '本页观察不发请求')
+        t.eq(h.errors(page).map(String), [])
+        await ctx.close()
+    })
+
     await close()
     t.done()
 }

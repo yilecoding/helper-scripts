@@ -3,7 +3,7 @@
 // @name:zh-CN   网页变化监控
 // @name:en      Page Monitor — Watch Any Part of a Page for Changes
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.09.26.5
+// @version      2025.09.29.6
 // @description  选中页面上的一块区域（价格、库存、公告、成绩、工单状态），内容变化时通知你。
 // @description:zh-CN  选中页面上的一块区域（价格、库存、公告、成绩、工单状态），内容变化时通知你。
 // @description:en  Pick any part of a page (price, stock, notice, grades, ticket status) and get notified when it changes.
@@ -49,6 +49,8 @@
         requestTimeout: 20000,  // 抓取超时（毫秒）
         historySize: 20,        // 每个监控项保留最近多少条变化
         diffMaxCells: 1500000,  // 逐词 diff 的 LCS 表上限（词数之积），超了退化成整段替换
+        observeDebounce: 1000,  // 本页观察：DOM 安静这么久再取文字比较（毫秒）
+        observeMaxWait: 5000,   // 本页观察：持续变化时最多拖这么久也要比较一次
     };
 
     const HOST_ID = 'page-monitor-host';
@@ -571,7 +573,16 @@
                 UI.el('div', { class: 'row' }, [
                     UI.el('button', { 'data-act': 'parent', text: '↑ 父元素', onclick: () => expand() }),
                     UI.el('button', { 'data-act': 'repick', text: '重新选', onclick: () => { picked = null; hl.classList.remove('picked'); renderBar(); } }),
-                    UI.el('button', { 'data-act': 'save-fetch', class: 'primary', text: '监控这一块', disabled: !text, onclick: () => save('fetch') }),
+                    UI.el('button', {
+                        'data-act': 'save-fetch', class: 'primary', text: '定时抓取检查', disabled: !text,
+                        title: '页面开着时按间隔在后台重新抓这个网址，不刷新、不打扰当前页面',
+                        onclick: () => save('fetch'),
+                    }),
+                    UI.el('button', {
+                        'data-act': 'save-observe', text: '在本页内观察', disabled: !text,
+                        title: '内容由 JS 渲染、抓 HTML 拿不到时用：直接盯着当前页面上的这块元素',
+                        onclick: () => save('observe'),
+                    }),
                     UI.el('button', { 'data-act': 'cancel', text: '取消', onclick: () => stop() }),
                 ]),
             );
@@ -608,6 +619,7 @@
             UI.toast('已开始监控：' + Text.preview(text, 30));
             Panel.refresh();
             if (mode === 'fetch') Checker.calibrate(mon.id);
+            else Observer.sync();
             return mon;
         }
 
@@ -746,8 +758,12 @@
             GM_notification({
                 title,
                 text,
-                // 抓取型的标签页内容是旧的（脚本不刷新它），点通知开一个新标签看最新内容
-                onclick: () => GM_openInTab(mon.url, { active: true, setParent: true }),
+                // 抓取型的标签页内容是旧的（脚本不刷新它），点通知开一个新标签看最新内容；
+                // 本页观察的变化就在这个标签页上，回到它就行
+                onclick: () => {
+                    if (mon.mode === 'observe' && pageUrl() === mon.url) window.focus();
+                    else GM_openInTab(mon.url, { active: true, setParent: true });
+                },
             });
         }
         return { change };
@@ -790,7 +806,7 @@
             if (!mon) return null;
             let result;
             try {
-                result = apply(id, await fetchText(mon));
+                result = apply(id, mon.mode === 'observe' ? Observer.read(mon) : await fetchText(mon));
             } catch (e) {
                 result = fail(id, e);
             }
@@ -816,7 +832,83 @@
             return result;
         }
 
-        return { check, calibrate };
+        return { check, calibrate, apply, fail };
+    })();
+
+    // =========================================================================
+    // 本页观察：MutationObserver
+    // =========================================================================
+
+    /**
+     * 观察整个 body 而不是只观察那个元素：SPA 重渲染时常把整块节点换掉，
+     * 盯着旧元素的观察器就再也收不到东西了。每次安静下来以后按选择器重新找元素取文字，
+     * 换没换节点都无所谓。面板宿主挂在 <html> 下，不在 body 里，自己的重绘不会触发它。
+     */
+    const Observer = (() => {
+        let mo = null;
+        let timer = 0;
+        let firstAt = 0;
+
+        function watched() {
+            return Scheduler.mine().filter((m) => m.enabled && m.mode === 'observe');
+        }
+
+        /** 取当前页上的文字。找不到元素抛错（面板上显示），不当成「变成了空」。 */
+        function read(mon) {
+            if (pageUrl() !== mon.url) throw new Error('只能在该页面上观察');
+            let el;
+            try {
+                el = document.querySelector(mon.selector);
+            } catch (e) {
+                throw new Error('选择器无效：' + mon.selector);
+            }
+            if (!el) throw new Error('本页找不到这个元素（页面改版，或还没渲染出来）');
+            return Text.normalize(Text.of(el));
+        }
+
+        function evaluate() {
+            timer = 0;
+            firstAt = 0;
+            let changed = false;
+            for (const mon of watched()) {
+                let text;
+                try {
+                    text = read(mon);
+                } catch (e) {
+                    if (mon.status !== 'error' || mon.error !== e.message) { Checker.fail(mon.id, e); changed = true; }
+                    continue;
+                }
+                // 空文字多半是「还没渲染出来」（骨架屏、加载中被清空），等下一次变化
+                if (!text) continue;
+                if (text !== mon.lastValue || mon.status !== 'ok') { Checker.apply(mon.id, text); changed = true; }
+            }
+            if (changed) Panel.refresh();
+        }
+
+        function schedule() {
+            const now = Date.now();
+            if (!firstAt) firstAt = now;
+            clearTimeout(timer);
+            const wait = Math.min(CONFIG.observeDebounce, Math.max(0, firstAt + CONFIG.observeMaxWait - now));
+            timer = setTimeout(evaluate, wait);
+        }
+
+        /** 按当前存储决定开不开观察器：有启用的观察项才开，免得在每个页面上都挂一个全量观察。 */
+        function sync() {
+            const need = watched().length > 0;
+            if (need && !mo && document.body) {
+                mo = new MutationObserver(schedule);
+                mo.observe(document.body, { childList: true, subtree: true, characterData: true });
+                schedule();
+            } else if (!need && mo) {
+                mo.disconnect();
+                mo = null;
+                clearTimeout(timer);
+                timer = firstAt = 0;
+            }
+        }
+
+        return { sync, read };
     })();
 
     // =========================================================================
@@ -843,6 +935,7 @@
         function tick() {
             // 别的标签页检查完写进存储的结果，这边靠定时重绘看到
             Panel.refresh();
+            Observer.sync();
             const now = Date.now();
             for (const mon of mine()) {
                 if (!mon.enabled || mon.mode !== 'fetch' || running.has(mon.id) || !due(mon, now)) continue;
@@ -1020,6 +1113,7 @@
             }
             armed.delete(id);
             Store.remove(id);
+            Observer.sync();
             render();
         }
 
@@ -1044,7 +1138,7 @@
                     UI.el('label', {}, [
                         UI.el('input', {
                             type: 'checkbox', 'data-act': 'toggle', checked: mon.enabled,
-                            onchange: (e) => { Store.patch(mon.id, { enabled: e.target.checked }); render(); },
+                            onchange: (e) => { Store.patch(mon.id, { enabled: e.target.checked }); Observer.sync(); render(); },
                         }),
                         ' 启用',
                     ]),
@@ -1167,6 +1261,7 @@
             GM_registerMenuCommand('监控面板', () => Panel.toggle());
         }
         Panel.refresh();
+        Observer.sync();
         Scheduler.start();
     }
 
