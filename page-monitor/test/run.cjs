@@ -95,6 +95,8 @@ async function advance(page, ms) {
 
 const T0 = new Date('2026-10-29T09:00:00+08:00')
 const MIN = 60 * 1000
+/** 一个默认间隔再多一点：调度器每 5 秒看一次、首轮有随机错开，认领后还要等一下确认。 */
+const STEP = 5 * MIN + 6000
 
 /** 拾取并保存一个抓取型监控，等新建后那次校准抓取回来。 */
 async function addFetchMonitor(page, site, selector) {
@@ -211,7 +213,7 @@ async function main() {
         t.eq((await h.gm(page)).notifications, [])
 
         site.files['/item/42'] = fixture('shop.html').replace('>有货<', '>缺货<')
-        await advance(page, 1 * MIN + 5000)
+        await advance(page, 1 * MIN + 6000)
         t.eq(site.requests.length, 2, '5 分钟到点抓了一次')
         const notes = await waitFor(async () => (await h.gm(page)).notifications.length && (await h.gm(page)).notifications)
         t.eq(notes.length, 1)
@@ -223,7 +225,7 @@ async function main() {
         t.eq(await page.locator('#stock').textContent(), '有货', '不刷新、不改动当前页面')
 
         // 没再变：下一轮不重复通知
-        await advance(page, 5 * MIN + 5000)
+        await advance(page, STEP)
         t.eq(site.requests.length, 3)
         t.eq((await h.gm(page)).notifications.length, 1)
 
@@ -242,7 +244,7 @@ async function main() {
         await inHost(page, '[data-act="save-fetch"]').click()
         await waitFor(async () => (await monitors(page))[0]?.lastCheck)
         t.eq((await monitors(page))[0].baseline, '有货')
-        await advance(page, 5 * MIN + 5000)
+        await advance(page, STEP)
         t.eq(site.requests.length, 2)
         t.eq((await h.gm(page)).notifications, [])
         await ctx.close()
@@ -305,7 +307,7 @@ async function main() {
         const page = await open(ctx, site, '/item/42', { clock: T0 })
         const m = await addFetchMonitor(page, site, '#stock')
         site.files['/item/42'] = fixture('shop.html').replace('>有货<', '>缺货<')
-        await advance(page, 5 * MIN + 5000)
+        await advance(page, STEP)
         const badge = inHost(page, '[data-role="badge"]')
         await waitFor(async () => (await badge.textContent()) === '● 1 处变化', '角标显示未读')
         await badge.click()
@@ -323,7 +325,7 @@ async function main() {
         t.eq(m.baseline, '更新于 09:00 · 今日公告：正常营业')
 
         serve(site, [['更新于 09:00 · 今日公告', '\n  更新于   09:00\n\t·  今日公告']])
-        await advance(page, 5 * MIN + 5000)
+        await advance(page, STEP)
         t.eq(site.requests.length, 2)
         t.eq(await notificationCount(page), 0, '空白变化不算')
 
@@ -340,13 +342,13 @@ async function main() {
         t.eq(await item('[data-role="rules-summary"]').textContent(), '忽略 1 条噪声')
 
         serve(site, [['09:00', '09:35']])
-        await advance(page, 5 * MIN + 5000)
+        await advance(page, STEP)
         t.eq(site.requests.length, 3)
         t.eq(await notificationCount(page), 0, '只有时间戳变了')
         t.eq((await monitors(page))[0].lastValue, '更新于 09:35 · 今日公告：正常营业', '显示的原文仍跟着更新')
 
         serve(site, [['09:00', '10:10'], ['正常营业', '暂停营业']])
-        await advance(page, 5 * MIN + 5000)
+        await advance(page, STEP)
         await waitFor(async () => (await notificationCount(page)) === 1, '正文变了要通知')
         t.eq(h.errors(page).map(String), [])
         await ctx.close()
@@ -363,18 +365,18 @@ async function main() {
         const titles = async () => (await h.gm(page)).notifications.length
 
         serve(site, [['>有货<', '>缺货<']])
-        await advance(page, 5 * MIN + 5000)
+        await advance(page, STEP)
         t.eq(site.requests.length, 2)
         t.eq(await titles(), 0, '有货→缺货：两个都不通知')
         const all = await monitors(page)
         t.eq(all.map((x) => [x.lastValue, x.unread || 0]), [['缺货', 0], ['缺货', 0]], '新值照样记下，但不算未读')
 
         serve(site, [['>有货<', '>到货了，有货<']])
-        await advance(page, 5 * MIN + 5000)
+        await advance(page, STEP)
         await waitFor(async () => (await titles()) === 2, '缺货→有货：两个都通知')
 
         serve(site, [['>有货<', '>预售<']])
-        await advance(page, 5 * MIN + 5000)
+        await advance(page, STEP)
         await waitFor(async () => (await titles()) === 3, '→预售：只有「不含缺货」的通知')
         t.eq((await monitors(page)).map((x) => x.unread), [1, 2])
         await ctx.close()
@@ -398,7 +400,7 @@ async function main() {
         ]
         for (const [text, expected] of steps) {
             serve(site, [['¥199.00', text]])
-            await advance(page, 5 * MIN + 5000)
+            await advance(page, STEP)
             await waitFor(async () => (await monitors(page)).every((x) => x.lastValue === text), `检查到 ${text}`)
             t.eq(await notificationCount(page), expected, `到 ${text} 时的通知数`)
         }
@@ -415,7 +417,7 @@ async function main() {
         }
         const page = await open(ctx, site, '/item/42', { clock: T0, values })
         serve(site, [['09:00 · 今日公告：正常营业', '09:30 · 今日公告：暂停营业 Status: In progress'], ['>有货<', '>缺货<']])
-        await advance(page, 5 * MIN + 5000)
+        await advance(page, STEP)
         await waitFor(async () => (await monitors(page)).every((x) => x.history && x.history[0] && x.history[0].t > T0.getTime()), '两项都记下变化')
 
         const p = (await monitors(page)).find((x) => x.id === 'p')
@@ -473,6 +475,32 @@ async function main() {
 
         t.eq(site.requests, [], '本页观察不发请求')
         t.eq(h.errors(page).map(String), [])
+        await ctx.close()
+    })
+
+    await t.test('租约：同一 URL 开两个标签，每个间隔只抓一次、只通知一次；一个关掉后另一个接手', async () => {
+        const site = createSite({ '/item/42': fixture('shop.html') })
+        const ctx = await browser.newContext()
+        const values = { 'mon:a': seed('a') }
+        const tab1 = await open(ctx, site, '/item/42', { clock: T0, values })
+        const tab2 = await open(ctx, site, '/item/42')
+        serve(site, [['>有货<', '>缺货<']])
+        await advance(tab1, STEP)
+        await waitFor(async () => (await monitors(tab1))[0].lastValue === '缺货')
+        t.eq(site.requests.length, 1, '两个标签只抓一次')
+        const total = async () => (await notificationCount(tab1)) + (await notificationCount(tab2))
+        t.eq(await total(), 1, '只通知一次')
+
+        await advance(tab1, STEP)
+        t.eq(site.requests.length, 2, '下一个间隔还是只抓一次')
+
+        const tab2Before = await notificationCount(tab2)
+        await tab1.close()
+        serve(site, [['>有货<', '>到货<']])
+        await advance(tab2, STEP)
+        await waitFor(async () => (await monitors(tab2))[0].lastValue === '到货', '剩下的标签接手')
+        t.eq(site.requests.length, 3)
+        t.eq(await notificationCount(tab2), tab2Before + 1, '这次的通知由剩下的标签发')
         await ctx.close()
     })
 

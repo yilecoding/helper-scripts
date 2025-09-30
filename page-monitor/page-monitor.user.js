@@ -3,7 +3,7 @@
 // @name:zh-CN   网页变化监控
 // @name:en      Page Monitor — Watch Any Part of a Page for Changes
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.09.29.6
+// @version      2025.09.30.7
 // @description  选中页面上的一块区域（价格、库存、公告、成绩、工单状态），内容变化时通知你。
 // @description:zh-CN  选中页面上的一块区域（价格、库存、公告、成绩、工单状态），内容变化时通知你。
 // @description:en  Pick any part of a page (price, stock, notice, grades, ticket status) and get notified when it changes.
@@ -51,9 +51,12 @@
         diffMaxCells: 1500000,  // 逐词 diff 的 LCS 表上限（词数之积），超了退化成整段替换
         observeDebounce: 1000,  // 本页观察：DOM 安静这么久再取文字比较（毫秒）
         observeMaxWait: 5000,   // 本页观察：持续变化时最多拖这么久也要比较一次
+        leaseConfirmMs: 300,    // 认领一次检查后等这么久再读回来确认，别的标签同时认领时以最后写入的为准
     };
 
     const HOST_ID = 'page-monitor-host';
+    /** 本标签页的身份，认领检查时写进存储。 */
+    const TAB_ID = Math.random().toString(36).slice(2, 10);
 
     // =========================================================================
     // 存储：每个监控项一个键（mon:<id>）
@@ -927,6 +930,25 @@
             return now - last >= mon.interval * 1000;
         }
 
+        /**
+         * 租约：同一个 URL 开着几个标签时，谁先到点谁认领 —— 把「上次检查时间」写成现在、
+         * 署上自己的名字。别的标签再看就是「刚检查过」，跳过。
+         * 认领后等一小会儿再读回来确认：真实的管理器里 GM 存储跨标签同步是异步的，
+         * 两个标签可能在同一瞬间都以为自己先到；等同步完，名字被覆盖掉的那个让出。
+         */
+        function claim(mon, now) {
+            running.add(mon.id);
+            Store.patch(mon.id, { lastCheck: now, checker: TAB_ID });
+            setTimeout(() => {
+                const cur = Store.get(mon.id);
+                if (!cur || cur.checker !== TAB_ID || !cur.enabled) {
+                    running.delete(mon.id);
+                    return;
+                }
+                Checker.check(mon.id).finally(() => running.delete(mon.id));
+            }, CONFIG.leaseConfirmMs);
+        }
+
         function mine() {
             const url = pageUrl();
             return Store.all().filter((m) => m.url === url);
@@ -939,8 +961,7 @@
             const now = Date.now();
             for (const mon of mine()) {
                 if (!mon.enabled || mon.mode !== 'fetch' || running.has(mon.id) || !due(mon, now)) continue;
-                running.add(mon.id);
-                Checker.check(mon.id).finally(() => running.delete(mon.id));
+                claim(mon, now);
             }
         }
 
@@ -953,7 +974,8 @@
                 }
                 setTimeout(loop, CONFIG.tickMs);
             };
-            setTimeout(loop, CONFIG.tickMs);
+            // 首轮随机错开：同时打开（或恢复会话）的几个标签不要在同一刻到点
+            setTimeout(loop, Math.random() * CONFIG.tickMs);
         }
 
         return { start, mine };
