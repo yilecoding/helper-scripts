@@ -504,6 +504,64 @@ async function main() {
         await ctx.close()
     })
 
+    await t.test('失败：选择器在抓到的页面里找不到 —— 面板显示原因、角标提示，不当成「变成空」去通知', async () => {
+        const site = createSite({ '/item/42': fixture('shop.html') })
+        const ctx = await browser.newContext()
+        const values = { 'mon:a': seed('a', { selector: '#stock-v1' }) }
+        const page = await open(ctx, site, '/item/42', { clock: T0, values })
+        await advance(page, STEP)
+        const m = await waitFor(async () => (await monitors(page))[0].status === 'error' && (await monitors(page))[0])
+        t.eq(m.failCount, 1)
+        t.eq(m.lastValue, '有货', '旧值保留')
+        t.eq(await notificationCount(page), 0)
+        t.eq(await inHost(page, '[data-role="badge"]').textContent(), '! 1 项检查失败')
+        await h.menu(page, '监控面板')
+        t.assert((await inHost(page, '[data-id="a"] [data-role="error"]').textContent()).includes('找不到这个元素'))
+        t.assert((await inHost(page, '[data-id="a"] .meta').first().textContent()).includes('连续失败 1 次'))
+        await ctx.close()
+    })
+
+    await t.test('失败：连续失败按 2 倍退避，第 3 次发一条「监控失效」通知；恢复后计数清零、回到正常间隔', async () => {
+        const site = createSite({ '/item/42': fixture('shop.html') })
+        let down = true
+        const xhr = (d) => {
+            site.requests.push(d.url)
+            if (!down) return site.serve(d.url)
+            return site.requests.length === 2 ? { timeout: true } : { status: 503, responseText: '' }
+        }
+        const ctx = await browser.newContext()
+        const page = await open(ctx, site, '/item/42', { clock: T0, values: { 'mon:a': seed('a') }, xhr })
+        const last = async () => (await monitors(page))[0]
+
+        await advance(page, STEP)                 // 第 1 次：503
+        t.eq(site.requests.length, 1)
+        t.eq([(await last()).failCount, (await last()).error], [1, 'HTTP 503'])
+        await advance(page, STEP)                 // 退避到 10 分钟：5 分钟时不抓
+        t.eq(site.requests.length, 1, '退避中')
+        await advance(page, STEP)                 // 第 2 次：超时
+        t.eq(site.requests.length, 2)
+        await waitFor(async () => (await last()).failCount === 2)
+        t.eq((await last()).error, '请求超时')
+        await advance(page, 3 * STEP)             // 退避到 20 分钟：15 分钟时不抓
+        t.eq(site.requests.length, 2, '第二次退避中')
+        t.eq(await notificationCount(page), 0)
+        await advance(page, STEP)                 // 第 3 次：503 → 通知一次
+        t.eq(site.requests.length, 3)
+        const notes = await waitFor(async () => (await h.gm(page)).notifications.length && (await h.gm(page)).notifications)
+        t.assert(notes[0].title.startsWith('网页监控失效'), notes[0].title)
+        t.eq(notes[0].text, '连续 3 次检查失败：HTTP 503')
+
+        down = false
+        await h.menu(page, '监控面板')
+        await inHost(page, '[data-id="a"] [data-act="check"]').click()   // 手动检查不受退避限制
+        await waitFor(async () => (await last()).status === 'ok', '恢复')
+        t.eq((await last()).failCount, 0)
+        await advance(page, STEP)
+        t.eq(site.requests.length, 5, '回到 5 分钟间隔')
+        t.eq(await notificationCount(page), 1, '恢复后内容没变，不再通知')
+        await ctx.close()
+    })
+
     await close()
     t.done()
 }

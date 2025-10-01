@@ -3,7 +3,7 @@
 // @name:zh-CN   网页变化监控
 // @name:en      Page Monitor — Watch Any Part of a Page for Changes
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.09.30.7
+// @version      2025.10.01.8
 // @description  选中页面上的一块区域（价格、库存、公告、成绩、工单状态），内容变化时通知你。
 // @description:zh-CN  选中页面上的一块区域（价格、库存、公告、成绩、工单状态），内容变化时通知你。
 // @description:en  Pick any part of a page (price, stock, notice, grades, ticket status) and get notified when it changes.
@@ -52,6 +52,8 @@
         observeDebounce: 1000,  // 本页观察：DOM 安静这么久再取文字比较（毫秒）
         observeMaxWait: 5000,   // 本页观察：持续变化时最多拖这么久也要比较一次
         leaseConfirmMs: 300,    // 认领一次检查后等这么久再读回来确认，别的标签同时认领时以最后写入的为准
+        maxBackoff: 3600,       // 秒。连续失败时间隔翻倍，最多拉长到这么久（间隔本身更长的不受影响）
+        failNotifyAfter: 3,     // 连续失败这么多次发一条通知：选择器失效了用户不开面板也该知道
     };
 
     const HOST_ID = 'page-monitor-host';
@@ -450,6 +452,7 @@
             box-shadow: 0 2px 8px rgba(0,0,0,.12); display: flex; align-items: center; gap: 4px; font-size: 12px;
         }
         .badge.unread { background: #dc2626; border-color: #dc2626; color: #fff; }
+        .badge.failing { background: #fff8c5; border-color: #d4a72c; color: #7d4e00; }
         .panel {
             position: fixed; z-index: 2147483646; right: 16px; top: 16px; width: 400px; max-width: calc(100vw - 32px);
             max-height: calc(100vh - 32px); display: flex; flex-direction: column; background: #fff;
@@ -754,6 +757,15 @@
     }
 
     const Notify = (() => {
+        function failing(mon) {
+            if (typeof GM_notification !== 'function') return;
+            GM_notification({
+                title: '网页监控失效：' + Text.preview(mon.title, 30),
+                text: `连续 ${mon.failCount} 次检查失败：${mon.error}`,
+                onclick: () => { window.focus(); Panel.open(); },
+            });
+        }
+
         function change(mon, oldText, newText) {
             const title = '网页变化：' + Text.preview(mon.title, 30);
             const text = `${Text.preview(oldText, 40) || '（空）'}\n→ ${Text.preview(newText, 80) || '（空）'}`;
@@ -769,7 +781,7 @@
                 },
             });
         }
-        return { change };
+        return { change, failing };
     })();
 
     const Checker = (() => {
@@ -778,7 +790,7 @@
             const mon = Store.get(id);
             if (!mon) return null;
             const now = Date.now();
-            const ok = { lastCheck: now, status: 'ok', error: '' };
+            const ok = { lastCheck: now, status: 'ok', error: '', failCount: 0 };
             if (text === mon.lastValue) return Store.patch(id, ok);
             // 只有空白 / 噪声变了：更新显示用的原文，不算变化
             if (Rules.clean(text, mon) === Rules.clean(mon.lastValue, mon)) return Store.patch(id, { ...ok, lastValue: text });
@@ -799,9 +811,16 @@
             return Store.get(id);
         }
 
+        /** 失败不吞：状态和原因写进存储（面板、角标显示），连续失败计数用来退避。 */
         function fail(id, err) {
-            console.warn(TAG, '检查失败', id, err && err.message);
-            return Store.patch(id, { lastCheck: Date.now(), status: 'error', error: String((err && err.message) || err) });
+            const mon = Store.get(id);
+            if (!mon) return null;
+            const failCount = (mon.failCount || 0) + 1;
+            const error = String((err && err.message) || err);
+            console.warn(TAG, '检查失败', mon.selector, `第 ${failCount} 次`, error);
+            const next = Store.patch(id, { lastCheck: Date.now(), status: 'error', error, failCount });
+            if (failCount === CONFIG.failNotifyAfter) Notify.failing(next);
+            return next;
         }
 
         async function check(id) {
@@ -827,7 +846,7 @@
             let result;
             try {
                 const text = await fetchText(mon);
-                result = Store.patch(id, { baseline: text, lastValue: text, lastCheck: Date.now(), status: 'ok', error: '' });
+                result = Store.patch(id, { baseline: text, lastValue: text, lastCheck: Date.now(), status: 'ok', error: '', failCount: 0 });
             } catch (e) {
                 result = fail(id, e);
             }
@@ -925,9 +944,18 @@
     const Scheduler = (() => {
         const running = new Set();
 
+        /** 连续失败时按 2 的幂退避：对方在限流或宕机时，越催越糟。 */
+        function wait(mon) {
+            const n = Math.min(mon.failCount || 0, 10);
+            return Math.min(mon.interval * 2 ** n, Math.max(mon.interval, CONFIG.maxBackoff)) * 1000;
+        }
+
+        function nextAt(mon) {
+            return (mon.lastCheck || mon.createdAt || 0) + wait(mon);
+        }
+
         function due(mon, now) {
-            const last = mon.lastCheck || mon.createdAt || 0;
-            return now - last >= mon.interval * 1000;
+            return now >= nextAt(mon);
         }
 
         /**
@@ -978,7 +1006,7 @@
             setTimeout(loop, Math.random() * CONFIG.tickMs);
         }
 
-        return { start, mine };
+        return { start, mine, nextAt };
     })();
 
     // =========================================================================
@@ -1003,7 +1031,11 @@
 
         function statusOf(mon) {
             if (!mon.enabled) return { text: '已暂停' };
-            if (mon.status === 'error') return { error: mon.error || '检查失败' };
+            if (mon.status === 'error') {
+                const n = mon.failCount || 1;
+                const next = mon.mode === 'fetch' ? ` · 下次约 ${fmtTime(Scheduler.nextAt(mon))}` : '';
+                return { text: `连续失败 ${n} 次${next}`, error: mon.error || '检查失败' };
+            }
             if (!mon.lastCheck) return { text: '等待首次检查' };
             return { text: '正常' };
         }
@@ -1217,8 +1249,10 @@
                 UI.layer().append(badge);
             }
             const unread = mine.reduce((n, m) => n + (m.unread || 0), 0);
+            const failing = mine.filter((m) => m.enabled && m.status === 'error').length;
             badge.classList.toggle('unread', unread > 0);
-            badge.textContent = unread ? `● ${unread} 处变化` : `◎ 监控中 ${mine.length}`;
+            badge.classList.toggle('failing', !unread && failing > 0);
+            badge.textContent = unread ? `● ${unread} 处变化` : failing ? `! ${failing} 项检查失败` : `◎ 监控中 ${mine.length}`;
         }
 
         /** 打开面板就算「看过了」，清掉未读。 */
