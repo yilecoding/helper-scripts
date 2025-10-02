@@ -562,6 +562,39 @@ async function main() {
         await ctx.close()
     })
 
+    await t.test('边界：站点脚本在前面插了元素，活页面的 :nth-of-type 序号和服务器 HTML 对不上 —— 不能悄悄盯错元素', async () => {
+        const site = createSite({ '/old': fixture('banner.html') })
+        const ctx = await browser.newContext()
+        const page = await open(ctx, site, '/old', { clock: T0 })
+        await pick(page, 'body > div:nth-of-type(3)')
+        t.eq(await inHost(page, '.text').textContent(), '价格：¥88')
+        await inHost(page, '[data-act="save-fetch"]').click()
+        const m = await waitFor(async () => (await monitors(page))[0]?.lastCheck && (await monitors(page))[0])
+        t.eq(m.baseline, '价格：¥88', '校准后基线仍是选中的那一块')
+        t.eq(m.selector, 'div:nth-of-type(2)', '选择器按服务器 HTML 校正')
+
+        site.files['/old'] = fixture('banner.html').replace('¥88', '¥66')
+        await advance(page, STEP)
+        await waitFor(async () => (await notificationCount(page)) === 1, '价格变了要通知')
+        t.eq((await h.gm(page)).notifications[0].text, '价格：¥88\n→ 价格：¥66')
+        await ctx.close()
+    })
+
+    await t.test('边界：选中的是只在活页面上存在的元素（服务器 HTML 里同位置是别的内容）—— 暂停并说明，不盯错', async () => {
+        const site = createSite({ '/old': fixture('banner.html') })
+        const ctx = await browser.newContext()
+        const page = await open(ctx, site, '/old', { clock: T0 })
+        await pick(page, 'body > div:nth-of-type(1)')
+        t.eq(await inHost(page, '.text').textContent(), '本站使用 Cookie')
+        await inHost(page, '[data-act="save-fetch"]').click()
+        const m = await waitFor(async () => (await monitors(page))[0]?.lastCheck && (await monitors(page))[0])
+        t.eq([m.enabled, m.status], [false, 'error'])
+        t.assert(m.error.includes('「标题区」') && m.error.includes('在本页内观察'), m.error)
+        await advance(page, STEP)
+        t.eq(site.requests.length, 1, '暂停了，不再抓')
+        await ctx.close()
+    })
+
     await close()
     t.done()
 }

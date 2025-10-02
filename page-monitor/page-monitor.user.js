@@ -3,7 +3,7 @@
 // @name:zh-CN   网页变化监控
 // @name:en      Page Monitor — Watch Any Part of a Page for Changes
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.10.01.8
+// @version      2025.10.02.9
 // @description  选中页面上的一块区域（价格、库存、公告、成绩、工单状态），内容变化时通知你。
 // @description:zh-CN  选中页面上的一块区域（价格、库存、公告、成绩、工单状态），内容变化时通知你。
 // @description:en  Pick any part of a page (price, stock, notice, grades, ticket status) and get notified when it changes.
@@ -742,18 +742,41 @@
         });
     }
 
+    async function fetchDoc(url) {
+        return new DOMParser().parseFromString(await request(url), 'text/html');
+    }
+
+    function query(doc, selector) {
+        try {
+            return doc.querySelector(selector);
+        } catch (e) {
+            throw new Error('选择器无效：' + selector);
+        }
+    }
+
+    const NOT_FOUND = '抓到的页面里找不到这个元素（页面改版、登录失效，或内容由 JS 渲染）';
+
     /** 抓 mon.url，按选择器取出规范化后的文字。找不到元素就抛错，不当成「变成了空」。 */
     async function fetchText(mon) {
-        const html = await request(mon.url);
-        const doc = new DOMParser().parseFromString(html, 'text/html');
-        let el = null;
-        try {
-            el = doc.querySelector(mon.selector);
-        } catch (e) {
-            throw new Error('选择器无效：' + mon.selector);
-        }
-        if (!el) throw new Error('抓到的页面里找不到这个元素（页面改版、登录失效，或内容由 JS 渲染）');
+        const el = query(await fetchDoc(mon.url), mon.selector);
+        if (!el) throw new Error(NOT_FOUND);
         return Text.normalize(Text.of(el));
+    }
+
+    /** 文字里「一个包含另一个」或逐词 diff 相同部分过半：算同一块内容（被前端补过几个字）。 */
+    function similar(a, b) {
+        if (!a || !b) return false;
+        if (a.includes(b) || b.includes(a)) return true;
+        const same = Diff.words(a, b).filter((op) => op.type === 'eq').reduce((n, op) => n + op.text.length, 0);
+        return (2 * same) / (a.length + b.length) >= 0.5;
+    }
+
+    /** 抓到的文档里文字正好是 text 的最内层元素；不止一个（有重复）就不猜，返回 null。 */
+    function findByText(doc, text) {
+        const hits = Array.from(doc.body ? doc.body.querySelectorAll('*') : [])
+            .filter((el) => Text.normalize(Text.of(el)) === text);
+        const inner = hits.filter((el) => !hits.some((o) => o !== el && el.contains(o)));
+        return inner.length === 1 ? inner[0] : null;
     }
 
     const Notify = (() => {
@@ -837,16 +860,40 @@
         }
 
         /**
-         * 新建后马上抓一次，把基线换成「抓下来的版本」。活页面上看到的文字和服务器直出的 HTML
-         * 不一定一样（站点脚本改过、懒加载补过），不校准的话第一次定时检查就会报一个假变化。
+         * 新建后马上抓一次，对照选中时在活页面上看到的文字，确认「抓到的页面里同一个选择器指的是同一块」：
+         *
+         * - 文字一样：直接用。
+         * - 不一样，但抓到的页面里正好有一个元素的文字和选中时一样：选择器换成按抓到的文档生成的。
+         *   这是活页面被站点脚本改过结构的情况 —— 前面插了一条 Cookie 提示，
+         *   活页面上的 div:nth-of-type(3) 在服务器 HTML 里是 nth-of-type(2)，而 nth-of-type(3) 是别的元素。
+         *   不校正的话会悄悄盯着另一块内容，永远等不到用户关心的那个变化。
+         * - 选择器命中的文字和选中时相近（前端补过几个字）：基线换成抓到的版本，免得第一次检查就报假变化。
+         * - 都不是：多半盯错了，停用并说明原因，让用户改用本页观察或重新选。
          */
         async function calibrate(id) {
             const mon = Store.get(id);
             if (!mon) return null;
+            const live = mon.baseline;
+            const done = (fields) => Store.patch(id, { ...fields, lastCheck: Date.now(), status: 'ok', error: '', failCount: 0 });
             let result;
             try {
-                const text = await fetchText(mon);
-                result = Store.patch(id, { baseline: text, lastValue: text, lastCheck: Date.now(), status: 'ok', error: '', failCount: 0 });
+                const doc = await fetchDoc(mon.url);
+                const hit = query(doc, mon.selector);
+                const hitText = hit ? Text.normalize(Text.of(hit)) : null;
+                const exact = hitText === live ? hit : findByText(doc, live);
+                if (exact) {
+                    const selector = exact === hit ? mon.selector : Selector.of(exact);
+                    if (selector !== mon.selector) console.info(TAG, '选择器按服务器 HTML 校正', mon.selector, '→', selector);
+                    result = done({ selector, baseline: live, lastValue: live });
+                } else if (hit && similar(hitText, live)) {
+                    result = done({ baseline: hitText, lastValue: hitText });
+                } else if (hit) {
+                    result = fail(id, new Error(`抓到的页面里这个位置是「${Text.preview(hitText, 30)}」，和选中时不一样，可能盯错了元素。已暂停，建议改用「在本页内观察」或重新选`));
+                    result = Store.patch(id, { enabled: false });
+                    UI.toast(result.error, 6000);
+                } else {
+                    result = fail(id, new Error(NOT_FOUND));
+                }
             } catch (e) {
                 result = fail(id, e);
             }
