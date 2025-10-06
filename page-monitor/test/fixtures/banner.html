@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>没有 id 和类名的老页面</title></head>
+<body>
+<div>标题区</div>
+<div>价格：¥88</div>
+<div>页脚</div>
+<!-- 站点脚本在 body 开头插了一条 Cookie 提示：活页面上的 div 序号比服务器直出的多 1 -->
+<script>
+  document.body.insertBefore(Object.assign(document.createElement('div'), { textContent: '本站使用 Cookie' }), document.body.firstChild)
+</script>
+</body>
+</html>

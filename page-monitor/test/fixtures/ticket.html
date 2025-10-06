@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>工单 #1024</title></head>
+<body>
+<!-- 内容全由前端渲染：服务器直出的 HTML 里只有一个空壳 -->
+<div id="app"></div>
+<script>
+  window.renderTicket = function (status) {
+    // 模仿框架重渲染：整块节点换掉，而不是只改文字
+    document.getElementById('app').innerHTML =
+      '<section class="ticket"><h2>工单 #1024</h2><p class="status">状态：' + status + '</p></section>'
+  }
+  renderTicket('排队中')
+</script>
+</body>
+</html>
