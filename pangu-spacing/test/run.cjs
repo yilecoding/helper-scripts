@@ -102,6 +102,23 @@ const CASES = [
     ['你好😀world', '你好😀world'],
     ['开心😀', '开心😀'],
     ['🎉庆祝2026', '🎉庆祝 2026'],
+
+    // URL、邮箱、路径、版本号、时间：内部不动，两侧照常
+    ['访问https://example.com获取', '访问 https://example.com 获取'],
+    ['见https://example.com/wiki/C++教程 吧', '见 https://example.com/wiki/C++教程 吧'],
+    ['搜https://example.com/s?q=React教程&p=2 第二页', '搜 https://example.com/s?q=React教程&p=2 第二页'],
+    ['锚点https://example.com/page#小节，完', '锚点 https://example.com/page#小节，完'],
+    ['见(https://example.com)中', '见 (https://example.com) 中'],
+    ['打开www.example.com网站', '打开 www.example.com 网站'],
+    ['邮箱abc.def+x@example.com联系', '邮箱 abc.def+x@example.com 联系'],
+    ['目录/usr/local/bin下', '目录/usr/local/bin 下'],
+    ['编辑~/.bashrc文件', '编辑~/.bashrc 文件'],
+    ['在C:\\Users\\Admin目录', '在 C:\\Users\\Admin 目录'],
+    ['版本v1.2.3发布', '版本 v1.2.3 发布'],
+    ['升级到1.2.3-beta.1了', '升级到 1.2.3-beta.1 了'],
+    ['会议12:30开始', '会议 12:30 开始'],
+    ['时间12:30:45到', '时间 12:30:45 到'],
+    ['服务器192.168.1.1上', '服务器 192.168.1.1 上'],
 ]
 
 async function main() {

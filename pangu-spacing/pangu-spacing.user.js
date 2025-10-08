@@ -3,7 +3,7 @@
 // @name:zh-CN   中英文自动加空格（盘古之白）
 // @name:en      Pangu Spacing — Auto Space Between CJK and Latin Text
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.10.07.2
+// @version      2025.10.08.3
 // @description  在网页里的中日韩文字与英文字母、数字之间自动加上空格（盘古之白），只改文字节点，不动页面结构。
 // @description:zh-CN  在网页里的中日韩文字与英文字母、数字之间自动加上空格（盘古之白），只改文字节点，不动页面结构。
 // @description:en  Automatically inserts a space between CJK characters and Latin letters / digits on any web page. Only text nodes are touched; the page structure is left alone.
@@ -131,10 +131,54 @@
         return (re.test(before) ? ' ' : '') + m + (re.test(after) ? ' ' : '');
     }
 
+    /*
+     * 内部不能动的片段：URL、邮箱、文件路径、版本号、时间。
+     * URL 的路径/查询/锚点里允许出现 CJK（维基链接、搜索链接很常见），一直吃到空白、全角标点、
+     * 引号括号为止 —— 「…/wiki/C++教程」要是不当一个整体，会被拆成「C++ 教程」，链接就坏了。
+     * 代价是「访问https://a.com/了解更多」后面那半句被当成 URL 的一部分、不加空格；
+     * 宁可少加一个空格，不可把链接加坏。
+     * 文件路径只认 ASCII 段：「/usr/local/bin下」里的「下」是正文。
+     */
+    const STOP = '\\s<>"\'()\\[\\]{}\\u3000-\\u303f\\uff00-\\uffef\\u2018-\\u201f\\u2026\\u2014';
+    const URL_TAIL = `(?::\\d+)?(?:[/?#][^${STOP}]*)?`;
+    const PROTECT = new RegExp([
+        `[A-Za-z][A-Za-z0-9+.-]*://[A-Za-z0-9.-]+${URL_TAIL}`,              // 带协议的 URL
+        `\\bwww\\.[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+)+${URL_TAIL}`,          // www. 开头的网址
+        '[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+)+',             // 邮箱
+        '(?:~|\\.{1,2})?(?:/[\\w.@+-]+){2,}/?|~/[\\w.@+/-]*',               // Unix 路径（至少两段）、~/xxx
+        '\\b[A-Za-z]:\\\\[\\w.\\\\-]*',                                    // Windows 路径
+        '\\b[vV]?\\d+(?:\\.\\d+){1,3}(?:-[0-9A-Za-z.]+)?(?:\\+[0-9A-Za-z.]+)?', // 版本号、小数、IP
+        '\\b\\d{1,2}:\\d{2}(?::\\d{2})?\\b',                                // 时间
+    ].join('|'), 'gu');
+
+    /**
+     * 占位符：U+FDD0 是 Unicode 保证不会出现在正常文本里的「非字符」。
+     * 不用私用区（\ue000 起）—— 图标字体把图标塞在那里，页面文字里真会有。
+     */
+    const HOLD = '\ufdd0';
+
     function spacing(text) {
         if (!text || !HAS_CJK.test(text)) return text;
         let s = text;
+        /*
+         * 只把片段的「内部」换成占位符，首尾字符留在原处：片段两侧该不该加空格，
+         * 照常由首尾字符和邻居按规则决定（「v1.2.3发布」→ 3 和「发」之间照加），
+         * 内部一个字都不会被规则看到。
+         */
+        const held = [];
+        if (!s.includes(HOLD)) {
+            s = s.replace(PROTECT, (m) => {
+                const cps = Array.from(m);
+                if (cps.length < 3) return m;
+                held.push(cps.slice(1, -1).join(''));
+                return cps[0] + HOLD + cps[cps.length - 1];
+            });
+        }
         for (const r of RULES) s = s.replace(r.re, r.to);
+        if (held.length) {
+            let i = 0;
+            s = s.replace(/\ufdd0/g, () => held[i++]);
+        }
         return s;
     }
 
