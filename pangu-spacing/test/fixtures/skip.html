@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>跳过</title>
+<style>.x{color:red}/* 样式里的中文A不动 */</style>
+</head>
+<body>
+<p id="ok">正文用Vue写</p>
+<pre id="pre">块代码x=1中文</pre>
+<p id="inline">行内<code id="code">npm包</code>和<kbd id="kbd">Ctrl键</kbd>和<samp id="samp">输出A</samp></p>
+<textarea id="ta">文本框里A不动</textarea>
+<input id="inp" value="输入框A不动">
+<select id="sel"><option id="opt">选项A</option></select>
+<div id="ce" contenteditable="true"><p id="ce-p">编辑器里A不动<b id="ce-b">加粗B</b></p></div>
+<div id="ce-false" contenteditable="false">不可编辑的A要处理</div>
+<svg id="svg"><text id="svg-t">图形A</text></svg>
+<math id="math"><mi>变量x</mi></math>
+<div class="no-pangu"><p id="user">自定义跳过A</p></div>
+<script id="js">var s = '脚本A';</script>
+</body>
+</html>

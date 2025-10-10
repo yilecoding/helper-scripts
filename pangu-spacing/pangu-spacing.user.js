@@ -3,7 +3,7 @@
 // @name:zh-CN   中英文自动加空格（盘古之白）
 // @name:en      Pangu Spacing — Auto Space Between CJK and Latin Text
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.10.08.3
+// @version      2025.10.10.4
 // @description  在网页里的中日韩文字与英文字母、数字之间自动加上空格（盘古之白），只改文字节点，不动页面结构。
 // @description:zh-CN  在网页里的中日韩文字与英文字母、数字之间自动加上空格（盘古之白），只改文字节点，不动页面结构。
 // @description:en  Automatically inserts a space between CJK characters and Latin letters / digits on any web page. Only text nodes are touched; the page structure is left alone.
@@ -35,8 +35,19 @@
 
     const CONFIG = {
         debug: false,
-        /** 这些元素整棵子树都不处理。 */
-        skipSelector: 'code, pre, kbd, samp, script, style, textarea, input, svg, math',
+        /*
+         * 这些元素整棵子树都不处理。
+         * select / option / datalist 也得跳：<option> 没写 value 时，提交的值就是它的文字，
+         * 加个空格等于改了表单数据。
+         */
+        skipSelector: [
+            'code', 'pre', 'kbd', 'samp', 'script', 'style', 'noscript', 'template',
+            'textarea', 'input', 'select', 'option', 'datalist',
+            'svg', 'math', 'iframe', 'object', 'canvas',
+            '[contenteditable]:not([contenteditable="false"])',
+        ].join(', '),
+        /** 额外跳过的选择器（站点自己的代码块类名之类），逗号分隔。 */
+        extraSkipSelector: '',
     };
 
     // =========================================================================
@@ -193,30 +204,82 @@
     }
 
     // =========================================================================
-    // DOM：遍历文字节点
+    // DOM：跳过规则
     // =========================================================================
 
-    function processTree(root) {
-        let changed = 0;
-        const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, {
-            acceptNode(n) {
-                if (n.nodeType === Node.ELEMENT_NODE) {
-                    return n.matches(CONFIG.skipSelector) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_SKIP;
-                }
-                return NodeFilter.FILTER_ACCEPT;
-            },
-        });
-        for (let n = walker.nextNode(); n; n = walker.nextNode()) {
-            const v = n.nodeValue;
-            const next = spacing(v);
-            // 只改 nodeValue：不碰 innerHTML，页面的事件绑定、框架持有的节点引用都还在
-            if (next !== v) {
-                n.nodeValue = next;
-                changed++;
+    const Skip = (() => {
+        let selector = CONFIG.skipSelector;
+
+        /** 用户选择器写错了不能让整个脚本挂掉：校验一遍，坏的丢掉并提示。 */
+        function setExtra(extra) {
+            selector = CONFIG.skipSelector;
+            if (!extra || !extra.trim()) return true;
+            try {
+                document.createDocumentFragment().querySelector(extra);
+            } catch (e) {
+                console.warn(TAG, '跳过选择器写错了，已忽略：', extra);
+                return false;
             }
+            selector += ', ' + extra;
+            return true;
         }
+
+        /** 元素自己要不要整棵跳过。 */
+        function self(el) {
+            // isContentEditable 兜住 designMode 和继承来的可编辑状态（属性选择器只看得到元素自己）
+            return el.matches(selector) || el.isContentEditable;
+        }
+
+        /** 节点在不在某个被跳过的子树里（从节点往上找）。 */
+        function inside(node) {
+            const el = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+            if (!el) return true;
+            return !!el.closest(selector) || el.isContentEditable;
+        }
+
+        setExtra(CONFIG.extraSkipSelector);
+        return { self, inside, setExtra };
+    })();
+
+    // =========================================================================
+    // DOM：收集与处理
+    // =========================================================================
+
+    /**
+     * 把 root 下要处理的文字节点按文档顺序收集起来。先收集、后处理：
+     * 收集很快（只读），处理可以分批放进空闲时间。
+     */
+    function collect(root) {
+        const items = [];
+        const walk = (node) => {
+            for (let c = node.firstChild; c; c = c.nextSibling) {
+                if (c.nodeType === Node.TEXT_NODE) {
+                    if (c.nodeValue) items.push(c);
+                } else if (c.nodeType === Node.ELEMENT_NODE && !Skip.self(c)) {
+                    walk(c);
+                }
+            }
+        };
+        if (root.nodeType === Node.TEXT_NODE) items.push(root);
+        else walk(root);
+        return items;
+    }
+
+    function processText(node) {
+        const v = node.nodeValue;
+        const next = spacing(v);
+        // 只改 nodeValue：不碰 innerHTML，页面的事件绑定、框架持有的节点引用都还在
+        if (next === v) return false;
+        node.nodeValue = next;
+        return true;
+    }
+
+    function processRoot(root) {
+        if (Skip.inside(root)) return 0;
+        let changed = 0;
+        for (const n of collect(root)) if (processText(n)) changed++;
         return changed;
     }
 
-    if (document.body) log('处理了', processTree(document.body), '个文字节点');
+    if (document.body) log('处理了', processRoot(document.body), '个文字节点');
 })();

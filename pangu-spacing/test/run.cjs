@@ -163,6 +163,51 @@ async function main() {
         await page.close()
     })
 
+    await t.test('跳过 code / pre / kbd / samp / 表单控件 / 可编辑区 / svg / math / 脚本样式', async () => {
+        const page = await open('skip.html')
+        await page.waitForFunction(() => document.getElementById('ok').textContent === '正文用 Vue 写')
+        const got = await page.evaluate(() => {
+            const $ = (id) => document.getElementById(id)
+            return {
+                pre: $('pre').textContent, code: $('code').textContent, kbd: $('kbd').textContent, samp: $('samp').textContent,
+                ta: $('ta').value, inp: $('inp').value, opt: $('opt').textContent, optValue: $('sel').value,
+                ce: $('ce-p').textContent, ceFalse: $('ce-false').textContent,
+                svg: $('svg-t').textContent, math: $('math').textContent,
+                js: $('js').textContent, css: document.querySelector('style').textContent,
+            }
+        })
+        t.eq(got, {
+            pre: '块代码x=1中文', code: 'npm包', kbd: 'Ctrl键', samp: '输出A',
+            ta: '文本框里A不动', inp: '输入框A不动', opt: '选项A', optValue: '选项A',
+            ce: '编辑器里A不动加粗B', ceFalse: '不可编辑的 A 要处理',
+            svg: '图形A', math: '变量x',
+            js: "var s = '脚本A';", css: '.x{color:red}/* 样式里的中文A不动 */',
+        })
+        t.eq(h.errors(page).map(String), [])
+        await page.close()
+    })
+
+    await t.test('只改文字：DOM 结构、元素与文字节点的引用、事件绑定都不变', async () => {
+        const page = await open('structure.html')
+        await page.waitForFunction(() => document.getElementById('p').textContent.includes(' 3 条'))
+        const got = await page.evaluate(() => {
+            document.getElementById('btn').click()
+            return {
+                sameSig: window.__sig() === window.__sig0,
+                sameBtn: document.getElementById('btn') === window.__btnRef,
+                heldConnected: window.__heldText.isConnected,
+                heldValue: window.__heldText.nodeValue,
+                clicks: window.__clicks,
+                p: document.getElementById('p').textContent,
+            }
+        })
+        t.eq(got, {
+            sameSig: true, sameBtn: true, heldConnected: true, heldValue: '第 1 条', clicks: 1,
+            p: '点击按钮 A之后会有 3 条记录',
+        })
+        await page.close()
+    })
+
     await close()
     t.done()
 }
