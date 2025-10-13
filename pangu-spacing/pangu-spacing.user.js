@@ -3,7 +3,7 @@
 // @name:zh-CN   中英文自动加空格（盘古之白）
 // @name:en      Pangu Spacing — Auto Space Between CJK and Latin Text
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.10.10.4
+// @version      2025.10.13.5
 // @description  在网页里的中日韩文字与英文字母、数字之间自动加上空格（盘古之白），只改文字节点，不动页面结构。
 // @description:zh-CN  在网页里的中日韩文字与英文字母、数字之间自动加上空格（盘古之白），只改文字节点，不动页面结构。
 // @description:en  Automatically inserts a space between CJK characters and Latin letters / digits on any web page. Only text nodes are touched; the page structure is left alone.
@@ -46,6 +46,8 @@
             'svg', 'math', 'iframe', 'object', 'canvas',
             '[contenteditable]:not([contenteditable="false"])',
         ].join(', '),
+        /** 行内 code / kbd / samp 两侧也按规则加空格（加在外面的文字上，code 里面不动）。 */
+        spaceAroundCode: true,
         /** 额外跳过的选择器（站点自己的代码块类名之类），逗号分隔。 */
         extraSkipSelector: '',
     };
@@ -168,24 +170,30 @@
      */
     const HOLD = '\ufdd0';
 
+    /**
+     * 只把片段的「内部」换成占位符，首尾字符留在原处：片段两侧该不该加空格，
+     * 照常由首尾字符和邻居按规则决定（「v1.2.3发布」→ 3 和「发」之间照加），
+     * 内部一个字都不会被规则看到。
+     */
+    function hold(text, held) {
+        if (text.includes(HOLD)) return text;
+        return text.replace(PROTECT, (m) => {
+            const cps = Array.from(m);
+            if (cps.length < 3) return m;
+            held.push(cps.slice(1, -1).join(''));
+            return cps[0] + HOLD + cps[cps.length - 1];
+        });
+    }
+
+    function applyRules(s) {
+        for (const r of RULES) s = s.replace(r.re, r.to);
+        return s;
+    }
+
     function spacing(text) {
         if (!text || !HAS_CJK.test(text)) return text;
-        let s = text;
-        /*
-         * 只把片段的「内部」换成占位符，首尾字符留在原处：片段两侧该不该加空格，
-         * 照常由首尾字符和邻居按规则决定（「v1.2.3发布」→ 3 和「发」之间照加），
-         * 内部一个字都不会被规则看到。
-         */
         const held = [];
-        if (!s.includes(HOLD)) {
-            s = s.replace(PROTECT, (m) => {
-                const cps = Array.from(m);
-                if (cps.length < 3) return m;
-                held.push(cps.slice(1, -1).join(''));
-                return cps[0] + HOLD + cps[cps.length - 1];
-            });
-        }
-        for (const r of RULES) s = s.replace(r.re, r.to);
+        let s = applyRules(hold(text, held));
         if (held.length) {
             let i = 0;
             s = s.replace(/\ufdd0/g, () => held[i++]);
@@ -193,9 +201,36 @@
         return s;
     }
 
+    /** 跨节点判断时两侧各取多少字符做上下文：要够装下一个 URL，又不至于每次都跑整段。 */
+    const JUNCTION_WINDOW = 128;
+
+    /**
+     * 两段相邻文字（分属两个节点）拼起来时，交界处要不要加空格。
+     * 做法是拼起来跑一遍同一张规则表，再逐字对齐找插入位置 —— 规则只会插空格，
+     * 所以输出 = 原文 + 若干空格，能对齐出每个空格插在哪。不为跨节点另写一套规则。
+     * 保护片段两侧分开算：节点边界本身就说明链接文字到此为止，
+     * 「<a>https://a.com/x</a>中文」不能把后面的中文也吃进 URL。
+     */
+    function junction(left, right) {
+        const L = left.slice(-JUNCTION_WINDOW);
+        const R = right.slice(0, JUNCTION_WINDOW);
+        if (!L || !R || /\s$/.test(L) || /^\s/.test(R)) return false;
+        if (!HAS_CJK.test(L + R)) return false;
+        const hl = hold(L, []);
+        const joined = hl + hold(R, []);
+        const out = applyRules(joined);
+        if (out === joined) return false;
+        for (let i = 0, j = 0; j < out.length; j++) {
+            if (out[j] === joined[i]) i++;
+            else if (i === hl.length) return true;  // out[j] 是插进来的空格，正好在交界处
+            else if (i > hl.length) return false;
+        }
+        return false;
+    }
+
     // node 里测试规则用：没有 document 就只导出纯函数，不往下跑
     if (typeof document === 'undefined') {
-        if (typeof module === 'object' && module) module.exports = { spacing, RULES };
+        if (typeof module === 'object' && module) module.exports = { spacing, junction, RULES };
         return;
     }
 
@@ -245,9 +280,32 @@
     // DOM：收集与处理
     // =========================================================================
 
+    /*
+     * 行内元素：它两侧的文字在视觉上连成一行，交界处要按规则判断。
+     * 不在表里的元素（块级、br、img、button、sup/sub、ruby、q…）都当断点：
+     * sup 是脚注角标，「文字<sup>1</sup>」不该加空格；q 自己会画引号；button 有自己的边框。
+     */
+    const INLINE = new Set([
+        'A', 'ABBR', 'B', 'BDI', 'BDO', 'BIG', 'CITE', 'DATA', 'DEL', 'DFN', 'EM', 'FONT', 'I', 'INS',
+        'LABEL', 'MARK', 'NOBR', 'S', 'SMALL', 'SPAN', 'STRIKE', 'STRONG', 'TIME', 'TT', 'U', 'VAR',
+    ]);
     /**
-     * 把 root 下要处理的文字节点按文档顺序收集起来。先收集、后处理：
-     * 收集很快（只读），处理可以分批放进空闲时间。
+     * 被跳过、但仍然算「一个词」的行内元素：里面不动，两侧的文字照样和它比较。
+     * 「使用<code>npm</code>安装」→「使用 <code>npm</code> 安装」，空格加在 code 外面。
+     */
+    const ATOM = new Set(['CODE', 'KBD', 'SAMP']);
+    /**
+     * 空格落在里面会被看见的元素：下划线、删除线、底色会把空格也画出来。
+     * 跨节点的空格优先加在不被这些元素包着的那一侧。
+     */
+    const DECORATED = new Set(['A', 'ABBR', 'DEL', 'INS', 'MARK', 'S', 'STRIKE', 'U']);
+
+    /** 收集结果里的断点：两侧不再做交界判断。 */
+    const BREAK = null;
+
+    /**
+     * 把 root 下的文字节点按文档顺序收集成序列：文字节点 / 断点 / 原子元素。
+     * 先收集、后处理：收集只读、很快，处理可以分批放进空闲时间。
      */
     function collect(root) {
         const items = [];
@@ -255,8 +313,15 @@
             for (let c = node.firstChild; c; c = c.nextSibling) {
                 if (c.nodeType === Node.TEXT_NODE) {
                     if (c.nodeValue) items.push(c);
-                } else if (c.nodeType === Node.ELEMENT_NODE && !Skip.self(c)) {
+                } else if (c.nodeType === Node.ELEMENT_NODE) {
+                    if (Skip.self(c)) {
+                        items.push(CONFIG.spaceAroundCode && ATOM.has(c.tagName) ? c : BREAK);
+                        continue;
+                    }
+                    const inline = INLINE.has(c.tagName);
+                    if (!inline) items.push(BREAK);
                     walk(c);
+                    if (!inline) items.push(BREAK);
                 }
             }
         };
@@ -265,21 +330,72 @@
         return items;
     }
 
+    function write(node, value) {
+        // 只改 nodeValue：不碰 innerHTML，页面的事件绑定、框架持有的节点引用都还在
+        node.nodeValue = value;
+    }
+
     function processText(node) {
         const v = node.nodeValue;
         const next = spacing(v);
-        // 只改 nodeValue：不碰 innerHTML，页面的事件绑定、框架持有的节点引用都还在
         if (next === v) return false;
-        node.nodeValue = next;
+        write(node, next);
         return true;
     }
 
-    function processRoot(root) {
-        if (Skip.inside(root)) return 0;
-        let changed = 0;
-        for (const n of collect(root)) if (processText(n)) changed++;
-        return changed;
+    /** 从文字节点往上到 stop（不含）的「代价」：每层 1，带装饰的元素 100。 */
+    function sideCost(node, stop) {
+        let cost = 0;
+        for (let el = node.parentElement; el && el !== stop; el = el.parentElement) {
+            cost += DECORATED.has(el.tagName) ? 100 : 1;
+        }
+        return cost;
     }
 
-    if (document.body) log('处理了', processRoot(document.body), '个文字节点');
+    function commonAncestor(a, b) {
+        const seen = new Set();
+        for (let el = a.parentElement; el; el = el.parentElement) seen.add(el);
+        for (let el = b.parentElement; el; el = el.parentElement) if (seen.has(el)) return el;
+        return null;
+    }
+
+    /**
+     * 两个相邻项之间要空格时，空格放哪边：
+     *   - 一边是原子元素（code）：只能放在文字那边
+     *   - 两边都是文字：放在离共同祖先更「浅」、且不在下划线/删除线里的那边，
+     *     「中文<b>English</b>」放在「中文」末尾，「<a>链接</a>中文」放在「中文」开头；
+     *     一样深就放左边末尾
+     */
+    function join(prev, cur) {
+        const prevText = prev.nodeType === Node.TEXT_NODE;
+        const curText = cur.nodeType === Node.TEXT_NODE;
+        if (!prevText && !curText) return;
+        if (!junction(prevText ? prev.nodeValue : prev.textContent, curText ? cur.nodeValue : cur.textContent)) return;
+        let left = prevText;
+        if (prevText && curText) {
+            const top = commonAncestor(prev, cur);
+            left = sideCost(prev, top) <= sideCost(cur, top);
+        }
+        if (left) write(prev, prev.nodeValue + ' ');
+        else write(cur, ' ' + cur.nodeValue);
+    }
+
+    function runItems(items, state) {
+        for (const item of items) {
+            if (item === BREAK || !item.isConnected) {
+                state.prev = null;
+                continue;
+            }
+            if (item.nodeType === Node.TEXT_NODE) processText(item);
+            if (state.prev) join(state.prev, item);
+            state.prev = item;
+        }
+    }
+
+    function processRoot(root) {
+        if (Skip.inside(root)) return;
+        runItems(collect(root), { prev: null });
+    }
+
+    if (document.body) processRoot(document.body);
 })();

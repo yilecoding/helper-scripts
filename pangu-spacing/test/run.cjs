@@ -131,6 +131,26 @@ async function main() {
         for (const [input] of CASES) t.eq(pure.spacing(pure.spacing(input)), pure.spacing(input), input)
     })
 
+    console.log('\n跨节点交界（纯函数）')
+    const JUNCTIONS = [
+        ['中文', 'English', true],
+        ['English', '中文', true],
+        ['中文 ', 'English', false],
+        ['中文', ' English', false],
+        ['中文', '，English', false],
+        ['增长100%', '以上', true],
+        ['用C++', '写', true],
+        ['看', '#话题#很好', true],
+        ['https://example.com/a', '中文', true],
+        ['https://example.com/wiki/', '中文', false],
+        ['用', '(括号)', true],
+        ['中文', '中文', false],
+        ['English', 'English', false],
+    ]
+    for (const [l, r, want] of JUNCTIONS) {
+        await t.test(`「${l}」|「${r}」→ ${want ? '加' : '不加'}`, () => t.eq(pure.junction(l, r), want))
+    }
+
     const { browser, close } = await h.setup(FIXTURES)
 
     /** 新开页面（独立 context），把 example.com 的请求映射到 fixtures。 */
@@ -204,6 +224,34 @@ async function main() {
         t.eq(got, {
             sameSig: true, sameBtn: true, heldConnected: true, heldValue: '第 1 条', clicks: 1,
             p: '点击按钮 A之后会有 3 条记录',
+        })
+        await page.close()
+    })
+
+    await t.test('跨元素边界：空格加在不被样式影响的一侧', async () => {
+        const page = await open('cross.html')
+        await page.waitForFunction(() => document.getElementById('b').innerHTML !== '中文<b>English</b>中文')
+        const html = await page.evaluate(() => {
+            const out = {}
+            for (const p of document.querySelectorAll('body > [id]')) out[p.id] = p.innerHTML
+            return out
+        })
+        t.eq(html, {
+            b: '中文 <b>English</b> 中文',
+            a: '请看 <a href="#x">GitHub</a> 上的说明',
+            'a-cjk': '项目<a href="#x">文档</a> English',
+            aa: '<a href="#1">链接 </a><a href="#2">Link</a>',
+            nested: '前面 <span><em>Deep</em></span> 后面',
+            'em-left': '<em>强调</em> Text',
+            code: '使用 <code>npm</code> 安装 <kbd>Ctrl</kbd> 键',
+            spaced: '已有 <b>空格</b> 的',
+            ws: '<b>中文</b>\n<i>English</i>',
+            sup: '文字<sup>1</sup>注脚',
+            br: '第一行<br>Second',
+            block: '<div>块一</div><div>Block</div>',
+            url: '<a href="#u">https://example.com/a</a> 中文',
+            pct: '增长 <b>100%</b> 以上',
+            cpp: '用 <i>C++</i> 写',
         })
         await page.close()
     })
