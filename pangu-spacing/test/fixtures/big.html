@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>大页面</title></head>
+<body>
+<div id="root"></div>
+<script>
+  // 3000 段、每段几个行内元素，约 2 万个文字节点
+  const parts = []
+  for (let i = 0; i < 3000; i++) parts.push(`<p id="p${i}">第${i}段用<b>React</b>和<a href="#">Vue</a>写了<i>${i}</i>个组件</p>`)
+  document.getElementById('root').innerHTML = parts.join('')
+</script>
+</body>
+</html>

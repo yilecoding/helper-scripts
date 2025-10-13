@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>动态</title></head>
+<body>
+<div id="feed"><p>初始的English段落</p></div>
+<p id="host">中文</p>
+<p id="text">原来的文字</p>
+<p id="split">中文<span id="mid">，</span>English</p>
+<p id="guarded">被守着的English文字</p>
+<script>
+  // 模拟一个「守着自己文字」的页面：文字一被改就改回去（框架强制同步 DOM 的极端情况）
+  const g = document.getElementById('guarded').firstChild
+  const ORIGINAL = g.nodeValue
+  window.__guardReverts = 0
+  new MutationObserver(() => {
+    if (g.nodeValue !== ORIGINAL) { window.__guardReverts++; g.nodeValue = ORIGINAL }
+  }).observe(g, { characterData: true })
+</script>
+</body>
+</html>

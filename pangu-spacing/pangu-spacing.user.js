@@ -3,7 +3,7 @@
 // @name:zh-CN   中英文自动加空格（盘古之白）
 // @name:en      Pangu Spacing — Auto Space Between CJK and Latin Text
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.10.13.5
+// @version      2025.10.13.6
 // @description  在网页里的中日韩文字与英文字母、数字之间自动加上空格（盘古之白），只改文字节点，不动页面结构。
 // @description:zh-CN  在网页里的中日韩文字与英文字母、数字之间自动加上空格（盘古之白），只改文字节点，不动页面结构。
 // @description:en  Automatically inserts a space between CJK characters and Latin letters / digits on any web page. Only text nodes are touched; the page structure is left alone.
@@ -48,6 +48,10 @@
         ].join(', '),
         /** 行内 code / kbd / samp 两侧也按规则加空格（加在外面的文字上，code 里面不动）。 */
         spaceAroundCode: true,
+        idleTimeout: 1000,      // 空闲回调最多等这么久（ms），页面一直忙也要处理
+        sliceMs: 12,            // 没有空闲时间可用时（超时回调、不支持 requestIdleCallback），每片最多跑这么久
+        batchSize: 200,         // 每处理这么多项看一次时间
+        maxReverts: 3,          // 同一个文字节点被页面改回原样这么多次，就不再处理它
         /** 额外跳过的选择器（站点自己的代码块类名之类），逗号分隔。 */
         extraSkipSelector: '',
     };
@@ -330,12 +334,37 @@
         return items;
     }
 
+    /*
+     * 自己写过的节点记下「改之前 / 改之后」：
+     *   - MutationObserver 收到 characterData，值等于我们写的 → 是自己触发的，忽略（防无限循环）
+     *   - 值又变回改之前 → 页面把它改回去了（框架重渲染、或者页面自己在守着这段文字）。
+     *     被改回去几次就认输、不再碰这个节点，不和页面来回拉锯
+     * WeakMap / WeakSet：节点被页面删掉后跟着回收，不拖住内存。
+     */
+    const written = new WeakMap();
+    const surrendered = new WeakSet();
+
     function write(node, value) {
+        const rec = written.get(node);
+        written.set(node, { before: rec && rec.after === node.nodeValue ? rec.before : node.nodeValue, after: value, reverts: rec ? rec.reverts : 0 });
         // 只改 nodeValue：不碰 innerHTML，页面的事件绑定、框架持有的节点引用都还在
         node.nodeValue = value;
     }
 
+    /** 观察到文字节点变化：是不是我们自己写的。顺带记下「被页面改回去」的次数。 */
+    function isOwnWrite(node) {
+        const rec = written.get(node);
+        if (!rec) return false;
+        if (node.nodeValue === rec.after) return true;
+        if (node.nodeValue === rec.before && ++rec.reverts >= CONFIG.maxReverts) {
+            surrendered.add(node);
+            log('页面反复把这段文字改回去，不再处理：', rec.before);
+        }
+        return false;
+    }
+
     function processText(node) {
+        if (surrendered.has(node)) return false;
         const v = node.nodeValue;
         const next = spacing(v);
         if (next === v) return false;
@@ -376,12 +405,16 @@
             const top = commonAncestor(prev, cur);
             left = sideCost(prev, top) <= sideCost(cur, top);
         }
+        const target = left ? prev : cur;
+        if (surrendered.has(target)) return;
         if (left) write(prev, prev.nodeValue + ' ');
         else write(cur, ' ' + cur.nodeValue);
     }
 
-    function runItems(items, state) {
-        for (const item of items) {
+    /** 处理 items[from, to)，state.prev 跨批次保留，分批不影响交界判断。 */
+    function runItems(items, from, to, state) {
+        for (let i = from; i < to; i++) {
+            const item = items[i];
             if (item === BREAK || !item.isConnected) {
                 state.prev = null;
                 continue;
@@ -392,10 +425,107 @@
         }
     }
 
-    function processRoot(root) {
-        if (Skip.inside(root)) return;
-        runItems(collect(root), { prev: null });
+    // =========================================================================
+    // 调度：空闲时间分批处理
+    // =========================================================================
+
+    /** 节点所在的「块」：交界判断不跨块，所以处理一个变化只需要重跑它所在的块。 */
+    function blockOf(node) {
+        let el = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+        while (el && el !== document.body && (INLINE.has(el.tagName) || ATOM.has(el.tagName))) el = el.parentElement;
+        return el;
     }
 
-    if (document.body) processRoot(document.body);
+    const Queue = (() => {
+        const roots = new Set();
+        let job = null;          // { items, i, state }
+        let scheduled = false;
+
+        const idle = typeof requestIdleCallback === 'function'
+            ? (fn) => requestIdleCallback(fn, { timeout: CONFIG.idleTimeout })
+            : (fn) => setTimeout(() => fn(null), 16);
+
+        function schedule() {
+            if (scheduled) return;
+            scheduled = true;
+            idle(work);
+        }
+
+        function add(node) {
+            const root = blockOf(node);
+            if (!root) return;
+            roots.add(root);
+            schedule();
+        }
+
+        /** 祖先已经在队列里，等祖先处理时一起覆盖。 */
+        function covered(root) {
+            for (let a = root.parentElement; a; a = a.parentElement) if (roots.has(a)) return true;
+            return false;
+        }
+
+        function nextJob() {
+            for (const root of roots) {
+                roots.delete(root);
+                if (!root.isConnected || covered(root) || Skip.inside(root)) continue;
+                return { items: collect(root), i: 0, state: { prev: null } };
+            }
+            return null;
+        }
+
+        /*
+         * 每片最多处理 batchSize 项，片与片之间看还有没有空闲时间：
+         * 大页面首次处理（几万个文字节点）摊到多个空闲回调里，不占着主线程。
+         * 等太久（idleTimeout）浏览器会强制回调，这时 timeRemaining() 是 0，按 sliceMs 自己限时。
+         */
+        function work(deadline) {
+            scheduled = false;
+            const start = performance.now();
+            const hasTime = () => (deadline && !deadline.didTimeout
+                ? deadline.timeRemaining() > 1
+                : performance.now() - start < CONFIG.sliceMs);
+            do {
+                if (!job) job = nextJob();
+                if (!job) break;
+                const end = Math.min(job.i + CONFIG.batchSize, job.items.length);
+                runItems(job.items, job.i, end, job.state);
+                job.i = end;
+                if (job.i >= job.items.length) job = null;
+            } while (hasTime());
+            if (job || roots.size) schedule();
+        }
+
+        return { add };
+    })();
+
+    // =========================================================================
+    // 动态内容
+    // =========================================================================
+
+    function observe() {
+        const mo = new MutationObserver((records) => {
+            // 同一个节点一批里可能有好几条记录（我们写一次、页面改回去一次），按节点去重，
+            // 否则「被改回去」会一次记两回
+            const texts = new Set();
+            for (const r of records) {
+                if (r.type === 'characterData') {
+                    texts.add(r.target);
+                    continue;
+                }
+                for (const n of r.addedNodes) {
+                    if (n.nodeType === Node.TEXT_NODE || n.nodeType === Node.ELEMENT_NODE) Queue.add(n);
+                }
+                // 删掉中间的元素后，两边的文字可能变成相邻，要重新判断交界
+                if (r.removedNodes.length) Queue.add(r.target);
+            }
+            for (const n of texts) if (!isOwnWrite(n)) Queue.add(n);
+        });
+        mo.observe(document.body, { childList: true, characterData: true, subtree: true });
+        return mo;
+    }
+
+    if (document.body) {
+        Queue.add(document.body);
+        observe();
+    }
 })();

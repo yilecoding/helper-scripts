@@ -256,6 +256,99 @@ async function main() {
         await page.close()
     })
 
+    console.log('\n动态内容')
+
+    /** 在页面里装一个计数用的 MutationObserver（和脚本的观察器互不影响）。 */
+    const countMutations = (page) => page.evaluate(() => {
+        window.__muts = 0
+        new MutationObserver((rs) => { window.__muts += rs.length })
+            .observe(document.body, { childList: true, characterData: true, subtree: true })
+    })
+    const settle = (page, ms = 600) => page.waitForTimeout(ms)
+
+    await t.test('动态插入的段落、插进已有段落的行内元素、改文字、删掉中间元素都会被处理', async () => {
+        const page = await open('dynamic.html')
+        await page.waitForFunction(() => document.querySelector('#feed p').textContent === '初始的 English 段落')
+        await page.evaluate(() => {
+            const p = document.createElement('p')
+            p.id = 'new'
+            p.textContent = '动态插入的English段落'
+            document.getElementById('feed').appendChild(p)
+            const b = document.createElement('b')
+            b.textContent = 'English'
+            document.getElementById('host').appendChild(b)
+            document.getElementById('text').firstChild.nodeValue = '更新为React了'
+            document.getElementById('mid').remove()
+        })
+        await page.waitForFunction(() => document.getElementById('text').textContent === '更新为 React 了')
+        await settle(page, 200)
+        t.eq(await page.evaluate(() => ({
+            new: document.getElementById('new').textContent,
+            host: document.getElementById('host').innerHTML,
+            split: document.getElementById('split').innerHTML,
+        })), { new: '动态插入的 English 段落', host: '中文 <b>English</b>', split: '中文 English' })
+        await page.close()
+    })
+
+    await t.test('自己改的节点不会再触发处理：插入 50 段后 mutation 次数有界且会停下来', async () => {
+        const page = await open('dynamic.html')
+        await settle(page, 300)
+        await countMutations(page)
+        await page.evaluate(() => {
+            const feed = document.getElementById('feed')
+            for (let i = 0; i < 50; i++) {
+                const p = document.createElement('p')
+                p.className = 'm'
+                p.innerHTML = `第${i}条用<b>React</b>写的`
+                feed.appendChild(p)
+            }
+        })
+        await page.waitForFunction(() => Array.from(document.querySelectorAll('.m')).every((p) => p.textContent.includes(' React ')))
+        await settle(page)
+        const first = await page.evaluate(() => window.__muts)
+        await settle(page)
+        const second = await page.evaluate(() => window.__muts)
+        // 50 次插入 + 每段最多 3 次改写（「第 i 条用」一次、交界两次）
+        t.assert(first <= 50 + 50 * 3, `mutation 次数 ${first} 超出预期`)
+        t.eq(second, first, '处理完以后不应该再有 mutation')
+        await page.close()
+    })
+
+    await t.test('页面反复把文字改回去：试几次就放手，不来回拉锯', async () => {
+        const page = await open('dynamic.html')
+        await settle(page, 1500)
+        const got = await page.evaluate(() => ({ text: document.getElementById('guarded').textContent, reverts: window.__guardReverts }))
+        t.eq(got.text, '被守着的English文字')
+        t.assert(got.reverts >= 1 && got.reverts <= 3, `页面改回去了 ${got.reverts} 次，应该在 1~3 次之间停下`)
+        await settle(page, 500)
+        t.eq(await page.evaluate(() => window.__guardReverts), got.reverts, '放手以后不再有来回')
+        await page.close()
+    })
+
+    await t.test('大页面（约 2 万个文字节点）分多次空闲回调处理完', async () => {
+        const page = await browser.newPage()
+        await page.route(/^https:\/\/example\.com\//, (route) =>
+            route.fulfill({ contentType: 'text/html; charset=utf-8', body: fs.readFileSync(path.join(FIXTURES, 'big.html')) }))
+        // 先于脚本注册：数一数脚本用了几次 requestIdleCallback
+        await page.addInitScript(() => {
+            const orig = window.requestIdleCallback
+            window.__idleCalls = 0
+            window.requestIdleCallback = (fn, opts) => { window.__idleCalls++; return orig(fn, opts) }
+        })
+        await h.install(page, SCRIPT)
+        await page.goto(`${SITE}/big.html`)
+        await page.waitForFunction(() => document.getElementById('p2999').textContent === '第 2999 段用 React 和 Vue 写了 2999 个组件', null, { timeout: 15000 })
+        const got = await page.evaluate(() => ({
+            first: document.getElementById('p0').innerHTML,
+            calls: window.__idleCalls,
+            all: Array.from(document.querySelectorAll('#root p')).every((p, i) => p.textContent === `第 ${i} 段用 React 和 Vue 写了 ${i} 个组件`),
+        }))
+        t.eq(got.first, '第 0 段用 <b>React</b> 和 <a href="#">Vue</a> 写了 <i>0</i> 个组件')
+        t.eq(got.all, true)
+        t.assert(got.calls > 1, `只用了 ${got.calls} 次空闲回调，没有分批`)
+        await page.close()
+    })
+
     await close()
     t.done()
 }
