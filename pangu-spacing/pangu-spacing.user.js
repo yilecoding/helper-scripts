@@ -3,7 +3,7 @@
 // @name:zh-CN   中英文自动加空格（盘古之白）
 // @name:en      Pangu Spacing — Auto Space Between CJK and Latin Text
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.10.13.6
+// @version      2025.10.14.7
 // @description  在网页里的中日韩文字与英文字母、数字之间自动加上空格（盘古之白），只改文字节点，不动页面结构。
 // @description:zh-CN  在网页里的中日韩文字与英文字母、数字之间自动加上空格（盘古之白），只改文字节点，不动页面结构。
 // @description:en  Automatically inserts a space between CJK characters and Latin letters / digits on any web page. Only text nodes are touched; the page structure is left alone.
@@ -11,7 +11,10 @@
 // @match        http://*/*
 // @match        https://*/*
 // @noframes
-// @grant        none
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_registerMenuCommand
+// @grant        GM_unregisterMenuCommand
 // @license      CC BY-NC-SA
 // @run-at       document-idle
 // @homepageURL  https://github.com/yilecoding/helper-scripts
@@ -249,17 +252,31 @@
     const Skip = (() => {
         let selector = CONFIG.skipSelector;
 
-        /** 用户选择器写错了不能让整个脚本挂掉：校验一遍，坏的丢掉并提示。 */
-        function setExtra(extra) {
-            selector = CONFIG.skipSelector;
-            if (!extra || !extra.trim()) return true;
+        function valid(sel) {
             try {
-                document.createDocumentFragment().querySelector(extra);
+                document.createDocumentFragment().querySelector(sel);
+                return true;
             } catch (e) {
-                console.warn(TAG, '跳过选择器写错了，已忽略：', extra);
                 return false;
             }
-            selector += ', ' + extra;
+        }
+
+        /**
+         * 内置 + CONFIG.extraSkipSelector + 用户在菜单里填的（GM 存储）。
+         * 写错的选择器不能让整个脚本挂掉：先校验，坏的不生效，返回 false。
+         */
+        function setExtra(user) {
+            const parts = [CONFIG.skipSelector];
+            for (const extra of [CONFIG.extraSkipSelector, user]) {
+                if (!extra || !extra.trim()) continue;
+                if (!valid(extra)) {
+                    console.warn(TAG, '跳过选择器写错了，已忽略：', extra);
+                    if (extra === user) return false;
+                    continue;
+                }
+                parts.push(extra);
+            }
+            selector = parts.join(', ');
             return true;
         }
 
@@ -276,7 +293,7 @@
             return !!el.closest(selector) || el.isContentEditable;
         }
 
-        setExtra(CONFIG.extraSkipSelector);
+        setExtra('');
         return { self, inside, setExtra };
     })();
 
@@ -344,11 +361,43 @@
     const written = new WeakMap();
     const surrendered = new WeakSet();
 
+    /*
+     * 停用时要把本页改过的文字还原，所以还得能「遍历」改过的节点 —— WeakMap 做不到。
+     * 存 WeakRef：节点被页面删掉照样能回收；集合本身定期清掉已经回收的引用。
+     */
+    const touched = new Set();
+    let pruneAt = 4096;
+
+    function remember(node) {
+        if (typeof WeakRef !== 'function') return;
+        touched.add(new WeakRef(node));
+        if (touched.size < pruneAt) return;
+        for (const ref of touched) if (!ref.deref()) touched.delete(ref);
+        pruneAt = Math.max(4096, touched.size * 2);
+    }
+
     function write(node, value) {
         const rec = written.get(node);
+        if (!rec) remember(node);
         written.set(node, { before: rec && rec.after === node.nodeValue ? rec.before : node.nodeValue, after: value, reverts: rec ? rec.reverts : 0 });
         // 只改 nodeValue：不碰 innerHTML，页面的事件绑定、框架持有的节点引用都还在
         node.nodeValue = value;
+    }
+
+    /** 把改过、而且之后没被页面再改过的文字还原成原样。 */
+    function restoreAll() {
+        let n = 0;
+        for (const ref of touched) {
+            const node = ref.deref();
+            const rec = node && written.get(node);
+            if (rec && node.nodeValue === rec.after) {
+                node.nodeValue = rec.before;
+                n++;
+            }
+            if (node) written.delete(node);
+        }
+        touched.clear();
+        return n;
     }
 
     /** 观察到文字节点变化：是不是我们自己写的。顺带记下「被页面改回去」的次数。 */
@@ -438,6 +487,7 @@
 
     const Queue = (() => {
         const roots = new Set();
+        const ready = [];        // 已经收集好的序列（处理选区时用）
         let job = null;          // { items, i, state }
         let scheduled = false;
 
@@ -464,7 +514,19 @@
             return false;
         }
 
+        function addItems(items) {
+            ready.push({ items, i: 0, state: { prev: null } });
+            schedule();
+        }
+
+        function clear() {
+            roots.clear();
+            ready.length = 0;
+            job = null;
+        }
+
         function nextJob() {
+            if (ready.length) return ready.shift();
             for (const root of roots) {
                 roots.delete(root);
                 if (!root.isConnected || covered(root) || Skip.inside(root)) continue;
@@ -492,10 +554,10 @@
                 job.i = end;
                 if (job.i >= job.items.length) job = null;
             } while (hasTime());
-            if (job || roots.size) schedule();
+            if (job || roots.size || ready.length) schedule();
         }
 
-        return { add };
+        return { add, addItems, clear };
     })();
 
     // =========================================================================
@@ -504,6 +566,8 @@
 
     function observe() {
         const mo = new MutationObserver((records) => {
+            // SPA 换到默认排除的路径（比如从 issue 页点进代码视图）就不再处理
+            if (!Site.active()) return;
             // 同一个节点一批里可能有好几条记录（我们写一次、页面改回去一次），按节点去重，
             // 否则「被改回去」会一次记两回
             const texts = new Set();
@@ -524,8 +588,142 @@
         return mo;
     }
 
-    if (document.body) {
+    // =========================================================================
+    // 站点开关（GM 存储，按 hostname）
+    // =========================================================================
+
+    /*
+     * 默认排除：这些页面的「文字」其实是代码或正在编辑的文档。
+     * 代码托管站只排除代码视图（blob / blame / diff），issue、README 照常处理。
+     * 在线文档编辑器的正文大多是 canvas 或自绘的可编辑区，改它的文字节点轻则无效、
+     * 重则让编辑器以为文档被改了。
+     */
+    const DEFAULT_EXCLUDES = [
+        { name: '代码视图', host: /(^|\.)github\.com$/, path: /^\/[^/]+\/[^/]+\/(blob|blame|commit|compare|pull\/\d+\/(files|commits))(\/|$)/ },
+        { name: '代码视图', host: /(^|\.)gitlab\.com$/, path: /\/-\/(blob|blame|commit|compare|merge_requests\/\d+\/diffs)(\/|$)/ },
+        { name: '代码视图', host: /(^|\.)gitee\.com$/, path: /^\/[^/]+\/[^/]+\/(blob|blame|commit|compare|pulls\/\d+\/files)(\/|$)/ },
+        { name: '代码视图', host: /(^|\.)bitbucket\.org$/, path: /^\/[^/]+\/[^/]+\/(src|commits|pull-requests\/\d+\/diff)(\/|$)/ },
+        { name: '在线编辑器', host: /^(github\.dev|vscode\.dev|stackblitz\.com|codesandbox\.io|codepen\.io|jsfiddle\.net)$/ },
+        { name: '在线文档', host: /^(docs|sheets|slides)\.google\.com$/ },
+        { name: '在线文档', host: /(^|\.)(docs\.qq\.com|shimo\.im|kdocs\.cn|feishu\.cn|larksuite\.com|notion\.so|overleaf\.com)$/ },
+        { name: '在线文档', host: /(^|\.)yuque\.com$/, path: /\/edit(\/|$)/ },
+        { name: '在线文档', host: /(^|\.)(office\.com|officeapps\.live\.com)$/ },
+    ];
+
+    const Site = (() => {
+        const host = location.hostname;
+        const key = 'site:' + host;
+        let state = GM_getValue(key, {}) || {};
+
+        /** 当前路径命中的默认排除（SPA 会换路径，每次现查）。 */
+        function excluded() {
+            return DEFAULT_EXCLUDES.find((x) => x.host.test(host) && (!x.path || x.path.test(location.pathname))) || null;
+        }
+
+        /** 用户手动设过就听用户的，否则看默认排除。 */
+        function active() {
+            if (typeof state.disabled === 'boolean') return !state.disabled;
+            return !excluded();
+        }
+
+        /** 只存和默认不一样的选择：默认排除表以后调整了，没手动设过的站点跟着变。 */
+        function set(enabled) {
+            const next = { ...state };
+            if (enabled === !excluded()) delete next.disabled;
+            else next.disabled = !enabled;
+            state = next;
+            GM_setValue(key, state);
+        }
+
+        return { host, active, excluded, set, overridden: () => typeof state.disabled === 'boolean' };
+    })();
+
+    /** 全局设置：额外跳过的选择器。 */
+    const Settings = (() => {
+        let value = { skip: '', ...(GM_getValue('settings', {}) || {}) };
+        return {
+            get: () => value,
+            save(patch) {
+                value = { ...value, ...patch };
+                GM_setValue('settings', value);
+            },
+        };
+    })();
+
+    // =========================================================================
+    // 启停与菜单
+    // =========================================================================
+
+    let observer = null;
+
+    function start() {
+        if (observer || !document.body) return;
         Queue.add(document.body);
-        observe();
+        observer = observe();
     }
+
+    /** 停用：断开观察、丢掉没处理完的队列，把本页已经加的空格还原。 */
+    function stop() {
+        if (observer) observer.disconnect();
+        observer = null;
+        Queue.clear();
+        log('已还原', restoreAll(), '个文字节点');
+    }
+
+    /** 处理选区：只处理和选区相交的文字节点（整个节点处理，不切开），选区外的当断点。 */
+    function processSelection() {
+        const sel = window.getSelection();
+        if (!sel || sel.isCollapsed) {
+            console.info(TAG, '没有选中文字');
+            return;
+        }
+        for (let i = 0; i < sel.rangeCount; i++) {
+            const range = sel.getRangeAt(i);
+            const root = blockOf(range.commonAncestorContainer);
+            if (!root || Skip.inside(root)) continue;
+            Queue.addItems(collect(root).map((it) => (it && !range.intersectsNode(it) ? BREAK : it)));
+        }
+    }
+
+    function editSkip() {
+        const input = window.prompt('额外跳过的 CSS 选择器（逗号分隔，留空清除）：', Settings.get().skip);
+        if (input === null) return;
+        if (!Skip.setExtra(input)) {
+            window.alert('选择器写错了，没有保存：' + input);
+            return;
+        }
+        Settings.save({ skip: input.trim() });
+    }
+
+    const Menu = (() => {
+        let ids = [];
+
+        function render() {
+            for (const id of ids) GM_unregisterMenuCommand(id);
+            const ex = Site.excluded();
+            const why = !Site.overridden() && ex ? ` · 默认排除${ex.name}` : '';
+            ids = [
+                Site.active()
+                    ? GM_registerMenuCommand(`✅ 本站已启用（${Site.host}），点击停用`, () => toggle(false))
+                    : GM_registerMenuCommand(`⛔ 本站已停用（${Site.host}${why}），点击启用`, () => toggle(true)),
+                GM_registerMenuCommand('⚡ 立即处理整页', () => document.body && Queue.add(document.body)),
+                GM_registerMenuCommand('✂ 处理选中区域', processSelection),
+                GM_registerMenuCommand('🚫 自定义跳过的选择器…', editSkip),
+            ];
+        }
+
+        function toggle(enabled) {
+            Site.set(enabled);
+            if (enabled) start();
+            else stop();
+            render();
+        }
+
+        return { render };
+    })();
+
+    Skip.setExtra(Settings.get().skip);
+    Menu.render();
+    if (Site.active()) start();
+    else log('本站已停用', Site.host);
 })();

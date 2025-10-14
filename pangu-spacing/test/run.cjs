@@ -153,18 +153,22 @@ async function main() {
 
     const { browser, close } = await h.setup(FIXTURES)
 
-    /** 新开页面（独立 context），把 example.com 的请求映射到 fixtures。 */
+    /**
+     * 新开页面（独立 context），把请求映射到 fixtures。
+     * 默认挂在 https://example.com/<file>；opts.url 指定别的地址时，该域名下任何路径都回这个 fixture
+     * （模拟 github.com/<user>/<repo>/blob/... 这类真实路径）。
+     */
     async function open(file, opts = {}) {
         const page = await browser.newPage()
-        await page.route(/^https:\/\/example\.com\//, (route) => {
-            const url = new URL(route.request().url())
-            const name = path.basename(url.pathname) || file
-            const fp = path.join(FIXTURES, name)
-            if (!fs.existsSync(fp)) return route.fulfill({ status: 404, body: 'not found' })
-            route.fulfill({ contentType: 'text/html; charset=utf-8', body: fs.readFileSync(fp) })
-        })
+        const url = opts.url || `${SITE}/${file}`
+        const origin = new URL(url).origin
+        const re = new RegExp('^' + origin.replace(/[.\/]/g, '\\$&') + '/')
+        await page.route(re, (route) => route.fulfill({
+            contentType: 'text/html; charset=utf-8',
+            body: fs.readFileSync(path.join(FIXTURES, file)),
+        }))
         await h.install(page, SCRIPT, opts)
-        await page.goto(`${SITE}/${file}`)
+        await page.goto(url)
         await page.waitForLoadState('load')
         return page
     }
@@ -346,6 +350,130 @@ async function main() {
         t.eq(got.first, '第 0 段用 <b>React</b> 和 <a href="#">Vue</a> 写了 <i>0</i> 个组件')
         t.eq(got.all, true)
         t.assert(got.calls > 1, `只用了 ${got.calls} 次空闲回调，没有分批`)
+        await page.close()
+    })
+
+    console.log('\n站点开关与菜单')
+
+    const texts = (page) => page.evaluate(() => Object.fromEntries(
+        Array.from(document.querySelectorAll('p[id]')).map((p) => [p.id, p.textContent])))
+    const ORIGINAL = { p1: '第一段用React写', p2: '第二段用Vue写', p3: '第三段用Svelte写', p4: '自定义跳过的Angular段落' }
+    const SPACED = { p1: '第一段用 React 写', p2: '第二段用 Vue 写', p3: '第三段用 Svelte 写', p4: '自定义跳过的 Angular 段落' }
+    const store = (page, key) => page.evaluate((k) => JSON.parse(localStorage.getItem('__gm:' + k) || 'null'), key)
+
+    await t.test('菜单项', async () => {
+        const page = await open('site.html')
+        await settle(page, 300)
+        t.eq((await h.gm(page)).menu, [
+            '✅ 本站已启用（example.com），点击停用', '⚡ 立即处理整页', '✂ 处理选中区域', '🚫 自定义跳过的选择器…',
+        ])
+        await page.close()
+    })
+
+    await t.test('站点已停用：首次加载和动态插入都不处理', async () => {
+        const page = await open('site.html', { values: { 'site:example.com': { disabled: true } } })
+        await settle(page)
+        t.eq(await texts(page), ORIGINAL)
+        await page.evaluate(() => { document.getElementById('p1').firstChild.nodeValue = '改成Next了' })
+        await settle(page)
+        t.eq((await texts(page)).p1, '改成Next了')
+        t.eq((await h.gm(page)).menu[0], '⛔ 本站已停用（example.com），点击启用')
+        await page.close()
+    })
+
+    await t.test('菜单停用：本页还原、刷新后保持停用；再启用又处理', async () => {
+        const page = await open('site.html')
+        await page.waitForFunction(() => document.getElementById('p3').textContent === '第三段用 Svelte 写')
+        await h.menu(page, '点击停用')
+        t.eq(await texts(page), ORIGINAL, '停用后本页加的空格要还原')
+        t.eq(await page.evaluate(() => document.getElementById('p2').innerHTML), '第二段用<b>Vue</b>写', '跨节点加的空格也还原')
+        t.eq(await store(page, 'site:example.com'), { disabled: true })
+        await page.evaluate(() => { document.getElementById('p1').firstChild.nodeValue = '改成Next了' })
+        await settle(page)
+        t.eq((await texts(page)).p1, '改成Next了', '停用后不再观察')
+
+        await page.reload()
+        await page.waitForLoadState('load')
+        await settle(page)
+        t.eq(await texts(page), ORIGINAL)
+        await h.menu(page, '点击启用')
+        await page.waitForFunction(() => document.getElementById('p3').textContent === '第三段用 Svelte 写')
+        t.eq(await store(page, 'site:example.com'), {}, '和默认一样就不存覆盖值')
+        t.eq((await h.gm(page)).menu[0], '✅ 本站已启用（example.com），点击停用')
+        await page.close()
+    })
+
+    await t.test('默认排除代码托管的代码视图，同站的 issue 页照常处理；可以手动启用', async () => {
+        const blob = await open('site.html', { url: 'https://github.com/someone/repo/blob/main/README.md' })
+        await settle(blob)
+        t.eq(await texts(blob), ORIGINAL)
+        t.eq((await h.gm(blob)).menu[0], '⛔ 本站已停用（github.com · 默认排除代码视图），点击启用')
+        await h.menu(blob, '点击启用')
+        await blob.waitForFunction(() => document.getElementById('p1').textContent === '第一段用 React 写')
+        t.eq(await store(blob, 'site:github.com'), { disabled: false })
+        await blob.close()
+
+        const issue = await open('site.html', { url: 'https://github.com/someone/repo/issues/1' })
+        await issue.waitForFunction(() => document.getElementById('p1').textContent === '第一段用 React 写')
+        await issue.close()
+
+        const doc = await open('site.html', { url: 'https://docs.google.com/document/d/abc/edit' })
+        await settle(doc)
+        t.eq(await texts(doc), ORIGINAL, '在线文档默认不处理')
+        await doc.close()
+    })
+
+    await t.test('停用状态下「立即处理整页」处理一次，之后的变化仍不处理', async () => {
+        const page = await open('site.html', { values: { 'site:example.com': { disabled: true } } })
+        await settle(page, 300)
+        await h.menu(page, '立即处理整页')
+        await page.waitForFunction(() => document.getElementById('p3').textContent === '第三段用 Svelte 写')
+        t.eq(await texts(page), SPACED)
+        await page.evaluate(() => { document.getElementById('p1').firstChild.nodeValue = '改成Next了' })
+        await settle(page)
+        t.eq((await texts(page)).p1, '改成Next了')
+        await page.close()
+    })
+
+    await t.test('处理选中区域：只处理选区碰到的段落', async () => {
+        const page = await open('site.html', { values: { 'site:example.com': { disabled: true } } })
+        await settle(page, 300)
+        await page.evaluate(() => {
+            const range = document.createRange()
+            range.setStart(document.getElementById('p2').firstChild, 2)
+            range.setEnd(document.getElementById('p3').firstChild, 3)
+            getSelection().removeAllRanges()
+            getSelection().addRange(range)
+        })
+        await h.menu(page, '处理选中区域')
+        await page.waitForFunction(() => document.getElementById('p3').textContent === '第三段用 Svelte 写')
+        t.eq(await texts(page), { ...ORIGINAL, p2: SPACED.p2, p3: SPACED.p3 })
+        await page.close()
+    })
+
+    await t.test('自定义跳过的选择器：存进 GM、刷新后生效；写错的不保存', async () => {
+        const page = await open('site.html')
+        await page.waitForFunction(() => document.getElementById('p4').textContent === '自定义跳过的 Angular 段落')
+        const answers = ['div[', '.no-pangu']
+        const alerts = []
+        page.on('dialog', (d) => {
+            if (d.type() === 'prompt') d.accept(answers.shift())
+            else { alerts.push(d.message()); d.accept() }
+        })
+        await h.menu(page, '自定义跳过的选择器')
+        await settle(page, 100)
+        t.eq(alerts.length, 1, '写错的选择器要提示')
+        t.eq(await store(page, 'settings'), null)
+        await h.menu(page, '自定义跳过的选择器')
+        await settle(page, 100)
+        t.eq(await store(page, 'settings'), { skip: '.no-pangu' })
+
+        await page.reload()
+        await page.waitForLoadState('load')
+        await page.waitForFunction(() => document.getElementById('p1').textContent === '第一段用 React 写')
+        await settle(page, 300)
+        t.eq(await texts(page), { ...SPACED, p4: ORIGINAL.p4 })
+        t.eq(h.errors(page).map(String), [])
         await page.close()
     })
 
