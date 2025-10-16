@@ -3,7 +3,7 @@
 // @name:zh-CN   中英文自动加空格（盘古之白）
 // @name:en      Pangu Spacing — Auto Space Between CJK and Latin Text
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.10.14.7
+// @version      2025.10.16.8
 // @description  在网页里的中日韩文字与英文字母、数字之间自动加上空格（盘古之白），只改文字节点，不动页面结构。
 // @description:zh-CN  在网页里的中日韩文字与英文字母、数字之间自动加上空格（盘古之白），只改文字节点，不动页面结构。
 // @description:en  Automatically inserts a space between CJK characters and Latin letters / digits on any web page. Only text nodes are touched; the page structure is left alone.
@@ -55,6 +55,11 @@
         sliceMs: 12,            // 没有空闲时间可用时（超时回调、不支持 requestIdleCallback），每片最多跑这么久
         batchSize: 200,         // 每处理这么多项看一次时间
         maxReverts: 3,          // 同一个文字节点被页面改回原样这么多次，就不再处理它
+        /**
+         * 默认不改 title / alt：它们是提示框和读屏软件读的文字，有的站拿 alt 做图片检索、
+         * 拿 title 做选择器（[title="xxx"]），改了可能坏掉页面自己的逻辑。菜单里可以全局打开。
+         */
+        attributes: false,
         /** 额外跳过的选择器（站点自己的代码块类名之类），逗号分隔。 */
         extraSkipSelector: '',
     };
@@ -328,6 +333,14 @@
      * 把 root 下的文字节点按文档顺序收集成序列：文字节点 / 断点 / 原子元素。
      * 先收集、后处理：收集只读、很快，处理可以分批放进空闲时间。
      */
+    /** 要处理的属性（菜单开关，运行时可变）。alt 只认图片类元素；input[type=image] 在跳过表里。 */
+    let attributesOn = CONFIG.attributes;
+
+    function pushAttrs(el, items) {
+        if (el.hasAttribute('title')) items.push({ el, attr: 'title' });
+        if ((el.tagName === 'IMG' || el.tagName === 'AREA') && el.hasAttribute('alt')) items.push({ el, attr: 'alt' });
+    }
+
     function collect(root) {
         const items = [];
         const walk = (node) => {
@@ -339,6 +352,7 @@
                         items.push(CONFIG.spaceAroundCode && ATOM.has(c.tagName) ? c : BREAK);
                         continue;
                     }
+                    if (attributesOn) pushAttrs(c, items);
                     const inline = INLINE.has(c.tagName);
                     if (!inline) items.push(BREAK);
                     walk(c);
@@ -347,7 +361,10 @@
             }
         };
         if (root.nodeType === Node.TEXT_NODE) items.push(root);
-        else walk(root);
+        else {
+            if (attributesOn && root.nodeType === Node.ELEMENT_NODE) pushAttrs(root, items);
+            walk(root);
+        }
         return items;
     }
 
@@ -384,19 +401,53 @@
         node.nodeValue = value;
     }
 
-    /** 把改过、而且之后没被页面再改过的文字还原成原样。 */
-    function restoreAll() {
+    /** 属性的改前改后：元素 → { title: { before, after }, alt: … } */
+    const attrWritten = new WeakMap();
+
+    function writeAttr(el, name, value) {
+        let recs = attrWritten.get(el);
+        if (!recs) {
+            recs = {};
+            attrWritten.set(el, recs);
+            remember(el);
+        }
+        const cur = el.getAttribute(name);
+        recs[name] = { before: recs[name] && recs[name].after === cur ? recs[name].before : cur, after: value };
+        el.setAttribute(name, value);
+    }
+
+    /**
+     * 把改过、而且之后没被页面再改过的文字（和属性）还原成原样。
+     * onlyAttrs：只还原属性（关掉属性开关时用）。
+     */
+    function restoreAll(onlyAttrs = false) {
         let n = 0;
         for (const ref of touched) {
             const node = ref.deref();
-            const rec = node && written.get(node);
+            if (!node) {
+                touched.delete(ref);
+                continue;
+            }
+            const recs = attrWritten.get(node);
+            if (recs) {
+                for (const [name, rec] of Object.entries(recs)) {
+                    if (node.getAttribute(name) === rec.after) {
+                        node.setAttribute(name, rec.before);
+                        n++;
+                    }
+                }
+                attrWritten.delete(node);
+                touched.delete(ref);
+            }
+            if (onlyAttrs) continue;
+            const rec = written.get(node);
             if (rec && node.nodeValue === rec.after) {
                 node.nodeValue = rec.before;
                 n++;
             }
-            if (node) written.delete(node);
+            written.delete(node);
+            touched.delete(ref);
         }
-        touched.clear();
         return n;
     }
 
@@ -464,6 +515,13 @@
     function runItems(items, from, to, state) {
         for (let i = from; i < to; i++) {
             const item = items[i];
+            if (item && item.attr) {
+                // 属性不参与交界判断，也不打断前后文字的连续
+                const v = item.el.getAttribute(item.attr);
+                const next = v === null ? v : spacing(v);
+                if (next !== v) writeAttr(item.el, item.attr, next);
+                continue;
+            }
             if (item === BREAK || !item.isConnected) {
                 state.prev = null;
                 continue;
@@ -638,14 +696,20 @@
         return { host, active, excluded, set, overridden: () => typeof state.disabled === 'boolean' };
     })();
 
-    /** 全局设置：额外跳过的选择器。 */
+    /**
+     * 全局设置：额外跳过的选择器、属性开关。
+     * 只存和默认值不同的项：默认值以后改了，没动过设置的人跟着新默认走。
+     */
     const Settings = (() => {
-        let value = { skip: '', ...(GM_getValue('settings', {}) || {}) };
+        const DEFAULTS = { skip: '', attributes: CONFIG.attributes };
+        let value = { ...DEFAULTS, ...(GM_getValue('settings', {}) || {}) };
         return {
             get: () => value,
             save(patch) {
                 value = { ...value, ...patch };
-                GM_setValue('settings', value);
+                const diff = {};
+                for (const k of Object.keys(value)) if (value[k] !== DEFAULTS[k]) diff[k] = value[k];
+                GM_setValue('settings', diff);
             },
         };
     })();
@@ -709,7 +773,17 @@
                 GM_registerMenuCommand('⚡ 立即处理整页', () => document.body && Queue.add(document.body)),
                 GM_registerMenuCommand('✂ 处理选中区域', processSelection),
                 GM_registerMenuCommand('🚫 自定义跳过的选择器…', editSkip),
+                GM_registerMenuCommand(attributesOn ? '🏷 title / alt 属性：已处理，点击关闭' : '🏷 title / alt 属性：不处理，点击开启', toggleAttrs),
             ];
+        }
+
+        /** 全局开关。打开后重跑一遍整页（文字节点不会重复加）；关掉时把改过的属性还原。 */
+        function toggleAttrs() {
+            attributesOn = !attributesOn;
+            Settings.save({ attributes: attributesOn });
+            if (!attributesOn) restoreAll(true);
+            else if (Site.active() && document.body) Queue.add(document.body);
+            render();
         }
 
         function toggle(enabled) {
@@ -723,6 +797,7 @@
     })();
 
     Skip.setExtra(Settings.get().skip);
+    attributesOn = !!Settings.get().attributes;
     Menu.render();
     if (Site.active()) start();
     else log('本站已停用', Site.host);

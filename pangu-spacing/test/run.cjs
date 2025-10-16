@@ -366,6 +366,7 @@ async function main() {
         await settle(page, 300)
         t.eq((await h.gm(page)).menu, [
             '✅ 本站已启用（example.com），点击停用', '⚡ 立即处理整页', '✂ 处理选中区域', '🚫 自定义跳过的选择器…',
+            '🏷 title / alt 属性：不处理，点击开启',
         ])
         await page.close()
     })
@@ -474,6 +475,46 @@ async function main() {
         await settle(page, 300)
         t.eq(await texts(page), { ...SPACED, p4: ORIGINAL.p4 })
         t.eq(h.errors(page).map(String), [])
+        await page.close()
+    })
+
+    console.log('\ntitle / alt 属性')
+
+    const attrs = (page) => page.evaluate(() => ({
+        p: document.getElementById('p').title,
+        img: document.getElementById('img').alt,
+        a: document.getElementById('a').title,
+        pre: document.getElementById('in-pre').title,
+    }))
+    const ATTRS_ORIGINAL = { p: '提示用React写', img: '图片说明Logo', a: '链接Title', pre: '代码里Title' }
+    const ATTRS_SPACED = { p: '提示用 React 写', img: '图片说明 Logo', a: '链接 Title', pre: '代码里Title' }
+
+    await t.test('默认不改 title / alt', async () => {
+        const page = await open('attrs.html')
+        await page.waitForFunction(() => document.getElementById('p').textContent === '正文用 Vue 写')
+        await settle(page, 200)
+        t.eq(await attrs(page), ATTRS_ORIGINAL)
+        await page.close()
+    })
+
+    await t.test('设置里开了就处理（跳过区里的不动）', async () => {
+        const page = await open('attrs.html', { values: { settings: { attributes: true } } })
+        await page.waitForFunction(() => document.getElementById('img').alt === '图片说明 Logo')
+        t.eq(await attrs(page), ATTRS_SPACED)
+        await page.close()
+    })
+
+    await t.test('菜单开关：打开即处理并存进设置，关闭即还原', async () => {
+        const page = await open('attrs.html')
+        await page.waitForFunction(() => document.getElementById('p').textContent === '正文用 Vue 写')
+        await h.menu(page, '点击开启')
+        await page.waitForFunction(() => document.getElementById('img').alt === '图片说明 Logo')
+        t.eq(await attrs(page), ATTRS_SPACED)
+        t.eq(await store(page, 'settings'), { attributes: true })
+        t.eq((await h.gm(page)).menu[4], '🏷 title / alt 属性：已处理，点击关闭')
+        await h.menu(page, '点击关闭')
+        t.eq(await attrs(page), ATTRS_ORIGINAL)
+        t.eq(await page.evaluate(() => document.getElementById('p').textContent), '正文用 Vue 写', '文字不受影响')
         await page.close()
     })
 
