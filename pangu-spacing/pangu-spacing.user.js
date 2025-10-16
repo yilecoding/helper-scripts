@@ -3,7 +3,7 @@
 // @name:zh-CN   中英文自动加空格（盘古之白）
 // @name:en      Pangu Spacing — Auto Space Between CJK and Latin Text
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.10.16.8
+// @version      2025.10.16.9
 // @description  在网页里的中日韩文字与英文字母、数字之间自动加上空格（盘古之白），只改文字节点，不动页面结构。
 // @description:zh-CN  在网页里的中日韩文字与英文字母、数字之间自动加上空格（盘古之白），只改文字节点，不动页面结构。
 // @description:en  Automatically inserts a space between CJK characters and Latin letters / digits on any web page. Only text nodes are touched; the page structure is left alone.
@@ -622,10 +622,23 @@
     // 动态内容
     // =========================================================================
 
+    /*
+     * 默认排除是按路径算的，SPA 换页不刷新：在代码视图打开、再点进 issue 页，
+     * 脚本得接着干活。所以只要用户没手动停用本站，观察器就一直挂着，每批变化现查一次当前路径：
+     *   - 换到排除的路径：忽略这批变化
+     *   - 从排除的路径换出来：整页重跑一遍（换页时没变的侧栏、标题也要补上），菜单文字跟着更新
+     */
+    let wasActive = false;
+
     function observe() {
         const mo = new MutationObserver((records) => {
-            // SPA 换到默认排除的路径（比如从 issue 页点进代码视图）就不再处理
-            if (!Site.active()) return;
+            const active = Site.active();
+            if (active !== wasActive) {
+                wasActive = active;
+                if (active) Queue.add(document.body);
+                Menu.render();
+            }
+            if (!active) return;
             // 同一个节点一批里可能有好几条记录（我们写一次、页面改回去一次），按节点去重，
             // 否则「被改回去」会一次记两回
             const texts = new Set();
@@ -693,7 +706,11 @@
             GM_setValue(key, state);
         }
 
-        return { host, active, excluded, set, overridden: () => typeof state.disabled === 'boolean' };
+        return {
+            host, active, excluded, set,
+            overridden: () => typeof state.disabled === 'boolean',
+            userDisabled: () => state.disabled === true,
+        };
     })();
 
     /**
@@ -720,10 +737,13 @@
 
     let observer = null;
 
+    /** 观察器可能已经挂着（默认排除的页面上也挂着），这时只补「变成生效」那一下的整页处理。 */
     function start() {
-        if (observer || !document.body) return;
-        Queue.add(document.body);
-        observer = observe();
+        if (!document.body) return;
+        const active = Site.active();
+        if (active && (!observer || !wasActive)) Queue.add(document.body);
+        wasActive = active;
+        if (!observer) observer = observe();
     }
 
     /** 停用：断开观察、丢掉没处理完的队列，把本页已经加的空格还原。 */
@@ -799,6 +819,6 @@
     Skip.setExtra(Settings.get().skip);
     attributesOn = !!Settings.get().attributes;
     Menu.render();
-    if (Site.active()) start();
-    else log('本站已停用', Site.host);
+    if (!Site.userDisabled()) start();
+    if (!Site.active()) log('本站已停用', Site.host);
 })();

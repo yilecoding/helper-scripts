@@ -424,6 +424,31 @@ async function main() {
         await doc.close()
     })
 
+    await t.test('SPA：从默认排除的代码视图 pushState 到 issue 页，新内容要处理；再回到代码视图不处理', async () => {
+        const page = await open('site.html', { url: 'https://github.com/someone/repo/blob/main/README.md' })
+        await settle(page)
+        t.eq(await texts(page), ORIGINAL)
+        await page.evaluate(() => {
+            history.pushState({}, '', '/someone/repo/issues/1')
+            const p = document.createElement('p')
+            p.id = 'issue'
+            p.textContent = '这是issue里的Comment'
+            document.body.appendChild(p)
+        })
+        await page.waitForFunction(() => document.getElementById('issue').textContent === '这是 issue 里的 Comment')
+        await page.waitForFunction(() => document.getElementById('p1').textContent === '第一段用 React 写')
+        await page.evaluate(() => {
+            history.pushState({}, '', '/someone/repo/blob/main/b.md')
+            const p = document.createElement('p')
+            p.id = 'code'
+            p.textContent = '代码视图里的Line'
+            document.body.appendChild(p)
+        })
+        await settle(page)
+        t.eq(await page.evaluate(() => document.getElementById('code').textContent), '代码视图里的Line')
+        await page.close()
+    })
+
     await t.test('停用状态下「立即处理整页」处理一次，之后的变化仍不处理', async () => {
         const page = await open('site.html', { values: { 'site:example.com': { disabled: true } } })
         await settle(page, 300)
