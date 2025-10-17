@@ -47,6 +47,7 @@ const CASES = [
     ['Seoul서울', 'Seoul 서울'],
     // 扩展区（补充平面）
     ['𠀀字与A', '𠀀字与 A'],
+    ['𠀀"hello"𠀀', '𠀀 "hello" 𠀀'],  // 引号配对规则取邻居要按码点取，s[off - 1] 只拿到半个代理对
     // 没有 CJK 的整段不动
     ['plain English text', 'plain English text'],
 
