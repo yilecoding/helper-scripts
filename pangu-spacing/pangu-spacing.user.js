@@ -3,7 +3,7 @@
 // @name:zh-CN   中英文自动加空格（盘古之白）
 // @name:en      Pangu Spacing — Auto Space Between CJK and Latin Text
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.10.16.9
+// @version      2025.10.17.10
 // @description  在网页里的中日韩文字与英文字母、数字之间自动加上空格（盘古之白），只改文字节点，不动页面结构。
 // @description:zh-CN  在网页里的中日韩文字与英文字母、数字之间自动加上空格（盘古之白），只改文字节点，不动页面结构。
 // @description:en  Automatically inserts a space between CJK characters and Latin letters / digits on any web page. Only text nodes are touched; the page structure is left alone.
@@ -70,10 +70,10 @@
 
     /*
      * CJK 字符集。刻意不含：
-     *   　-〿 的标点（、。「」等）—— 全角标点旁不加空格，靠的就是它们不在这里
-     *   ・ 片假名中点「・」—— 是标点
-     *   ㌀-㏿ 兼容字符（㎡ ㎏）—— 是单位，「100㎡」不该拆开
-     *   ＀-￯ 全角 ASCII 与全角标点
+     *   \u3000-\u303f 的标点（、。「」等）—— 全角标点旁不加空格，靠的就是它们不在这里
+     *   \u30fb 片假名中点「・」—— 是标点
+     *   \u3300-\u33ff 兼容字符（㎡ ㎏）—— 是单位，「100㎡」不该拆开
+     *   \uff00-\uffef 全角 ASCII 与全角标点
      * 扩展 B 及以后在补充平面，要配 u 标志用 \u{...} 写。
      */
     const C = [

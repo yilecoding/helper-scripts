@@ -39,7 +39,7 @@ const CASES = [
     ['来自Москва的', '来自 Москва 的'],
     // 已有空格
     ['已经有 English 空格', '已经有 English 空格'],
-    ['中文 English', '中文 English'],
+    ['中文\u00a0English', '中文\u00a0English'],  // 不换行空格也算已有空格
     // 日文、韩文
     ['日本語のテキストとEnglish', '日本語のテキストと English'],
     ['カタカナTest', 'カタカナ Test'],
@@ -326,6 +326,34 @@ async function main() {
         t.assert(got.reverts >= 1 && got.reverts <= 3, `页面改回去了 ${got.reverts} 次，应该在 1~3 次之间停下`)
         await settle(page, 500)
         t.eq(await page.evaluate(() => window.__guardReverts), got.reverts, '放手以后不再有来回')
+        await page.close()
+    })
+
+    await t.test('框架式更新（直接写 nodeValue）：每次新值都重新加空格，交界处也跟着补', async () => {
+        const page = await open('framework.html')
+        await page.waitForFunction(() => document.getElementById('counter').innerHTML === '点了 <span id="n">0</span> 次 Click')
+        await countMutations(page)
+        for (let i = 1; i <= 5; i++) {
+            await page.evaluate((i) => window.__render(`第${i}条消息来自GitHub`, i), i)
+            await page.waitForFunction((i) => document.getElementById('msg').textContent === `第 ${i} 条消息来自 GitHub`, i)
+        }
+        await settle(page, 300)
+        // 交界的空格加在 span 外面的文字上，框架只改 span 里的数字，空格不受影响
+        t.eq(await page.evaluate(() => document.getElementById('counter').innerHTML), '点了 <span id="n">5</span> 次 Click')
+        // 每轮：框架写两个节点 + 脚本重写 msg 一次
+        const muts = await page.evaluate(() => window.__muts)
+        t.assert(muts <= 5 * 3, `5 次更新产生了 ${muts} 条 mutation，超出预期`)
+        await page.close()
+    })
+
+    await t.test('框架反复写回同一段原文：当作「页面不让改」，三次后保留原文', async () => {
+        const page = await open('framework.html')
+        await page.waitForFunction(() => document.getElementById('msg').textContent === '消息')
+        for (let i = 0; i < 5; i++) {
+            await page.evaluate(() => window.__render('同一条来自GitHub的消息'))
+            await settle(page, 150)
+        }
+        t.eq(await page.evaluate(() => document.getElementById('msg').textContent), '同一条来自GitHub的消息')
         await page.close()
     })
 
