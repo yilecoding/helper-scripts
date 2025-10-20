@@ -1,0 +1,582 @@
+/*
+ * pangu-spacing 的测试。运行（本仓库不带 node_modules，借一个装了 playwright 的目录）：
+ *   NODE_PATH=/path/to/node_modules node pangu-spacing/test/run.cjs
+ *
+ * 两部分：
+ *   1. 文本规则：脚本没有 document 时只导出纯函数，直接在 node 里用 vm 加载、批量比对输入 → 期望输出
+ *   2. DOM：页面用 page.route 挂在假域名 https://example.com/ 下（正则匹配），不访问外网
+ */
+'use strict'
+
+const fs = require('fs')
+const path = require('path')
+const vm = require('vm')
+const h = require('../../tools/userscript-harness.cjs')
+
+const SCRIPT = path.join(__dirname, '..', 'pangu-spacing.user.js')
+const FIXTURES = path.join(__dirname, 'fixtures')
+const SITE = 'https://example.com'
+
+const t = h.createRunner('pangu-spacing')
+
+/** 在 node 里加载脚本，拿到导出的纯函数。 */
+function loadPure() {
+    const sandbox = { module: { exports: {} }, console }
+    vm.runInNewContext(fs.readFileSync(SCRIPT, 'utf8'), sandbox, { filename: SCRIPT })
+    return sandbox.module.exports
+}
+
+/** 输入 → 期望输出。期望与输入相同的是反例（不该动）。 */
+const CASES = [
+    // CJK 与字母数字
+    ['今天用React写组件', '今天用 React 写组件'],
+    ['共有3个', '共有 3 个'],
+    ['2026年10月29日', '2026 年 10 月 29 日'],
+    ['Hello世界', 'Hello 世界'],
+    ['中文English中文', '中文 English 中文'],
+    ['在café里', '在 café 里'],
+    ['希腊字母α和β', '希腊字母 α 和 β'],
+    ['来自Москва的', '来自 Москва 的'],
+    // 已有空格
+    ['已经有 English 空格', '已经有 English 空格'],
+    ['中文\u00a0English', '中文\u00a0English'],  // 不换行空格也算已有空格
+    // 日文、韩文
+    ['日本語のテキストとEnglish', '日本語のテキストと English'],
+    ['カタカナTest', 'カタカナ Test'],
+    ['한국어English', '한국어 English'],
+    ['Seoul서울', 'Seoul 서울'],
+    // 扩展区（补充平面）
+    ['𠀀字与A', '𠀀字与 A'],
+    ['𠀀"hello"𠀀', '𠀀 "hello" 𠀀'],  // 引号配对规则取邻居要按码点取，s[off - 1] 只拿到半个代理对
+    // 没有 CJK 的整段不动
+    ['plain English text', 'plain English text'],
+
+    // 后缀符号：跟前面的词走
+    ['增长了100%以上', '增长了 100% 以上'],
+    ['100%', '100%'],
+    ['用C++写', '用 C++ 写'],
+    ['C++和Python', 'C++ 和 Python'],
+    ['用C#和F#都行', '用 C# 和 F# 都行'],
+    ['今天25℃左右', '今天 25℃ 左右'],
+    ['转了90°角', '转了 90° 角'],
+    // 前缀符号：跟后面的词走
+    ['看看#标签', '看看 #标签'],
+    ['#标签', '#标签'],
+    ['话题#tag', '话题 #tag'],
+    ['看#话题#很好', '看 #话题# 很好'],
+    ['#话题#正文', '#话题# 正文'],
+    ['联系@张三', '联系 @张三'],
+    ['花了$100块', '花了 $100 块'],
+    ['变量$PATH里', '变量$PATH 里'],
+    // 运算符号、连字符：不加
+    ['苹果+香蕉', '苹果+香蕉'],
+    ['北京-上海', '北京-上海'],
+    ['是/否', '是/否'],
+    ['a=b和c', 'a=b 和 c'],
+    // 括号
+    ['用(括号)', '用 (括号)'],
+    ['苹果(apple)很甜', '苹果 (apple) 很甜'],
+    ['(注)正文', '(注) 正文'],
+    ['函数f(x)的值', '函数 f(x) 的值'],
+    ['用（全角括号）', '用（全角括号）'],
+    ['文字[1]', '文字[1]'],
+    // 引号
+    ['他说"hello"然后走了', '他说 "hello" 然后走了'],
+    ['他说"你好"然后', '他说 "你好" 然后'],
+    ['"开头"', '"开头"'],
+    ['不配对的"引号', '不配对的"引号'],
+    ['它的it\'s不动', '它的 it\'s 不动'],
+    // 全角标点：两侧都不加
+    ['你好，World！', '你好，World！'],
+    ['“English”说', '“English”说'],
+    ['「React」是', '「React」是'],
+    ['《Python编程》', '《Python 编程》'],
+    ['完成。Next', '完成。Next'],
+    ['日本語・English', '日本語・English'],
+    // 半角标点
+    ['Hello,世界', 'Hello, 世界'],
+    ['等等e.g.中文', '等等 e.g. 中文'],
+    ['wait...然后', 'wait... 然后'],
+    ['中文,English', '中文,English'],
+    // 单位、emoji
+    ['面积100㎡', '面积 100㎡'],
+    ['你好😀world', '你好😀world'],
+    ['开心😀', '开心😀'],
+    ['🎉庆祝2026', '🎉庆祝 2026'],
+
+    // URL、邮箱、路径、版本号、时间：内部不动，两侧照常
+    ['访问https://example.com获取', '访问 https://example.com 获取'],
+    ['见https://example.com/wiki/C++教程 吧', '见 https://example.com/wiki/C++教程 吧'],
+    ['搜https://example.com/s?q=React教程&p=2 第二页', '搜 https://example.com/s?q=React教程&p=2 第二页'],
+    ['锚点https://example.com/page#小节，完', '锚点 https://example.com/page#小节，完'],
+    ['见(https://example.com)中', '见 (https://example.com) 中'],
+    ['打开www.example.com网站', '打开 www.example.com 网站'],
+    ['邮箱abc.def+x@example.com联系', '邮箱 abc.def+x@example.com 联系'],
+    ['目录/usr/local/bin下', '目录/usr/local/bin 下'],
+    ['编辑~/.bashrc文件', '编辑~/.bashrc 文件'],
+    ['在C:\\Users\\Admin目录', '在 C:\\Users\\Admin 目录'],
+    ['版本v1.2.3发布', '版本 v1.2.3 发布'],
+    ['升级到1.2.3-beta.1了', '升级到 1.2.3-beta.1 了'],
+    ['会议12:30开始', '会议 12:30 开始'],
+    ['时间12:30:45到', '时间 12:30:45 到'],
+    ['服务器192.168.1.1上', '服务器 192.168.1.1 上'],
+]
+
+async function main() {
+    console.log('文本规则')
+    const pure = loadPure()
+    for (const [input, expected] of CASES) {
+        await t.test(`${input} → ${expected}`, () => t.eq(pure.spacing(input), expected))
+    }
+    await t.test('幂等：处理两遍和一遍一样', () => {
+        for (const [input] of CASES) t.eq(pure.spacing(pure.spacing(input)), pure.spacing(input), input)
+    })
+
+    console.log('\n跨节点交界（纯函数）')
+    const JUNCTIONS = [
+        ['中文', 'English', true],
+        ['English', '中文', true],
+        ['中文 ', 'English', false],
+        ['中文', ' English', false],
+        ['中文', '，English', false],
+        ['增长100%', '以上', true],
+        ['用C++', '写', true],
+        ['看', '#话题#很好', true],
+        ['https://example.com/a', '中文', true],
+        ['https://example.com/wiki/', '中文', false],
+        ['用', '(括号)', true],
+        ['中文', '中文', false],
+        ['English', 'English', false],
+    ]
+    for (const [l, r, want] of JUNCTIONS) {
+        await t.test(`「${l}」|「${r}」→ ${want ? '加' : '不加'}`, () => t.eq(pure.junction(l, r), want))
+    }
+
+    const { browser, close } = await h.setup(FIXTURES)
+
+    /**
+     * 新开页面（独立 context），把请求映射到 fixtures。
+     * 默认挂在 https://example.com/<file>；opts.url 指定别的地址时，该域名下任何路径都回这个 fixture
+     * （模拟 github.com/<user>/<repo>/blob/... 这类真实路径）。
+     */
+    async function open(file, opts = {}) {
+        const page = await browser.newPage()
+        const url = opts.url || `${SITE}/${file}`
+        const origin = new URL(url).origin
+        const re = new RegExp('^' + origin.replace(/[.\/]/g, '\\$&') + '/')
+        await page.route(re, (route) => route.fulfill({
+            contentType: 'text/html; charset=utf-8',
+            body: fs.readFileSync(path.join(FIXTURES, file)),
+        }))
+        await h.install(page, SCRIPT, opts)
+        await page.goto(url)
+        await page.waitForLoadState('load')
+        return page
+    }
+
+    const text = (page, sel) => page.$eval(sel, (el) => el.textContent)
+
+    console.log('\nDOM')
+    await t.test('页面上的文字被处理，pre / code 不动', async () => {
+        const page = await open('basic.html')
+        await page.waitForFunction(() => document.getElementById('p1').textContent.includes(' React '))
+        t.eq(await text(page, '#p1'), '今天用 React 写了 2 个组件')
+        t.eq(await text(page, '#p2'), '已经有空格的 English 不变')
+        t.eq(await text(page, '#pre'), '代码里的x=1不动')
+        t.eq(await text(page, '#p3 code'), 'npm包')
+        t.eq(h.errors(page).map(String), [])
+        await page.close()
+    })
+
+    await t.test('跳过 code / pre / kbd / samp / 表单控件 / 可编辑区 / svg / math / 脚本样式', async () => {
+        const page = await open('skip.html')
+        await page.waitForFunction(() => document.getElementById('ok').textContent === '正文用 Vue 写')
+        const got = await page.evaluate(() => {
+            const $ = (id) => document.getElementById(id)
+            return {
+                pre: $('pre').textContent, code: $('code').textContent, kbd: $('kbd').textContent, samp: $('samp').textContent,
+                ta: $('ta').value, inp: $('inp').value, opt: $('opt').textContent, optValue: $('sel').value,
+                ce: $('ce-p').textContent, ceFalse: $('ce-false').textContent,
+                svg: $('svg-t').textContent, math: $('math').textContent,
+                js: $('js').textContent, css: document.querySelector('style').textContent,
+            }
+        })
+        t.eq(got, {
+            pre: '块代码x=1中文', code: 'npm包', kbd: 'Ctrl键', samp: '输出A',
+            ta: '文本框里A不动', inp: '输入框A不动', opt: '选项A', optValue: '选项A',
+            ce: '编辑器里A不动加粗B', ceFalse: '不可编辑的 A 要处理',
+            svg: '图形A', math: '变量x',
+            js: "var s = '脚本A';", css: '.x{color:red}/* 样式里的中文A不动 */',
+        })
+        t.eq(h.errors(page).map(String), [])
+        await page.close()
+    })
+
+    await t.test('只改文字：DOM 结构、元素与文字节点的引用、事件绑定都不变', async () => {
+        const page = await open('structure.html')
+        await page.waitForFunction(() => document.getElementById('p').textContent.includes(' 3 条'))
+        const got = await page.evaluate(() => {
+            document.getElementById('btn').click()
+            return {
+                sameSig: window.__sig() === window.__sig0,
+                sameBtn: document.getElementById('btn') === window.__btnRef,
+                heldConnected: window.__heldText.isConnected,
+                heldValue: window.__heldText.nodeValue,
+                clicks: window.__clicks,
+                p: document.getElementById('p').textContent,
+            }
+        })
+        t.eq(got, {
+            sameSig: true, sameBtn: true, heldConnected: true, heldValue: '第 1 条', clicks: 1,
+            p: '点击按钮 A之后会有 3 条记录',
+        })
+        await page.close()
+    })
+
+    await t.test('跨元素边界：空格加在不被样式影响的一侧', async () => {
+        const page = await open('cross.html')
+        await page.waitForFunction(() => document.getElementById('b').innerHTML !== '中文<b>English</b>中文')
+        const html = await page.evaluate(() => {
+            const out = {}
+            for (const p of document.querySelectorAll('body > [id]')) out[p.id] = p.innerHTML
+            return out
+        })
+        t.eq(html, {
+            b: '中文 <b>English</b> 中文',
+            a: '请看 <a href="#x">GitHub</a> 上的说明',
+            'a-cjk': '项目<a href="#x">文档</a> English',
+            aa: '<a href="#1">链接 </a><a href="#2">Link</a>',
+            nested: '前面 <span><em>Deep</em></span> 后面',
+            'em-left': '<em>强调</em> Text',
+            code: '使用 <code>npm</code> 安装 <kbd>Ctrl</kbd> 键',
+            spaced: '已有 <b>空格</b> 的',
+            ws: '<b>中文</b>\n<i>English</i>',
+            sup: '文字<sup>1</sup>注脚',
+            br: '第一行<br>Second',
+            block: '<div>块一</div><div>Block</div>',
+            url: '<a href="#u">https://example.com/a</a> 中文',
+            pct: '增长 <b>100%</b> 以上',
+            cpp: '用 <i>C++</i> 写',
+        })
+        await page.close()
+    })
+
+    console.log('\n动态内容')
+
+    /** 在页面里装一个计数用的 MutationObserver（和脚本的观察器互不影响）。 */
+    const countMutations = (page) => page.evaluate(() => {
+        window.__muts = 0
+        new MutationObserver((rs) => { window.__muts += rs.length })
+            .observe(document.body, { childList: true, characterData: true, subtree: true })
+    })
+    const settle = (page, ms = 600) => page.waitForTimeout(ms)
+
+    await t.test('动态插入的段落、插进已有段落的行内元素、改文字、删掉中间元素都会被处理', async () => {
+        const page = await open('dynamic.html')
+        await page.waitForFunction(() => document.querySelector('#feed p').textContent === '初始的 English 段落')
+        await page.evaluate(() => {
+            const p = document.createElement('p')
+            p.id = 'new'
+            p.textContent = '动态插入的English段落'
+            document.getElementById('feed').appendChild(p)
+            const b = document.createElement('b')
+            b.textContent = 'English'
+            document.getElementById('host').appendChild(b)
+            document.getElementById('text').firstChild.nodeValue = '更新为React了'
+            document.getElementById('mid').remove()
+        })
+        await page.waitForFunction(() => document.getElementById('text').textContent === '更新为 React 了')
+        await settle(page, 200)
+        t.eq(await page.evaluate(() => ({
+            new: document.getElementById('new').textContent,
+            host: document.getElementById('host').innerHTML,
+            split: document.getElementById('split').innerHTML,
+        })), { new: '动态插入的 English 段落', host: '中文 <b>English</b>', split: '中文 English' })
+        await page.close()
+    })
+
+    await t.test('自己改的节点不会再触发处理：插入 50 段后 mutation 次数有界且会停下来', async () => {
+        const page = await open('dynamic.html')
+        await settle(page, 300)
+        await countMutations(page)
+        await page.evaluate(() => {
+            const feed = document.getElementById('feed')
+            for (let i = 0; i < 50; i++) {
+                const p = document.createElement('p')
+                p.className = 'm'
+                p.innerHTML = `第${i}条用<b>React</b>写的`
+                feed.appendChild(p)
+            }
+        })
+        await page.waitForFunction(() => Array.from(document.querySelectorAll('.m')).every((p) => p.textContent.includes(' React ')))
+        await settle(page)
+        const first = await page.evaluate(() => window.__muts)
+        await settle(page)
+        const second = await page.evaluate(() => window.__muts)
+        // 50 次插入 + 每段最多 3 次改写（「第 i 条用」一次、交界两次）
+        t.assert(first <= 50 + 50 * 3, `mutation 次数 ${first} 超出预期`)
+        t.eq(second, first, '处理完以后不应该再有 mutation')
+        await page.close()
+    })
+
+    await t.test('页面反复把文字改回去：试几次就放手，不来回拉锯', async () => {
+        const page = await open('dynamic.html')
+        await settle(page, 1500)
+        const got = await page.evaluate(() => ({ text: document.getElementById('guarded').textContent, reverts: window.__guardReverts }))
+        t.eq(got.text, '被守着的English文字')
+        t.assert(got.reverts >= 1 && got.reverts <= 3, `页面改回去了 ${got.reverts} 次，应该在 1~3 次之间停下`)
+        await settle(page, 500)
+        t.eq(await page.evaluate(() => window.__guardReverts), got.reverts, '放手以后不再有来回')
+        await page.close()
+    })
+
+    await t.test('框架式更新（直接写 nodeValue）：每次新值都重新加空格，交界处也跟着补', async () => {
+        const page = await open('framework.html')
+        await page.waitForFunction(() => document.getElementById('counter').innerHTML === '点了 <span id="n">0</span> 次 Click')
+        await countMutations(page)
+        for (let i = 1; i <= 5; i++) {
+            await page.evaluate((i) => window.__render(`第${i}条消息来自GitHub`, i), i)
+            await page.waitForFunction((i) => document.getElementById('msg').textContent === `第 ${i} 条消息来自 GitHub`, i)
+        }
+        await settle(page, 300)
+        // 交界的空格加在 span 外面的文字上，框架只改 span 里的数字，空格不受影响
+        t.eq(await page.evaluate(() => document.getElementById('counter').innerHTML), '点了 <span id="n">5</span> 次 Click')
+        // 每轮：框架写两个节点 + 脚本重写 msg 一次
+        const muts = await page.evaluate(() => window.__muts)
+        t.assert(muts <= 5 * 3, `5 次更新产生了 ${muts} 条 mutation，超出预期`)
+        await page.close()
+    })
+
+    await t.test('框架反复写回同一段原文：当作「页面不让改」，三次后保留原文', async () => {
+        const page = await open('framework.html')
+        await page.waitForFunction(() => document.getElementById('msg').textContent === '消息')
+        for (let i = 0; i < 5; i++) {
+            await page.evaluate(() => window.__render('同一条来自GitHub的消息'))
+            await settle(page, 150)
+        }
+        t.eq(await page.evaluate(() => document.getElementById('msg').textContent), '同一条来自GitHub的消息')
+        await page.close()
+    })
+
+    await t.test('大页面（约 2 万个文字节点）分多次空闲回调处理完', async () => {
+        const page = await browser.newPage()
+        await page.route(/^https:\/\/example\.com\//, (route) =>
+            route.fulfill({ contentType: 'text/html; charset=utf-8', body: fs.readFileSync(path.join(FIXTURES, 'big.html')) }))
+        // 先于脚本注册：数一数脚本用了几次 requestIdleCallback
+        await page.addInitScript(() => {
+            const orig = window.requestIdleCallback
+            window.__idleCalls = 0
+            window.requestIdleCallback = (fn, opts) => { window.__idleCalls++; return orig(fn, opts) }
+        })
+        await h.install(page, SCRIPT)
+        await page.goto(`${SITE}/big.html`)
+        await page.waitForFunction(() => document.getElementById('p2999').textContent === '第 2999 段用 React 和 Vue 写了 2999 个组件', null, { timeout: 15000 })
+        const got = await page.evaluate(() => ({
+            first: document.getElementById('p0').innerHTML,
+            calls: window.__idleCalls,
+            all: Array.from(document.querySelectorAll('#root p')).every((p, i) => p.textContent === `第 ${i} 段用 React 和 Vue 写了 ${i} 个组件`),
+        }))
+        t.eq(got.first, '第 0 段用 <b>React</b> 和 <a href="#">Vue</a> 写了 <i>0</i> 个组件')
+        t.eq(got.all, true)
+        t.assert(got.calls > 1, `只用了 ${got.calls} 次空闲回调，没有分批`)
+        await page.close()
+    })
+
+    console.log('\n站点开关与菜单')
+
+    const texts = (page) => page.evaluate(() => Object.fromEntries(
+        Array.from(document.querySelectorAll('p[id]')).map((p) => [p.id, p.textContent])))
+    const ORIGINAL = { p1: '第一段用React写', p2: '第二段用Vue写', p3: '第三段用Svelte写', p4: '自定义跳过的Angular段落' }
+    const SPACED = { p1: '第一段用 React 写', p2: '第二段用 Vue 写', p3: '第三段用 Svelte 写', p4: '自定义跳过的 Angular 段落' }
+    const store = (page, key) => page.evaluate((k) => JSON.parse(localStorage.getItem('__gm:' + k) || 'null'), key)
+
+    await t.test('菜单项', async () => {
+        const page = await open('site.html')
+        await settle(page, 300)
+        t.eq((await h.gm(page)).menu, [
+            '✅ 本站已启用（example.com），点击停用', '⚡ 立即处理整页', '✂ 处理选中区域', '🚫 自定义跳过的选择器…',
+            '🏷 title / alt 属性：不处理，点击开启',
+        ])
+        await page.close()
+    })
+
+    await t.test('站点已停用：首次加载和动态插入都不处理', async () => {
+        const page = await open('site.html', { values: { 'site:example.com': { disabled: true } } })
+        await settle(page)
+        t.eq(await texts(page), ORIGINAL)
+        await page.evaluate(() => { document.getElementById('p1').firstChild.nodeValue = '改成Next了' })
+        await settle(page)
+        t.eq((await texts(page)).p1, '改成Next了')
+        t.eq((await h.gm(page)).menu[0], '⛔ 本站已停用（example.com），点击启用')
+        await page.close()
+    })
+
+    await t.test('菜单停用：本页还原、刷新后保持停用；再启用又处理', async () => {
+        const page = await open('site.html')
+        await page.waitForFunction(() => document.getElementById('p3').textContent === '第三段用 Svelte 写')
+        await h.menu(page, '点击停用')
+        t.eq(await texts(page), ORIGINAL, '停用后本页加的空格要还原')
+        t.eq(await page.evaluate(() => document.getElementById('p2').innerHTML), '第二段用<b>Vue</b>写', '跨节点加的空格也还原')
+        t.eq(await store(page, 'site:example.com'), { disabled: true })
+        await page.evaluate(() => { document.getElementById('p1').firstChild.nodeValue = '改成Next了' })
+        await settle(page)
+        t.eq((await texts(page)).p1, '改成Next了', '停用后不再观察')
+
+        await page.reload()
+        await page.waitForLoadState('load')
+        await settle(page)
+        t.eq(await texts(page), ORIGINAL)
+        await h.menu(page, '点击启用')
+        await page.waitForFunction(() => document.getElementById('p3').textContent === '第三段用 Svelte 写')
+        t.eq(await store(page, 'site:example.com'), {}, '和默认一样就不存覆盖值')
+        t.eq((await h.gm(page)).menu[0], '✅ 本站已启用（example.com），点击停用')
+        await page.close()
+    })
+
+    await t.test('默认排除代码托管的代码视图，同站的 issue 页照常处理；可以手动启用', async () => {
+        const blob = await open('site.html', { url: 'https://github.com/someone/repo/blob/main/README.md' })
+        await settle(blob)
+        t.eq(await texts(blob), ORIGINAL)
+        t.eq((await h.gm(blob)).menu[0], '⛔ 本站已停用（github.com · 默认排除代码视图），点击启用')
+        await h.menu(blob, '点击启用')
+        await blob.waitForFunction(() => document.getElementById('p1').textContent === '第一段用 React 写')
+        t.eq(await store(blob, 'site:github.com'), { disabled: false })
+        await blob.close()
+
+        const issue = await open('site.html', { url: 'https://github.com/someone/repo/issues/1' })
+        await issue.waitForFunction(() => document.getElementById('p1').textContent === '第一段用 React 写')
+        await issue.close()
+
+        const doc = await open('site.html', { url: 'https://docs.google.com/document/d/abc/edit' })
+        await settle(doc)
+        t.eq(await texts(doc), ORIGINAL, '在线文档默认不处理')
+        await doc.close()
+    })
+
+    await t.test('SPA：从默认排除的代码视图 pushState 到 issue 页，新内容要处理；再回到代码视图不处理', async () => {
+        const page = await open('site.html', { url: 'https://github.com/someone/repo/blob/main/README.md' })
+        await settle(page)
+        t.eq(await texts(page), ORIGINAL)
+        await page.evaluate(() => {
+            history.pushState({}, '', '/someone/repo/issues/1')
+            const p = document.createElement('p')
+            p.id = 'issue'
+            p.textContent = '这是issue里的Comment'
+            document.body.appendChild(p)
+        })
+        await page.waitForFunction(() => document.getElementById('issue').textContent === '这是 issue 里的 Comment')
+        await page.waitForFunction(() => document.getElementById('p1').textContent === '第一段用 React 写')
+        await page.evaluate(() => {
+            history.pushState({}, '', '/someone/repo/blob/main/b.md')
+            const p = document.createElement('p')
+            p.id = 'code'
+            p.textContent = '代码视图里的Line'
+            document.body.appendChild(p)
+        })
+        await settle(page)
+        t.eq(await page.evaluate(() => document.getElementById('code').textContent), '代码视图里的Line')
+        await page.close()
+    })
+
+    await t.test('停用状态下「立即处理整页」处理一次，之后的变化仍不处理', async () => {
+        const page = await open('site.html', { values: { 'site:example.com': { disabled: true } } })
+        await settle(page, 300)
+        await h.menu(page, '立即处理整页')
+        await page.waitForFunction(() => document.getElementById('p3').textContent === '第三段用 Svelte 写')
+        t.eq(await texts(page), SPACED)
+        await page.evaluate(() => { document.getElementById('p1').firstChild.nodeValue = '改成Next了' })
+        await settle(page)
+        t.eq((await texts(page)).p1, '改成Next了')
+        await page.close()
+    })
+
+    await t.test('处理选中区域：只处理选区碰到的段落', async () => {
+        const page = await open('site.html', { values: { 'site:example.com': { disabled: true } } })
+        await settle(page, 300)
+        await page.evaluate(() => {
+            const range = document.createRange()
+            range.setStart(document.getElementById('p2').firstChild, 2)
+            range.setEnd(document.getElementById('p3').firstChild, 3)
+            getSelection().removeAllRanges()
+            getSelection().addRange(range)
+        })
+        await h.menu(page, '处理选中区域')
+        await page.waitForFunction(() => document.getElementById('p3').textContent === '第三段用 Svelte 写')
+        t.eq(await texts(page), { ...ORIGINAL, p2: SPACED.p2, p3: SPACED.p3 })
+        await page.close()
+    })
+
+    await t.test('自定义跳过的选择器：存进 GM、刷新后生效；写错的不保存', async () => {
+        const page = await open('site.html')
+        await page.waitForFunction(() => document.getElementById('p4').textContent === '自定义跳过的 Angular 段落')
+        const answers = ['div[', '.no-pangu']
+        const alerts = []
+        page.on('dialog', (d) => {
+            if (d.type() === 'prompt') d.accept(answers.shift())
+            else { alerts.push(d.message()); d.accept() }
+        })
+        await h.menu(page, '自定义跳过的选择器')
+        await settle(page, 100)
+        t.eq(alerts.length, 1, '写错的选择器要提示')
+        t.eq(await store(page, 'settings'), null)
+        await h.menu(page, '自定义跳过的选择器')
+        await settle(page, 100)
+        t.eq(await store(page, 'settings'), { skip: '.no-pangu' })
+
+        await page.reload()
+        await page.waitForLoadState('load')
+        await page.waitForFunction(() => document.getElementById('p1').textContent === '第一段用 React 写')
+        await settle(page, 300)
+        t.eq(await texts(page), { ...SPACED, p4: ORIGINAL.p4 })
+        t.eq(h.errors(page).map(String), [])
+        await page.close()
+    })
+
+    console.log('\ntitle / alt 属性')
+
+    const attrs = (page) => page.evaluate(() => ({
+        p: document.getElementById('p').title,
+        img: document.getElementById('img').alt,
+        a: document.getElementById('a').title,
+        pre: document.getElementById('in-pre').title,
+    }))
+    const ATTRS_ORIGINAL = { p: '提示用React写', img: '图片说明Logo', a: '链接Title', pre: '代码里Title' }
+    const ATTRS_SPACED = { p: '提示用 React 写', img: '图片说明 Logo', a: '链接 Title', pre: '代码里Title' }
+
+    await t.test('默认不改 title / alt', async () => {
+        const page = await open('attrs.html')
+        await page.waitForFunction(() => document.getElementById('p').textContent === '正文用 Vue 写')
+        await settle(page, 200)
+        t.eq(await attrs(page), ATTRS_ORIGINAL)
+        await page.close()
+    })
+
+    await t.test('设置里开了就处理（跳过区里的不动）', async () => {
+        const page = await open('attrs.html', { values: { settings: { attributes: true } } })
+        await page.waitForFunction(() => document.getElementById('img').alt === '图片说明 Logo')
+        t.eq(await attrs(page), ATTRS_SPACED)
+        await page.close()
+    })
+
+    await t.test('菜单开关：打开即处理并存进设置，关闭即还原', async () => {
+        const page = await open('attrs.html')
+        await page.waitForFunction(() => document.getElementById('p').textContent === '正文用 Vue 写')
+        await h.menu(page, '点击开启')
+        await page.waitForFunction(() => document.getElementById('img').alt === '图片说明 Logo')
+        t.eq(await attrs(page), ATTRS_SPACED)
+        t.eq(await store(page, 'settings'), { attributes: true })
+        t.eq((await h.gm(page)).menu[4], '🏷 title / alt 属性：已处理，点击关闭')
+        await h.menu(page, '点击关闭')
+        t.eq(await attrs(page), ATTRS_ORIGINAL)
+        t.eq(await page.evaluate(() => document.getElementById('p').textContent), '正文用 Vue 写', '文字不受影响')
+        await page.close()
+    })
+
+    await close()
+    t.done()
+}
+
+main().catch((e) => {
+    console.error(e)
+    process.exit(1)
+})

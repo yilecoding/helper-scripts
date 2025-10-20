@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>框架</title></head>
+<body>
+<p id="msg">消息</p>
+<p id="counter">点了<span id="n">0</span>次Click</p>
+<script>
+  // 像 React / Vue 的更新路径：手里攥着文字节点，状态变了直接写 nodeValue，不读 DOM 现值
+  const msg = document.getElementById('msg').firstChild
+  const n = document.getElementById('n').firstChild
+  window.__render = (text, count) => { msg.nodeValue = text; if (count !== undefined) n.nodeValue = String(count) }
+</script>
+</body>
+</html>

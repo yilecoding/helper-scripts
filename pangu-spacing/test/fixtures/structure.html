@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>结构</title></head>
+<body>
+<div id="app">
+  <p id="p">点击<button id="btn" type="button">按钮A</button>之后会有3条记录</p>
+  <ul id="list"><li>第1条</li><li>第2条</li><li>第3条</li></ul>
+</div>
+<script>
+  window.__clicks = 0
+  document.getElementById('btn').addEventListener('click', () => { window.__clicks++ })
+  // 模拟框架持有文字节点引用
+  window.__heldText = document.querySelector('#list li').firstChild
+  window.__btnRef = document.getElementById('btn')
+  // 结构签名：元素标签 + 属性 + 每个子节点的类型，不含文字内容
+  window.__sig = (root = document.body) => {
+    const out = []
+    const walk = (n, d) => {
+      out.push(d + ' ' + n.nodeType + ' ' + (n.nodeType === 1 ? n.tagName + ' ' + Array.from(n.attributes).map(a => a.name + '=' + a.value).join(' ') : ''))
+      for (const c of n.childNodes) walk(c, d + 1)
+    }
+    walk(root, 0)
+    return out.join('\n')
+  }
+  // 等解析完再拍（脚本元素后面还有空白文字节点）；脚本在 load 时才跑，DOMContentLoaded 在它前面
+  document.addEventListener('DOMContentLoaded', () => { window.__sig0 = window.__sig() })
+</script>
+</body>
+</html>
