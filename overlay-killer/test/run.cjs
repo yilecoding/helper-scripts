@@ -70,6 +70,41 @@ async function settle(page, ms = 600) {
         await page.context().close()
     })
 
+    // ---------------------------------------------------------------- Cookie 同意：CMP
+
+    const choice = page => page.evaluate(() => window.__choice)
+
+    await t.test('OneTrust：点「Reject All」，不点接受，也不点设置', async () => {
+        const page = await open(browser, 'onetrust.html')
+        await settle(page)
+        t.eq(await choice(page), 'reject')
+        t.assert(!(await visible(page, '#onetrust-banner-sdk')), '横幅还在')
+        await page.context().close()
+    })
+
+    await t.test('OneTrust 没有拒绝按钮：隐藏横幅，接受和设置都不点', async () => {
+        const page = await open(browser, 'onetrust-noreject.html')
+        await settle(page)
+        t.eq(await choice(page), null)
+        t.assert(!(await visible(page, '#onetrust-consent-sdk')), '横幅没隐藏')
+        t.eq(await page.$eval('#onetrust-consent-sdk', el => el.getAttribute('data-overlay-killer')), 'consent')
+        await page.context().close()
+    })
+
+    await t.test('Quantcast：没有专用 id，按文字点「DISAGREE」，不点「MORE OPTIONS」', async () => {
+        const page = await open(browser, 'quantcast.html')
+        await settle(page)
+        t.eq(await choice(page), 'disagree')
+        await page.context().close()
+    })
+
+    await t.test('Usercentrics：在 shadow root 里点拒绝', async () => {
+        const page = await open(browser, 'usercentrics.html')
+        await settle(page)
+        t.eq(await choice(page), 'uc-deny-all-button')
+        await page.context().close()
+    })
+
     await close()
     t.done()
 })()

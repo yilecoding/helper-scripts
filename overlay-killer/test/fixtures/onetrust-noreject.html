@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>OneTrust 无拒绝按钮</title>
+<style>
+    body { margin: 0; font: 16px/1.6 sans-serif; }
+    main p { height: 300px; }
+    #onetrust-banner-sdk { position: fixed; left: 0; right: 0; bottom: 0; padding: 16px; background: #fff; z-index: 2147483645; box-shadow: 0 -2px 8px rgba(0,0,0,.2); }
+</style>
+</head>
+<body>
+<main><h1>Article</h1><p>Body text.</p><p>More.</p><p>More.</p></main>
+<!-- OneTrust 的常见结构：#onetrust-consent-sdk > #onetrust-banner-sdk，按钮 id 固定 -->
+<div id="onetrust-consent-sdk">
+    <div id="onetrust-banner-sdk" role="region" aria-label="Cookie banner">
+        <div id="onetrust-policy-text">We use cookies to improve your experience. See our Cookie Policy.</div>
+        <div id="onetrust-button-group">
+            <button id="onetrust-pc-btn-handler">Cookie Settings</button>
+            <button id="onetrust-accept-btn-handler">Accept All Cookies</button>
+        </div>
+    </div>
+</div>
+<script>
+    window.__choice = null
+    const close = choice => () => {
+        window.__choice = choice
+        document.getElementById('onetrust-banner-sdk').style.display = 'none'
+    }
+    document.getElementById('onetrust-accept-btn-handler').onclick = close('accept')
+    document.getElementById('onetrust-pc-btn-handler').onclick = close('settings')
+</script>
+</body>
+</html>
