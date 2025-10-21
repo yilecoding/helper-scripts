@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>普通页面</title>
+<style>
+    body { margin: 0; font: 16px/1.6 sans-serif; }
+    /* 正常的固定顶栏和右下角悬浮按钮：不能被当成遮罩或横幅 */
+    #nav { position: fixed; top: 0; left: 0; right: 0; height: 56px; background: #fff; z-index: 9999; box-shadow: 0 1px 4px rgba(0,0,0,.2); }
+    #fab { position: fixed; right: 16px; bottom: 16px; width: 48px; height: 48px; border-radius: 50%; background: #1677ff; z-index: 9999; }
+    main { padding: 72px 16px; }
+    main p { height: 400px; }
+</style>
+</head>
+<body>
+<div id="nav">站点导航　首页　文章　关于</div>
+<main>
+    <h1>普通文章</h1>
+    <p id="p1">正文第一段。</p>
+    <p>正文第二段。</p>
+    <p>正文第三段。</p>
+</main>
+<div id="fab"></div>
+</body>
+</html>
