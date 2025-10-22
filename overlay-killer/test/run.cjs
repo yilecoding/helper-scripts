@@ -105,6 +105,24 @@ async function settle(page, ms = 600) {
         await page.context().close()
     })
 
+    // ---------------------------------------------------------------- Cookie 同意：通用兜底
+
+    await t.test('自建 Cookie 卡片（不是 CMP）：按文字点「仅必要」，不点「接受全部」', async () => {
+        const page = await open(browser, 'banner-cookie.html')
+        await settle(page)
+        t.eq(await choice(page), 'necessary')
+        await page.context().close()
+    })
+
+    await t.test('只有「我知道了」的 Cookie 横幅被隐藏、没被点；「打开 App」引导条被隐藏', async () => {
+        const page = await open(browser, 'banner-hide.html')
+        await settle(page)
+        t.eq(await choice(page), null)
+        t.assert(!(await visible(page, '#top-tip')), 'Cookie 横幅还在')
+        t.assert(!(await visible(page, '#app-bar')), 'App 引导条还在')
+        await page.context().close()
+    })
+
     await close()
     t.done()
 })()

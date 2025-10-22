@@ -3,7 +3,7 @@
 // @name:zh-CN   弹窗遮罩清理
 // @name:en      Overlay Killer — Cookie Banners, Login Walls & Read-More Folds
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.10.21.2
+// @version      2025.10.22.3
 // @description  自动处理 Cookie 同意弹窗（优先点「拒绝全部 / 仅必要」，从不点「接受全部」）、「打开 App 阅读」「登录后查看全文」遮罩，并恢复被锁住的页面滚动；展开「阅读全文」折叠。不误伤视频全屏、图片灯箱和你自己点开的对话框。可按站点停用，可查看并撤销本页处理记录。
 // @description:zh-CN  自动处理 Cookie 同意弹窗（优先点「拒绝全部 / 仅必要」，从不点「接受全部」）、「打开 App 阅读」「登录后查看全文」遮罩，并恢复被锁住的页面滚动；展开「阅读全文」折叠。不误伤视频全屏、图片灯箱和你自己点开的对话框。可按站点停用，可查看并撤销本页处理记录。
 // @description:en  Automatically deals with cookie consent banners (prefers "Reject all / Necessary only", never clicks "Accept all"), "open in app" and "log in to read more" overlays, restores locked page scrolling, and expands "read more" folds. Leaves fullscreen video, image lightboxes and dialogs you opened yourself alone. Can be disabled per site; lists what it did on the page and can undo the last action.
@@ -119,6 +119,8 @@
     const REJECT_RE = /^(?:reject|decline|deny|refuse|disagree)(?: all| all cookies| cookies)?$|necessary only|only (?:necessary|essential|required)|(?:essential|required) only|use necessary|continue without (?:accepting|agreeing)|拒绝|不同意|仅(?:限|接受|允许|使用)?必要|只(?:接受|允许|使用)?必要|仅(?:限|接受|允许)?必需/i;
     const ACCEPT_ALL_RE = /accept all|allow all|agree to all|accept cookies|^accept$|^agree$|^ok$|^got it$|接受全部|全部接受|接受所有|允许全部|允许所有|全部同意|同意全部|^同意$|^接受$|^我知道了$/i;
 
+    const BUTTON_SEL = 'button, a, [role="button"], input[type="button"], input[type="submit"]';
+
     function looksLikeReject(el) {
         const text = textOf(el);
         if (!text || text.length > 40) return false;
@@ -224,8 +226,7 @@
 
     /** 横幅里按文字找拒绝按钮。 */
     function findRejectByText(root) {
-        const sel = 'button, a, [role="button"], input[type="button"], input[type="submit"]';
-        return [...root.querySelectorAll(sel)].find(b => isShown(b) && looksLikeReject(b)) || null;
+        return [...root.querySelectorAll(BUTTON_SEL)].find(b => isShown(b) && looksLikeReject(b)) || null;
     }
 
     /**
@@ -268,11 +269,69 @@
     }
 
     // =========================================================================
+    // 通用兜底：贴在视口顶部 / 底部的固定横幅
+    // =========================================================================
+
+    const COOKIE_RE = /cookie|gdpr|consent|隐私|个人信息/i;
+    const APP_RE = /打开\s*app|app\s*内\s*(?:打开|阅读|查看)|下载\s*app|打开客户端|客户端内(?:打开|查看)|open (?:in|the) app|get the app|use the app/i;
+
+    /**
+     * 元素所在的最外层 fixed / sticky 祖先。横幅的可点区域往往是里面的某个子元素，
+     * 要处理的是整条横幅。
+     */
+    function fixedRoot(el) {
+        let found = null;
+        for (let a = el; a && a !== document.body && a !== document.documentElement; a = a.parentElement) {
+            const pos = getComputedStyle(a).position;
+            if (pos === 'fixed' || pos === 'sticky') found = a;
+        }
+        return found;
+    }
+
+    /**
+     * 用 elementsFromPoint 在视口边缘取点，不遍历整棵 DOM：
+     * 能被打到的才是用户看得到的，比挨个算 computed style 便宜得多。
+     * 卡片式横幅常离边缘十几像素，所以每边取两行。
+     */
+    function edgeCandidates() {
+        const vw = innerWidth, vh = innerHeight;
+        const found = new Set();
+        for (const fx of [0.05, 0.25, 0.5, 0.75, 0.95]) {
+            for (const y of [2, 40, vh - 40, vh - 3]) {
+                for (const el of document.elementsFromPoint(vw * fx, y)) {
+                    const root = fixedRoot(el);
+                    if (root) found.add(root);
+                }
+            }
+        }
+        return [...found];
+    }
+
+    function edgeBars() {
+        const vh = innerHeight;
+        for (const bar of edgeCandidates()) {
+            if (bar.closest(`[${MARK}]`) || bar.querySelector(`[${MARK}]`)) continue;
+            const r = bar.getBoundingClientRect();
+            // 太高的是遮罩，交给遮罩那一步；不贴边的是页面中间的浮层
+            if (r.height > vh * 0.6) continue;
+            if (r.top > 50 && r.bottom < vh - 50) continue;
+            const text = textOf(bar);
+            if (text.length < 8 || text.length > 1500) continue;
+            if (COOKIE_RE.test(text) && bar.querySelector(BUTTON_SEL)) {
+                handleConsent('Cookie 横幅', bar, findRejectByText(bar), [bar]);
+            } else if (APP_RE.test(text)) {
+                const undo = hide(bar, 'app');
+                record('app', `「打开 App」引导条：${text.slice(0, 20)}`, undo);
+            }
+        }
+    }
+
+    // =========================================================================
     // 主流程
     // =========================================================================
 
     /** 依次跑各个处理步骤；每一步各自 try，一步出错不影响别的。 */
-    const STEPS = [cookieCmp];
+    const STEPS = [cookieCmp, edgeBars];
 
     function clean() {
         for (const step of STEPS) {
