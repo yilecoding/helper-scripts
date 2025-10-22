@@ -3,7 +3,7 @@
 // @name:zh-CN   弹窗遮罩清理
 // @name:en      Overlay Killer — Cookie Banners, Login Walls & Read-More Folds
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.10.22.3
+// @version      2025.10.22.4
 // @description  自动处理 Cookie 同意弹窗（优先点「拒绝全部 / 仅必要」，从不点「接受全部」）、「打开 App 阅读」「登录后查看全文」遮罩，并恢复被锁住的页面滚动；展开「阅读全文」折叠。不误伤视频全屏、图片灯箱和你自己点开的对话框。可按站点停用，可查看并撤销本页处理记录。
 // @description:zh-CN  自动处理 Cookie 同意弹窗（优先点「拒绝全部 / 仅必要」，从不点「接受全部」）、「打开 App 阅读」「登录后查看全文」遮罩，并恢复被锁住的页面滚动；展开「阅读全文」折叠。不误伤视频全屏、图片灯箱和你自己点开的对话框。可按站点停用，可查看并撤销本页处理记录。
 // @description:en  Automatically deals with cookie consent banners (prefers "Reject all / Necessary only", never clicks "Accept all"), "open in app" and "log in to read more" overlays, restores locked page scrolling, and expands "read more" folds. Leaves fullscreen video, image lightboxes and dialogs you opened yourself alone. Can be disabled per site; lists what it did on the page and can undo the last action.
@@ -37,6 +37,8 @@
     const CONFIG = {
         debug: false,
         consentRecheck: 1500,   // 点了拒绝后等这么久，横幅还在就直接隐藏（CMP 自己的脚本坏了 / 被拦了）
+        overlayCoverage: 0.6,   // 遮罩至少盖住视口的这么大比例
+        overlayThreshold: 6,    // 遮罩打分的及格线，见 scoreOverlay()
     };
 
     const log = (...a) => CONFIG.debug && console.log(TAG, ...a);
@@ -249,7 +251,10 @@
 
     function hideConsent(name, targets, why) {
         const undos = targets.filter(isShown).map(el => hide(el, 'consent'));
-        if (undos.length) record('cookie', `${name}：${why}`, () => undos.forEach(u => u()));
+        if (!undos.length) return;
+        // 带全屏遮罩的 CMP（Quantcast、Cookiebot 的弹窗模式）会锁滚动，用户表态后才由它自己解开
+        undos.push(...unlockScroll());
+        record('cookie', `${name}：${why}`, () => undos.forEach(u => u()));
     }
 
     function cookieCmp() {
@@ -327,11 +332,179 @@
     }
 
     // =========================================================================
+    // 恢复被锁住的滚动
+    // =========================================================================
+
+    /**
+     * 弹窗锁滚动的三种写法：
+     *   1. html / body 上 overflow: hidden
+     *   2. body { position: fixed; top: -<滚动位置>px } —— iOS 上 overflow 锁不住，
+     *      所以很多弹窗库（body-scroll-lock 之类）这么干，关弹窗时再把滚动位置还回去
+     *   3. touch-action: none —— 移动端禁手势
+     * 只解 y 方向：overflow-x: hidden 常是站点防横向滚动条的正常写法。
+     * 返回撤销函数数组。
+     */
+    function unlockScroll() {
+        const undos = [];
+        let restoreY = null;
+        for (const el of [document.documentElement, document.body]) {
+            if (!el) continue;
+            const s = getComputedStyle(el);
+            if (s.overflowY === 'hidden' || s.overflowY === 'clip') undos.push(setImportant(el, 'overflow-y', 'auto'));
+            if (s.position === 'fixed') {
+                const top = parseFloat(s.top);
+                if (top < 0) restoreY = -top;
+                undos.push(setImportant(el, 'position', 'static'));
+            }
+            if (s.touchAction === 'none') undos.push(setImportant(el, 'touch-action', 'auto'));
+        }
+        if (restoreY !== null) {
+            // 站点常给 html 写 scroll-behavior: smooth，不指定 instant 的话要滚好一会儿才到
+            window.scrollTo({ top: restoreY, behavior: 'instant' });
+        }
+        return undos;
+    }
+
+    function scrollLocked() {
+        return [document.documentElement, document.body].some(el => {
+            if (!el) return false;
+            const s = getComputedStyle(el);
+            return s.overflowY === 'hidden' || s.overflowY === 'clip' || s.position === 'fixed';
+        });
+    }
+
+    // =========================================================================
+    // 遮罩：盖住大半个视口的半透明固定层
+    // =========================================================================
+
+    /** 「登录后查看」「打开 App」这类遮罩上的字。 */
+    const WALL_RE = /登录|登陆|注册|打开\s*app|下载\s*app|客户端|继续阅读|阅读全文|查看全文|查看更多|会员|扫码|sign ?in|log ?in|sign ?up|subscribe|订阅|open (?:in|the) app|continue reading/i;
+    const LIGHTBOX_RE = /lightbox|fancybox|photoswipe|pswp|viewer|gallery|lg-outer|mfp-|zoom|preview|carousel/i;
+
+    /** 背景色的不透明度，乘上元素自身的 opacity。 */
+    function bgAlpha(el) {
+        const s = getComputedStyle(el);
+        const m = s.backgroundColor.match(/rgba?\(([^)]+)\)/);
+        if (!m) return 0;
+        const parts = m[1].split(/[,\s/]+/).filter(Boolean);
+        const a = parts.length > 3 ? parseFloat(parts[3]) : 1;
+        return a * parseFloat(s.opacity);
+    }
+
+    function zIndexOf(el) {
+        const z = parseInt(getComputedStyle(el).zIndex, 10);
+        return Number.isNaN(z) ? 0 : z;
+    }
+
+    /** 和视口相交的面积占视口的比例。 */
+    function coverage(el) {
+        const r = el.getBoundingClientRect();
+        const w = Math.max(0, Math.min(r.right, innerWidth) - Math.max(r.left, 0));
+        const h = Math.max(0, Math.min(r.bottom, innerHeight) - Math.max(r.top, 0));
+        return (w * h) / (innerWidth * innerHeight);
+    }
+
+    /**
+     * 这些即使长得像遮罩也不动：
+     *   - 全屏（Fullscreen API）和「网页全屏」的播放器：里面有占了大半个视口的 <video>
+     *   - 图片灯箱：类名像灯箱，或里面有占了三成视口以上的图片
+     *   - 原生 <dialog>：站点自己的模态框，走浏览器 top layer
+     */
+    function isProtected(el) {
+        const fs = document.fullscreenElement;
+        if (fs && (fs === el || fs.contains(el) || el.contains(fs))) return true;
+        if (el.tagName === 'DIALOG' || el.querySelector('dialog[open]')) return true;
+        for (const v of el.querySelectorAll('video')) if (coverage(v) > 0.5) return true;
+        for (const img of el.querySelectorAll('img, picture, canvas')) if (coverage(img) > 0.3) return true;
+        const names = [el, ...el.querySelectorAll('*')].slice(0, 300);
+        return names.some(n => LIGHTBOX_RE.test(`${n.id} ${n.getAttribute('class') || ''}`));
+    }
+
+    /**
+     * 打分，满分 10，及格线 CONFIG.overlayThreshold：
+     *   盖住视口 ≥95% +2，≥60% +1（不到 60% 直接不算）
+     *   半透明背景（自身或铺满它的子元素）+3，毛玻璃 backdrop-filter +2
+     *   z-index ≥1000 +2，≥10 +1
+     *   页面滚动被锁 +1；文字像登录墙 / 打开 App +1
+     *   文字超过 3000 字 −3：那是正文，不是遮罩（有的站整个 app 外壳就是 fixed 全屏）
+     * 纯白不透明、z-index 不高、也没有「登录」字样的全屏层到不了及格线 ——
+     * 那多半是 SPA 的外壳或站点自己的全屏页面。
+     */
+    function scoreOverlay(el, text) {
+        const cov = coverage(el);
+        if (cov < CONFIG.overlayCoverage) return 0;
+        let score = 1 + (cov >= 0.95 ? 2 : 1);
+        const layers = [el, ...[...el.children].filter(c => coverage(c) >= cov * 0.9)];
+        const alpha = Math.max(...layers.map(bgAlpha));
+        if (alpha > 0.05 && alpha < 0.95) score += 3;
+        else if (layers.some(l => (getComputedStyle(l).backdropFilter || 'none') !== 'none')) score += 2;
+        const z = zIndexOf(el);
+        if (z >= 1000) score += 2;
+        else if (z >= 10) score += 1;
+        if (scrollLocked()) score += 1;
+        if (WALL_RE.test(text)) score += 1;
+        if (text.length > 3000) score -= 3;
+        return score;
+    }
+
+    /** 视口里取 5 个点，收集命中元素的所有 fixed 祖先（不只最外层：有的站整个外壳就是 fixed）。 */
+    function overlayCandidates() {
+        const found = new Set();
+        for (const [fx, fy] of [[0.5, 0.5], [0.2, 0.2], [0.8, 0.2], [0.2, 0.8], [0.8, 0.8]]) {
+            for (const el of document.elementsFromPoint(innerWidth * fx, innerHeight * fy)) {
+                for (let a = el; a && a !== document.body && a !== document.documentElement; a = a.parentElement) {
+                    if (getComputedStyle(a).position === 'fixed') found.add(a);
+                }
+            }
+        }
+        return [...found];
+    }
+
+    /**
+     * 遮罩上面的弹窗本体。两种摆法：
+     *   - 和遮罩是兄弟节点，z-index 更高：在兄弟里找 fixed/absolute、比遮罩小的
+     *   - 挂在别处、居中盖在遮罩上：视口中心命中的、在遮罩之上的 fixed 层
+     * 弹窗是遮罩的子元素的情况不用管，隐藏遮罩就一起没了。
+     */
+    function companionsOf(mask) {
+        const out = new Set();
+        const z = zIndexOf(mask);
+        for (const sib of mask.parentElement ? mask.parentElement.children : []) {
+            if (sib === mask || !isShown(sib) || sib.hasAttribute(MARK)) continue;
+            const pos = getComputedStyle(sib).position;
+            if ((pos === 'fixed' || pos === 'absolute') && zIndexOf(sib) >= z && coverage(sib) < 0.9 && coverage(sib) > 0) out.add(sib);
+        }
+        for (const el of document.elementsFromPoint(innerWidth / 2, innerHeight / 2)) {
+            if (el === mask || mask.contains(el)) break;  // 往下就是遮罩和被它盖住的页面了
+            const root = fixedRoot(el);
+            if (root && root !== mask && !root.contains(mask) && !root.hasAttribute(MARK) && coverage(root) < 0.9) out.add(root);
+        }
+        return [...out];
+    }
+
+    function overlays() {
+        const done = [];
+        for (const el of overlayCandidates()) {
+            if (el.closest(`[${MARK}]`) || done.some(d => d.contains(el) || el.contains(d))) continue;
+            if (!isShown(el) || isProtected(el)) continue;
+            const companions = companionsOf(el);
+            const text = [el, ...companions].map(textOf).join(' ');
+            const score = scoreOverlay(el, text);
+            log('遮罩候选', score, el);
+            if (score < CONFIG.overlayThreshold) continue;
+            const undos = [el, ...companions].map(x => hide(x, 'overlay'));
+            undos.push(...unlockScroll());
+            record('overlay', `遮罩：${text.slice(0, 30) || '（无文字）'}`, () => undos.forEach(u => u()));
+            done.push(el);
+        }
+    }
+
+    // =========================================================================
     // 主流程
     // =========================================================================
 
     /** 依次跑各个处理步骤；每一步各自 try，一步出错不影响别的。 */
-    const STEPS = [cookieCmp, edgeBars];
+    const STEPS = [cookieCmp, overlays, edgeBars];
 
     function clean() {
         for (const step of STEPS) {

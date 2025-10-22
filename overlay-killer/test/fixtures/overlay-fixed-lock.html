@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>position: fixed 锁滚动</title>
+<style>
+    /* 很多站点开了平滑滚动：还原滚动位置时如果不指定 instant，会慢慢滚过去 */
+    html { scroll-behavior: smooth; }
+    body { margin: 0; font: 16px/1.6 sans-serif; }
+    main p { height: 600px; margin: 0; }
+    /* 遮罩自己是透明的，半透明的是铺满它的子元素；弹窗也在遮罩里面 */
+    #wrap { position: fixed; inset: 0; z-index: 99999; }
+    #wrap .backdrop { position: absolute; inset: 0; background: rgba(0, 0, 0, .5); }
+    #wrap .sheet { position: absolute; left: 0; right: 0; bottom: 0; height: 200px; background: #fff; }
+</style>
+</head>
+<body>
+<main><p>第一屏</p><p>第二屏</p><p>第三屏</p><p>第四屏</p><p>第五屏</p></main>
+<div id="wrap"><div class="backdrop"></div><div class="sheet">打开 App，继续阅读<button>打开</button></div></div>
+<script>
+    // body-scroll-lock 一类的写法：用户已经读到 1200px，弹窗出现时把 body 钉住、用负 top 保持画面不跳
+    window.scrollTo({ top: 1200, behavior: 'instant' })
+    const y = window.scrollY
+    Object.assign(document.body.style, { position: 'fixed', top: -y + 'px', left: '0', right: '0', touchAction: 'none' })
+    window.__lockedAt = y
+</script>
+</body>
+</html>

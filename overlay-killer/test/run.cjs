@@ -123,6 +123,34 @@ async function settle(page, ms = 600) {
         await page.context().close()
     })
 
+    // ---------------------------------------------------------------- 遮罩与滚动锁
+
+    /** 页面现在能不能滚：试着滚到 y，看 scrollY 有没有跟着走。 */
+    const canScrollTo = (page, y) => page.evaluate(y => {
+        window.scrollTo({ top: y, behavior: 'instant' })
+        return window.scrollY === y
+    }, y)
+
+    await t.test('通用遮罩：遮罩和兄弟弹窗都隐藏，body 的 overflow: hidden 解开', async () => {
+        const page = await open(browser, 'overlay.html')
+        await settle(page)
+        t.assert(!(await visible(page, '.mask')), '遮罩还在')
+        t.assert(!(await visible(page, '.login-box')), '弹窗还在')
+        t.assert(await canScrollTo(page, 500), '页面还是滚不动')
+        await page.context().close()
+    })
+
+    await t.test('position: fixed + top: -N 的锁法：解开后滚动位置还原到 N，touch-action 恢复', async () => {
+        const page = await open(browser, 'overlay-fixed-lock.html')
+        await settle(page)
+        t.eq(await page.evaluate(() => window.__lockedAt), 1200)
+        t.assert(!(await visible(page, '#wrap')), '遮罩还在')
+        t.eq(await page.evaluate(() => getComputedStyle(document.body).position), 'static')
+        t.eq(await page.evaluate(() => getComputedStyle(document.body).touchAction), 'auto')
+        t.eq(await page.evaluate(() => window.scrollY), 1200)
+        await page.context().close()
+    })
+
     await close()
     t.done()
 })()

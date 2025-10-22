@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>登录墙遮罩</title>
+<style>
+    body { margin: 0; font: 16px/1.6 sans-serif; overflow: hidden; }
+    main p { height: 600px; }
+    /* 遮罩和弹窗是兄弟节点：遮罩铺满半透明，弹窗居中、z-index 更高 */
+    .mask { position: fixed; inset: 0; background: rgba(0, 0, 0, .6); z-index: 1000; }
+    .login-box { position: fixed; left: 50%; top: 50%; width: 360px; height: 240px; margin: -120px 0 0 -180px; background: #fff; z-index: 1001; }
+</style>
+</head>
+<body>
+<main><h1>文章</h1><p>正文第一屏。</p><p>正文第二屏。</p><p>正文第三屏。</p></main>
+<div class="mask"></div>
+<div class="login-box"><p>登录后查看全文</p><button>立即登录</button></div>
+</body>
+</html>
