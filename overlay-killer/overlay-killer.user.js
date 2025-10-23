@@ -3,7 +3,7 @@
 // @name:zh-CN   弹窗遮罩清理
 // @name:en      Overlay Killer — Cookie Banners, Login Walls & Read-More Folds
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.10.22.4
+// @version      2025.10.23.5
 // @description  自动处理 Cookie 同意弹窗（优先点「拒绝全部 / 仅必要」，从不点「接受全部」）、「打开 App 阅读」「登录后查看全文」遮罩，并恢复被锁住的页面滚动；展开「阅读全文」折叠。不误伤视频全屏、图片灯箱和你自己点开的对话框。可按站点停用，可查看并撤销本页处理记录。
 // @description:zh-CN  自动处理 Cookie 同意弹窗（优先点「拒绝全部 / 仅必要」，从不点「接受全部」）、「打开 App 阅读」「登录后查看全文」遮罩，并恢复被锁住的页面滚动；展开「阅读全文」折叠。不误伤视频全屏、图片灯箱和你自己点开的对话框。可按站点停用，可查看并撤销本页处理记录。
 // @description:en  Automatically deals with cookie consent banners (prefers "Reject all / Necessary only", never clicks "Accept all"), "open in app" and "log in to read more" overlays, restores locked page scrolling, and expands "read more" folds. Leaves fullscreen video, image lightboxes and dialogs you opened yourself alone. Can be disabled per site; lists what it did on the page and can undo the last action.
@@ -39,6 +39,7 @@
         consentRecheck: 1500,   // 点了拒绝后等这么久，横幅还在就直接隐藏（CMP 自己的脚本坏了 / 被拦了）
         overlayCoverage: 0.6,   // 遮罩至少盖住视口的这么大比例
         overlayThreshold: 6,    // 遮罩打分的及格线，见 scoreOverlay()
+        throttle: 300,          // DOM 变化后最多每这么久扫一次
     };
 
     const log = (...a) => CONFIG.debug && console.log(TAG, ...a);
@@ -516,10 +517,49 @@
         }
     }
 
+    // =========================================================================
+    // 时机：document-end 一次，之后靠 MutationObserver 接住延迟弹出的
+    // =========================================================================
+
+    /*
+     * 不少弹窗是进页面几秒后才出来的（「读了 3 秒弹登录」），也有的只是切 class / style 显示出来，
+     * 所以 class/style/hidden/open 属性变化也要看。
+     * 节流而不是防抖：信息流页面 DOM 一直在变，防抖会一直拖着不跑。
+     */
+    let observer = null;
+    let timer = null;
+    let lastRun = -Infinity;
+
+    function run() {
+        timer = null;
+        lastRun = Date.now();
+        clean();
+        // 自己改的 style / 标记属性也会进队列，丢掉，免得自己触发自己
+        if (observer) observer.takeRecords();
+    }
+
+    function schedule() {
+        if (timer) return;
+        timer = setTimeout(run, Math.max(0, lastRun + CONFIG.throttle - Date.now()));
+    }
+
+    function start() {
+        run();
+        observer = new MutationObserver(schedule);
+        observer.observe(document.documentElement, {
+            childList: true,
+            subtree: true,
+            attributes: true,
+            attributeFilter: ['class', 'style', 'hidden', 'open'],
+        });
+        // document-end 时图片、字体还没到，版面可能还会变
+        window.addEventListener('load', schedule, { once: true });
+    }
+
     const settings = hostSettings();
     if (settings.disabled) {
         log('本站已停用', HOST);
         return;
     }
-    clean();
+    start();
 })();

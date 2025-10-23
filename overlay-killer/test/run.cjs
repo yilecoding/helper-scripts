@@ -151,6 +151,20 @@ async function settle(page, ms = 600) {
         await page.context().close()
     })
 
+    // ---------------------------------------------------------------- 时机
+
+    await t.test('延迟 2 秒弹出的遮罩：弹出前不动，弹出后被处理（page.clock）', async () => {
+        const page = await open(browser, 'delayed.html', { clock: true })
+        await page.waitForLoadState('load')
+        await page.clock.runFor(1500)
+        t.eq(await page.$$eval('.mask', els => els.length), 0)
+        await page.clock.runFor(1000)
+        t.eq(await page.$$eval('.mask', els => els.length), 1)
+        t.assert(!(await visible(page, '.mask')), '遮罩还在')
+        t.assert(await canScrollTo(page, 500), '页面还是滚不动')
+        await page.context().close()
+    })
+
     await close()
     t.done()
 })()

@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>延迟弹出的遮罩</title>
+<style>
+    body { margin: 0; font: 16px/1.6 sans-serif; }
+    body.modal-open { overflow: hidden; }
+    main p { height: 600px; }
+    .mask { position: fixed; inset: 0; background: rgba(0, 0, 0, .7); z-index: 2000; display: flex; align-items: center; justify-content: center; }
+    .mask .box { width: 320px; padding: 24px; background: #fff; }
+</style>
+</head>
+<body>
+<main><h1>文章</h1><p>正文。</p><p>正文。</p></main>
+<script>
+    // 读了 2 秒以后弹「登录后继续阅读」，同时给 body 加锁滚动的 class
+    setTimeout(() => {
+        const mask = document.createElement('div')
+        mask.className = 'mask'
+        mask.innerHTML = '<div class="box">登录后继续阅读<button>登录</button></div>'
+        document.body.appendChild(mask)
+        document.body.classList.add('modal-open')
+    }, 2000)
+</script>
+</body>
+</html>
