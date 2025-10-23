@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>图片灯箱</title>
+<style>
+    body { margin: 0; overflow: hidden; }
+    /* 带 #&gid=1&pid=2 这类 hash 打开页面时，PhotoSwipe 一加载就直接弹出大图，用户没有点击 */
+    .pswp { position: fixed; inset: 0; background: rgba(0, 0, 0, .9); z-index: 100000; }
+    .pswp img { position: absolute; left: 10%; top: 10%; width: 80%; height: 80%; }
+</style>
+</head>
+<body>
+<p>相册</p>
+<div class="pswp"><img alt="大图" src="data:image/gif;base64,R0lGODlhAQABAAAAACw="></div>
+</body>
+</html>

@@ -3,7 +3,7 @@
 // @name:zh-CN   弹窗遮罩清理
 // @name:en      Overlay Killer — Cookie Banners, Login Walls & Read-More Folds
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.10.23.5
+// @version      2025.10.23.6
 // @description  自动处理 Cookie 同意弹窗（优先点「拒绝全部 / 仅必要」，从不点「接受全部」）、「打开 App 阅读」「登录后查看全文」遮罩，并恢复被锁住的页面滚动；展开「阅读全文」折叠。不误伤视频全屏、图片灯箱和你自己点开的对话框。可按站点停用，可查看并撤销本页处理记录。
 // @description:zh-CN  自动处理 Cookie 同意弹窗（优先点「拒绝全部 / 仅必要」，从不点「接受全部」）、「打开 App 阅读」「登录后查看全文」遮罩，并恢复被锁住的页面滚动；展开「阅读全文」折叠。不误伤视频全屏、图片灯箱和你自己点开的对话框。可按站点停用，可查看并撤销本页处理记录。
 // @description:en  Automatically deals with cookie consent banners (prefers "Reject all / Necessary only", never clicks "Accept all"), "open in app" and "log in to read more" overlays, restores locked page scrolling, and expands "read more" folds. Leaves fullscreen video, image lightboxes and dialogs you opened yourself alone. Can be disabled per site; lists what it did on the page and can undo the last action.
@@ -40,6 +40,7 @@
         overlayCoverage: 0.6,   // 遮罩至少盖住视口的这么大比例
         overlayThreshold: 6,    // 遮罩打分的及格线，见 scoreOverlay()
         throttle: 300,          // DOM 变化后最多每这么久扫一次
+        userGrace: 1500,        // 用户点击 / 按回车后这么久内出现的弹窗，算用户自己打开的
     };
 
     const log = (...a) => CONFIG.debug && console.log(TAG, ...a);
@@ -86,6 +87,39 @@
             restore();
             el.setAttribute(MARK, 'undone');
         };
+    }
+
+    // =========================================================================
+    // 用户自己打开的弹窗不动
+    // =========================================================================
+
+    /*
+     * 判据：弹窗第一次被扫到时，距离用户最近一次真实的点击 / 回车 / 空格不到 CONFIG.userGrace。
+     * 扫描本身有最多 throttle 的延迟，所以宽限要比它长得多。
+     * 只认 isTrusted：脚本自己 .click() 拒绝按钮、站点用代码派发的事件都不算。
+     * 这样判下来的元素打上 user 标记，之后再出现也不动（关了再开是同一个元素）。
+     */
+    let lastUserAction = -Infinity;
+
+    function onUserAction(e) {
+        if (!e.isTrusted) return;
+        if (e.type === 'keydown' && e.key !== 'Enter' && e.key !== ' ') return;  // 打字不算
+        lastUserAction = Date.now();
+    }
+    window.addEventListener('pointerdown', onUserAction, true);
+    window.addEventListener('keydown', onUserAction, true);
+
+    /** 是用户刚打开的就打上 user 标记并返回 true。 */
+    function spareForUser(els) {
+        if (Date.now() - lastUserAction >= CONFIG.userGrace) return false;
+        els.forEach(el => el.setAttribute(MARK, 'user'));
+        log('用户刚操作过，不动', els);
+        return true;
+    }
+
+    /** 已处理过的，或者用户自己打开的。 */
+    function handled(el) {
+        return !!el.closest(`[${MARK}]`);
     }
 
     // =========================================================================
@@ -262,10 +296,12 @@
         for (const rule of CMPS) {
             const scopes = scopesOf(rule);
             const banner = queryAll(scopes, rule.detect).find(isShown);
-            if (!banner || banner.closest(`[${MARK}]`)) continue;
+            if (!banner || handled(banner)) continue;
             // shadow DOM 里的横幅没法从外面隐藏（样式隔离），隐藏宿主
             const hosts = rule.shadow ? [...document.querySelectorAll(rule.shadow)] : [];
-            if (hosts.some(h => h.hasAttribute(MARK))) continue;
+            if (hosts.some(handled)) continue;
+            // 用户在页脚点了「Cookie 设置」重新打开的，不能替他点拒绝
+            if (spareForUser(rule.shadow ? hosts : [banner])) continue;
             const rejectBtn = queryAll(scopes, rule.reject).find(b => isShown(b) && !ACCEPT_ALL_RE.test(textOf(b)))
                 || findRejectByText(banner);
             const hideTargets = rule.shadow ? hosts : queryAll(scopes, rule.hide || rule.detect);
@@ -316,16 +352,19 @@
     function edgeBars() {
         const vh = innerHeight;
         for (const bar of edgeCandidates()) {
-            if (bar.closest(`[${MARK}]`) || bar.querySelector(`[${MARK}]`)) continue;
+            if (handled(bar) || bar.querySelector(`[${MARK}]`)) continue;
             const r = bar.getBoundingClientRect();
             // 太高的是遮罩，交给遮罩那一步；不贴边的是页面中间的浮层
             if (r.height > vh * 0.6) continue;
             if (r.top > 50 && r.bottom < vh - 50) continue;
             const text = textOf(bar);
             if (text.length < 8 || text.length > 1500) continue;
-            if (COOKIE_RE.test(text) && bar.querySelector(BUTTON_SEL)) {
+            const isCookie = COOKIE_RE.test(text) && bar.querySelector(BUTTON_SEL);
+            if (!isCookie && !APP_RE.test(text)) continue;
+            if (spareForUser([bar])) continue;
+            if (isCookie) {
                 handleConsent('Cookie 横幅', bar, findRejectByText(bar), [bar]);
-            } else if (APP_RE.test(text)) {
+            } else {
                 const undo = hide(bar, 'app');
                 record('app', `「打开 App」引导条：${text.slice(0, 20)}`, undo);
             }
@@ -471,14 +510,14 @@
         const out = new Set();
         const z = zIndexOf(mask);
         for (const sib of mask.parentElement ? mask.parentElement.children : []) {
-            if (sib === mask || !isShown(sib) || sib.hasAttribute(MARK)) continue;
+            if (sib === mask || !isShown(sib) || handled(sib)) continue;
             const pos = getComputedStyle(sib).position;
             if ((pos === 'fixed' || pos === 'absolute') && zIndexOf(sib) >= z && coverage(sib) < 0.9 && coverage(sib) > 0) out.add(sib);
         }
         for (const el of document.elementsFromPoint(innerWidth / 2, innerHeight / 2)) {
             if (el === mask || mask.contains(el)) break;  // 往下就是遮罩和被它盖住的页面了
             const root = fixedRoot(el);
-            if (root && root !== mask && !root.contains(mask) && !root.hasAttribute(MARK) && coverage(root) < 0.9) out.add(root);
+            if (root && root !== mask && !root.contains(mask) && !handled(root) && coverage(root) < 0.9) out.add(root);
         }
         return [...out];
     }
@@ -486,13 +525,14 @@
     function overlays() {
         const done = [];
         for (const el of overlayCandidates()) {
-            if (el.closest(`[${MARK}]`) || done.some(d => d.contains(el) || el.contains(d))) continue;
+            if (handled(el) || done.some(d => d.contains(el) || el.contains(d))) continue;
             if (!isShown(el) || isProtected(el)) continue;
             const companions = companionsOf(el);
             const text = [el, ...companions].map(textOf).join(' ');
             const score = scoreOverlay(el, text);
             log('遮罩候选', score, el);
             if (score < CONFIG.overlayThreshold) continue;
+            if (spareForUser([el, ...companions])) continue;
             const undos = [el, ...companions].map(x => hide(x, 'overlay'));
             undos.push(...unlockScroll());
             record('overlay', `遮罩：${text.slice(0, 30) || '（无文字）'}`, () => undos.forEach(u => u()));

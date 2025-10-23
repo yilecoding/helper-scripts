@@ -151,6 +151,40 @@ async function settle(page, ms = 600) {
         await page.context().close()
     })
 
+    // ---------------------------------------------------------------- 不误伤
+
+    await t.test('用户点击后打开的模态框（长得和登录墙一样）不处理，过一会儿也不处理', async () => {
+        const page = await open(browser, 'user-modal.html')
+        await settle(page)
+        await page.click('#open')
+        await page.waitForTimeout(1000)
+        t.assert(await visible(page, '.modal-mask'), '遮罩被隐藏了')
+        t.assert(await visible(page, '.modal'), '对话框被隐藏了')
+        t.eq(await page.$eval('.modal-mask', el => el.getAttribute('data-overlay-killer')), 'user')
+        // 宽限期过了以后 DOM 再变（用户在对话框里打字），也不能再回头把它当遮罩处理
+        await page.waitForTimeout(1500)
+        await page.fill('#nick', '新昵称')
+        await page.evaluate(() => document.body.setAttribute('class', 'modal-open x'))
+        await page.waitForTimeout(600)
+        t.assert(await visible(page, '.modal'), '宽限期过后对话框被隐藏了')
+        t.eq(await page.evaluate(() => getComputedStyle(document.body).overflowY), 'hidden')
+        await page.context().close()
+    })
+
+    await t.test('图片灯箱（没有用户点击就打开的）不处理', async () => {
+        const page = await open(browser, 'lightbox.html')
+        await settle(page)
+        t.assert(await visible(page, '.pswp'), '灯箱被隐藏了')
+        await page.context().close()
+    })
+
+    await t.test('网页全屏的播放器不处理', async () => {
+        const page = await open(browser, 'web-fullscreen.html')
+        await settle(page)
+        t.assert(await visible(page, '#player'), '播放器被隐藏了')
+        await page.context().close()
+    })
+
     // ---------------------------------------------------------------- 时机
 
     await t.test('延迟 2 秒弹出的遮罩：弹出前不动，弹出后被处理（page.clock）', async () => {

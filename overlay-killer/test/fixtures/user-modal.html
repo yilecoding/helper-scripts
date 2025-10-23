@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>用户自己打开的模态框</title>
+<style>
+    body { margin: 0; font: 16px/1.6 sans-serif; }
+    body.modal-open { overflow: hidden; }
+    main p { height: 600px; }
+    /* 和登录墙长得一模一样：半透明全屏遮罩 + 居中对话框，还写着「登录」 */
+    .modal-mask { position: fixed; inset: 0; background: rgba(0, 0, 0, .5); z-index: 1000; display: none; }
+    .modal { position: fixed; left: 50%; top: 30%; width: 400px; margin-left: -200px; padding: 24px; background: #fff; z-index: 1001; display: none; }
+    .show { display: block; }
+</style>
+</head>
+<body>
+<main><h1>文章</h1><button id="open">编辑资料</button><p>正文。</p><p>正文。</p></main>
+<div class="modal-mask"></div>
+<div class="modal">编辑资料（登录账号：admin）<input id="nick"><button>保存</button></div>
+<script>
+    document.getElementById('open').onclick = () => {
+        document.querySelector('.modal-mask').classList.add('show')
+        document.querySelector('.modal').classList.add('show')
+        document.body.classList.add('modal-open')
+    }
+</script>
+</body>
+</html>
