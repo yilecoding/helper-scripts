@@ -3,7 +3,7 @@
 // @name:zh-CN   弹窗遮罩清理
 // @name:en      Overlay Killer — Cookie Banners, Login Walls & Read-More Folds
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.10.23.6
+// @version      2025.10.23.7
 // @description  自动处理 Cookie 同意弹窗（优先点「拒绝全部 / 仅必要」，从不点「接受全部」）、「打开 App 阅读」「登录后查看全文」遮罩，并恢复被锁住的页面滚动；展开「阅读全文」折叠。不误伤视频全屏、图片灯箱和你自己点开的对话框。可按站点停用，可查看并撤销本页处理记录。
 // @description:zh-CN  自动处理 Cookie 同意弹窗（优先点「拒绝全部 / 仅必要」，从不点「接受全部」）、「打开 App 阅读」「登录后查看全文」遮罩，并恢复被锁住的页面滚动；展开「阅读全文」折叠。不误伤视频全屏、图片灯箱和你自己点开的对话框。可按站点停用，可查看并撤销本页处理记录。
 // @description:en  Automatically deals with cookie consent banners (prefers "Reject all / Necessary only", never clicks "Accept all"), "open in app" and "log in to read more" overlays, restores locked page scrolling, and expands "read more" folds. Leaves fullscreen video, image lightboxes and dialogs you opened yourself alone. Can be disabled per site; lists what it did on the page and can undo the last action.
@@ -541,11 +541,176 @@
     }
 
     // =========================================================================
+    // 折叠全文：max-height / height + overflow: hidden + 渐变 + 「展开全文」按钮
+    // =========================================================================
+
+    /*
+     * 站点规则：通用识别认不出、或者按钮文字不固定的站。
+     *   hosts   域名，匹配本域及子域
+     *   expand  被截断的正文容器
+     *   remove  展开按钮、渐变遮挡
+     * 都没在真实站点上实测过：CSDN 的结构参照了公开的去限制脚本，知乎、百度知道是按类名推测的。
+     * 选择器不命中时没有副作用，通用识别照常兜底。
+     */
+    const SITES = [
+        {
+            name: 'CSDN',
+            hosts: ['csdn.net'],
+            // 未登录 / 仅粉丝可见：<div id="article_content" style="height: 2000px; overflow: hidden">，
+            // 下面 .hide-article-box 里是渐变和「阅读全文」/「关注博主即可阅读全文」
+            expand: '#article_content',
+            remove: '.hide-article-box',
+        },
+        {
+            name: '知乎',
+            hosts: ['zhihu.com'],
+            expand: '.RichContent--collapsed .RichContent-inner',
+            remove: '.RichContent--collapsed .ContentItem-expandButton',
+        },
+        {
+            name: '百度知道',
+            hosts: ['zhidao.baidu.com'],
+            expand: '.best-text, .answer-text',
+            remove: '.wgt-best-mask, .wgt-answers-mask, .wgt-best-showbtn',
+        },
+    ];
+
+    const SITE = SITES.find(r => r.hosts.some(h => HOST === h || HOST.endsWith('.' + h))) || null;
+
+    /*
+     * 按钮文字整句匹配，不做包含匹配：「查看更多评论」「展开全部回复」是翻页 / 加载评论，
+     * 旁边恰好有个截断容器时会被当成展开按钮。允许「登录后」「关注博主即可」这类前缀。
+     */
+    const MORE_RE = /^(?:(?:登录|关注.{0,4}?)(?:后|即可))?(?:展开|(?:展开|阅读|查看|显示)(?:阅读)?(?:全文|全部|更多))$|^继续阅读$|^(?:read|show|see) more$|^continue reading$|^expand$/i;
+
+    function moreText(el) {
+        return textOf(el).replace(/[>›»∨⌄▼▽↓︾…。.:：]+/g, ' ').replace(/\s+/g, ' ').trim();
+    }
+
+    /** 渐变遮挡画在伪元素上时，给宿主打这个属性，统一用一条样式藏掉。 */
+    const FADE = MARK + '-fade';
+    let fadeStyle = null;
+
+    function hidePseudoFade(el) {
+        if (!fadeStyle) {
+            fadeStyle = document.createElement('style');
+            fadeStyle.textContent = `[${FADE}]::before, [${FADE}]::after { display: none !important; }`;
+            (document.head || document.documentElement).appendChild(fadeStyle);
+        }
+        el.setAttribute(FADE, '');
+        return () => el.removeAttribute(FADE);
+    }
+
+    function hasGradient(el, pseudo) {
+        return /gradient/.test(getComputedStyle(el, pseudo).backgroundImage);
+    }
+
+    /** 内容被截掉了一截：overflow 不让看，实际内容比框高，且确实是正文（有一定字数）。 */
+    function isTruncated(el) {
+        if (el === document.body || el === document.documentElement) return false;
+        const s = getComputedStyle(el);
+        const clamped = s.webkitLineClamp && s.webkitLineClamp !== 'none';
+        if (!clamped && s.overflowY !== 'hidden' && s.overflowY !== 'clip') return false;
+        if (s.position === 'fixed') return false;
+        if (el.scrollHeight <= el.clientHeight + 40 && !clamped) return false;
+        return textOf(el).length >= 100;
+    }
+
+    /** 解除截断，返回撤销函数。 */
+    function unclamp(el) {
+        const undos = [
+            setImportant(el, 'max-height', 'none'),
+            setImportant(el, 'height', 'auto'),
+            setImportant(el, 'overflow-y', 'visible'),
+        ];
+        const s = getComputedStyle(el);
+        if (s.webkitLineClamp && s.webkitLineClamp !== 'none') undos.push(setImportant(el, '-webkit-line-clamp', 'unset'));
+        if (hasGradient(el, '::after') || hasGradient(el, '::before')) undos.push(hidePseudoFade(el));
+        el.setAttribute(MARK, 'expanded');
+        return () => {
+            undos.forEach(u => u());
+            el.setAttribute(MARK, 'undone');
+        };
+    }
+
+    /**
+     * 按钮对应的截断容器：按钮可能在容器里面（绝对定位在底部），也可能在容器后面。
+     * 从按钮往上走几层，每层看自己和前面最多 3 个兄弟（中间常隔着一条渐变）。
+     * 不看后面的兄弟：那是下一篇文章 / 下一个回答，按钮不会管到它。
+     */
+    function truncatedNear(btn) {
+        let a = btn;
+        for (let i = 0; i < 5 && a && a !== document.body; i++, a = a.parentElement) {
+            if (isTruncated(a)) return a;
+            let sib = a.previousElementSibling;
+            for (let j = 0; j < 3 && sib; j++, sib = sib.previousElementSibling) {
+                if (isTruncated(sib)) return sib;
+            }
+        }
+        return null;
+    }
+
+    /** 按钮往外扩到「只装着这个按钮」的那层包装（常常就是渐变条本身）。 */
+    function buttonWrapper(btn, container) {
+        let w = btn;
+        const text = textOf(btn);
+        while (w.parentElement && !w.parentElement.contains(container) && textOf(w.parentElement) === text) w = w.parentElement;
+        return w;
+    }
+
+    /** 容器里和旁边绝对定位的渐变条。 */
+    function fadesNear(container) {
+        const pool = [...container.children, ...(container.parentElement ? container.parentElement.children : [])];
+        return pool.filter(el => el !== container && !handled(el) && isShown(el)
+            && getComputedStyle(el).position === 'absolute' && hasGradient(el) && textOf(el).length < 20);
+    }
+
+    /** 文字里带「展开」「全文」之类的节点，用 XPath 找，比遍历所有元素便宜。 */
+    function moreButtons() {
+        const lower = "translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')";
+        const words = ['展开', '全文', '全部', '更多', '继续阅读'].map(w => `contains(., '${w}')`)
+            .concat(['read', 'show more', 'see more', 'expand'].map(w => `contains(${lower}, '${w}')`));
+        const xp = `//body//text()[${words.join(' or ')}]`;
+        const snap = document.evaluate(xp, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+        const out = new Set();
+        for (let i = 0; i < snap.snapshotLength; i++) {
+            const p = snap.snapshotItem(i).parentElement;
+            if (!p || p.closest('script, style, noscript')) continue;
+            const btn = p.closest(BUTTON_SEL) || p;
+            if (MORE_RE.test(moreText(btn)) && isShown(btn) && !handled(btn)) out.add(btn);
+        }
+        return [...out];
+    }
+
+    function expandFolds() {
+        if (SITE) expandSite(SITE);
+        for (const btn of moreButtons()) {
+            const box = truncatedNear(btn);
+            if (!box || handled(box)) continue;
+            const undos = [unclamp(box), hide(buttonWrapper(btn, box), 'expand')];
+            for (const f of fadesNear(box)) undos.push(hide(f, 'expand'));
+            record('expand', `展开全文：${moreText(btn)}`, () => undos.forEach(u => u()));
+        }
+    }
+
+    function expandSite(rule) {
+        const undos = [];
+        for (const el of document.querySelectorAll(rule.expand)) {
+            if (!handled(el) && isTruncated(el)) undos.push(unclamp(el));
+        }
+        if (!undos.length) return;
+        for (const el of document.querySelectorAll(rule.remove)) {
+            if (!handled(el) && isShown(el)) undos.push(hide(el, 'expand'));
+        }
+        record('expand', `${rule.name}：展开全文`, () => undos.forEach(u => u()));
+    }
+
+    // =========================================================================
     // 主流程
     // =========================================================================
 
     /** 依次跑各个处理步骤；每一步各自 try，一步出错不影响别的。 */
-    const STEPS = [cookieCmp, overlays, edgeBars];
+    const STEPS = [cookieCmp, overlays, edgeBars, expandFolds];
 
     function clean() {
         for (const step of STEPS) {

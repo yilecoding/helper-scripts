@@ -185,6 +185,40 @@ async function settle(page, ms = 600) {
         await page.context().close()
     })
 
+    // ---------------------------------------------------------------- 折叠全文
+
+    /** 容器里的内容是否全部露出来了。 */
+    const unfolded = (page, sel) => page.$eval(sel, el => el.scrollHeight <= el.clientHeight + 1)
+
+    await t.test('通用折叠：两种写法都展开，按钮和渐变（含 ::after）去掉', async () => {
+        const page = await open(browser, 'fold.html')
+        await settle(page)
+        t.assert(await unfolded(page, '#fold1'), '#fold1 没展开')
+        t.assert(!(await visible(page, '.read-more-wrap')), '#fold1 的按钮还在')
+        t.assert(!(await visible(page, '#fold1-fade')), '#fold1 的渐变还在')
+        t.assert(await unfolded(page, '#fold2'), '#fold2 没展开')
+        t.assert(!(await visible(page, '#btn2')), '#fold2 的按钮还在')
+        t.eq(await page.$eval('#fold2', el => getComputedStyle(el, '::after').display), 'none')
+        await page.context().close()
+    })
+
+    await t.test('通用折叠：可滚动代码块、没有展开按钮的截断容器、无关的「查看更多」不动', async () => {
+        const page = await open(browser, 'fold.html')
+        await settle(page)
+        t.assert(!(await unfolded(page, '#code')), '代码块被展开了')
+        t.assert(!(await unfolded(page, '#clip')), '没有按钮的容器被展开了')
+        t.assert(await visible(page, '#unrelated'), '「查看更多评论」被隐藏了')
+        await page.context().close()
+    })
+
+    await t.test('站点规则：CSDN（模拟结构）展开 #article_content，去掉 .hide-article-box', async () => {
+        const page = await open(browser, 'csdn.html', { site: 'https://blog.csdn.net' })
+        await settle(page)
+        t.assert(await unfolded(page, '#article_content'), '没展开')
+        t.assert(!(await visible(page, '.hide-article-box')), '「阅读全文」框还在')
+        await page.context().close()
+    })
+
     // ---------------------------------------------------------------- 时机
 
     await t.test('延迟 2 秒弹出的遮罩：弹出前不动，弹出后被处理（page.clock）', async () => {
