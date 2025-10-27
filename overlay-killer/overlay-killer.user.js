@@ -3,7 +3,7 @@
 // @name:zh-CN   弹窗遮罩清理
 // @name:en      Overlay Killer — Cookie Banners, Login Walls & Read-More Folds
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.10.23.7
+// @version      2025.10.27.8
 // @description  自动处理 Cookie 同意弹窗（优先点「拒绝全部 / 仅必要」，从不点「接受全部」）、「打开 App 阅读」「登录后查看全文」遮罩，并恢复被锁住的页面滚动；展开「阅读全文」折叠。不误伤视频全屏、图片灯箱和你自己点开的对话框。可按站点停用，可查看并撤销本页处理记录。
 // @description:zh-CN  自动处理 Cookie 同意弹窗（优先点「拒绝全部 / 仅必要」，从不点「接受全部」）、「打开 App 阅读」「登录后查看全文」遮罩，并恢复被锁住的页面滚动；展开「阅读全文」折叠。不误伤视频全屏、图片灯箱和你自己点开的对话框。可按站点停用，可查看并撤销本页处理记录。
 // @description:en  Automatically deals with cookie consent banners (prefers "Reject all / Necessary only", never clicks "Accept all"), "open in app" and "log in to read more" overlays, restores locked page scrolling, and expands "read more" folds. Leaves fullscreen video, image lightboxes and dialogs you opened yourself alone. Can be disabled per site; lists what it did on the page and can undo the last action.
@@ -13,6 +13,8 @@
 // @noframes
 // @grant        GM_getValue
 // @grant        GM_setValue
+// @grant        GM_registerMenuCommand
+// @grant        GM_unregisterMenuCommand
 // @license      CC BY-NC-SA
 // @run-at       document-end
 // @homepageURL  https://github.com/yilecoding/helper-scripts
@@ -61,6 +63,15 @@
         return all[HOST] || {};
     }
 
+    function saveHostSettings(patch) {
+        const all = GM_getValue(STORE_KEY, {}) || {};
+        const next = { ...(all[HOST] || {}), ...patch };
+        for (const k of Object.keys(next)) if (next[k] === undefined) delete next[k];
+        if (Object.keys(next).length) all[HOST] = next;
+        else delete all[HOST];
+        GM_setValue(STORE_KEY, all);
+    }
+
     // =========================================================================
     // 改样式：都记下原值，撤销时原样放回
     // =========================================================================
@@ -97,9 +108,11 @@
      * 判据：弹窗第一次被扫到时，距离用户最近一次真实的点击 / 回车 / 空格不到 CONFIG.userGrace。
      * 扫描本身有最多 throttle 的延迟，所以宽限要比它长得多。
      * 只认 isTrusted：脚本自己 .click() 拒绝按钮、站点用代码派发的事件都不算。
-     * 这样判下来的元素打上 user 标记，之后再出现也不动（关了再开是同一个元素）。
+     * 这样判下来的元素打上 user 标记，之后再出现也不动（关了再开是同一个元素）；
+     * 菜单里「清理当前页」是用户明确要清，那时忽略这个标记。
      */
     let lastUserAction = -Infinity;
+    let manual = false;
 
     function onUserAction(e) {
         if (!e.isTrusted) return;
@@ -111,27 +124,125 @@
 
     /** 是用户刚打开的就打上 user 标记并返回 true。 */
     function spareForUser(els) {
-        if (Date.now() - lastUserAction >= CONFIG.userGrace) return false;
+        if (manual || Date.now() - lastUserAction >= CONFIG.userGrace) return false;
         els.forEach(el => el.setAttribute(MARK, 'user'));
         log('用户刚操作过，不动', els);
         return true;
     }
 
-    /** 已处理过的，或者用户自己打开的。 */
+    /** 已处理过的，或者用户自己打开的（手动清理时不算后者）。 */
     function handled(el) {
-        return !!el.closest(`[${MARK}]`);
+        const m = el.closest(`[${MARK}]`);
+        return !!m && !(manual && m.getAttribute(MARK) === 'user');
     }
 
     // =========================================================================
     // 处理记录：菜单里列出来，可撤销
     // =========================================================================
 
-    /** { kind, label, time, undo?: () => void } */
+    /** { kind, label, time, undo?: () => void, undone?: boolean } —— 点了拒绝按钮的没有 undo */
     const records = [];
 
     function record(kind, label, undo) {
         records.push({ kind, label, time: Date.now(), undo });
         log(kind, label);
+        if (panelHost) renderPanel();
+    }
+
+    /** 撤销最近一条还能撤销的。点过的拒绝按钮撤不回来（CMP 已经记下了），跳过它。 */
+    function undoLast() {
+        const r = [...records].reverse().find(x => x.undo && !x.undone);
+        if (!r) return null;
+        r.undo();
+        r.undone = true;
+        return r;
+    }
+
+    function undoAll() {
+        for (const r of [...records].reverse()) {
+            if (r.undo && !r.undone) {
+                r.undo();
+                r.undone = true;
+            }
+        }
+    }
+
+    // =========================================================================
+    // 处理记录面板（shadow DOM，不受页面样式影响）
+    // =========================================================================
+
+    const PANEL_ID = 'overlay-killer-panel';
+    const KIND_NAMES = { cookie: 'Cookie', overlay: '遮罩', app: 'App 引导', expand: '折叠' };
+    let panelHost = null;
+    let panelNote = '';
+
+    function showPanel(note = '') {
+        panelNote = note;
+        if (!panelHost) {
+            panelHost = document.createElement('div');
+            panelHost.id = PANEL_ID;
+            // 自己的面板也是 fixed 浮层，打上标记免得被自己当成横幅处理
+            panelHost.setAttribute(MARK, 'self');
+            panelHost.attachShadow({ mode: 'open' });
+            document.documentElement.appendChild(panelHost);
+        }
+        renderPanel();
+    }
+
+    function closePanel() {
+        if (panelHost) panelHost.remove();
+        panelHost = null;
+    }
+
+    function renderPanel() {
+        const root = panelHost.shadowRoot;
+        root.innerHTML = `
+            <style>
+                :host { all: initial; }
+                .box { position: fixed; top: 16px; right: 16px; z-index: 2147483647; width: 340px; max-height: 60vh; overflow: auto;
+                       background: #fff; color: #222; font: 13px/1.5 system-ui, sans-serif; border-radius: 8px;
+                       box-shadow: 0 4px 24px rgba(0,0,0,.25); padding: 12px 14px; }
+                h3 { margin: 0 0 8px; font-size: 14px; }
+                ol { margin: 0; padding-left: 20px; }
+                li.undone { color: #999; text-decoration: line-through; }
+                .kind { color: #1677ff; margin-right: 4px; }
+                .fixed { color: #999; }
+                .note { color: #d46b08; margin: 0 0 8px; }
+                .empty { color: #999; }
+                .bar { margin-top: 10px; display: flex; gap: 8px; justify-content: flex-end; }
+                button { font: inherit; padding: 2px 10px; cursor: pointer; }
+            </style>
+            <div class="box">
+                <h3>本页处理记录（${records.length}）</h3>
+                <p class="note"></p>
+                <ol></ol>
+                <div class="bar"><button class="undo">撤销最近一次</button><button class="close">关闭</button></div>
+            </div>`;
+        const note = root.querySelector('.note');
+        if (panelNote) note.textContent = panelNote;
+        else note.remove();
+        const list = root.querySelector('ol');
+        if (!records.length) list.outerHTML = '<p class="empty">还没有处理任何东西</p>';
+        for (const r of records) {
+            const li = document.createElement('li');
+            if (r.undone) li.className = 'undone';
+            const kind = document.createElement('span');
+            kind.className = 'kind';
+            kind.textContent = `[${KIND_NAMES[r.kind] || r.kind}]`;
+            li.append(kind, r.label);
+            if (!r.undo) {
+                const fixed = document.createElement('span');
+                fixed.className = 'fixed';
+                fixed.textContent = '（不可撤销）';
+                li.append(fixed);
+            }
+            list.appendChild(li);
+        }
+        root.querySelector('.undo').onclick = () => {
+            const r = undoLast();
+            showPanel(r ? `已撤销：${r.label}` : '没有可以撤销的了');
+        };
+        root.querySelector('.close').onclick = closePanel;
     }
 
     // =========================================================================
@@ -734,6 +845,7 @@
     let observer = null;
     let timer = null;
     let lastRun = -Infinity;
+    let started = false;
 
     function run() {
         timer = null;
@@ -749,6 +861,8 @@
     }
 
     function start() {
+        if (started) return;
+        started = true;
         run();
         observer = new MutationObserver(schedule);
         observer.observe(document.documentElement, {
@@ -758,11 +872,65 @@
             attributeFilter: ['class', 'style', 'hidden', 'open'],
         });
         // document-end 时图片、字体还没到，版面可能还会变
-        window.addEventListener('load', schedule, { once: true });
+        if (document.readyState !== 'complete') window.addEventListener('load', schedule, { once: true });
     }
 
-    const settings = hostSettings();
-    if (settings.disabled) {
+    function stop() {
+        started = false;
+        if (observer) observer.disconnect();
+        observer = null;
+        clearTimeout(timer);
+        timer = null;
+    }
+
+    // =========================================================================
+    // 菜单
+    // =========================================================================
+
+    let menuIds = [];
+
+    function registerMenu() {
+        menuIds.forEach(id => GM_unregisterMenuCommand(id));
+        menuIds = [];
+        const add = (caption, fn) => menuIds.push(GM_registerMenuCommand(caption, fn));
+        if (hostSettings().disabled) add(`⛔ 本站已停用（${HOST}），点击启用`, () => setDisabled(false));
+        else add(`✅ 本站已启用（${HOST}），点击停用`, () => setDisabled(true));
+        add('🧹 清理当前页', manualClean);
+        add('📋 本页处理记录', () => showPanel());
+        add('↩ 撤销最近一次', () => {
+            const r = undoLast();
+            showPanel(r ? `已撤销：${r.label}` : '没有可以撤销的了');
+        });
+    }
+
+    /** 停用时把本页做过的都撤回去，页面回到装脚本之前的样子；启用时立刻扫一遍。不用刷新。 */
+    function setDisabled(disabled) {
+        saveHostSettings({ disabled: disabled || undefined });
+        if (disabled) {
+            stop();
+            undoAll();
+        } else {
+            start();
+        }
+        registerMenu();
+    }
+
+    /** 手动清理：不管用户刚点过什么，也不管本站是否停用，只跑这一次。 */
+    function manualClean() {
+        const before = records.length;
+        manual = true;
+        try {
+            clean();
+        } finally {
+            manual = false;
+        }
+        if (observer) observer.takeRecords();
+        const n = records.length - before;
+        showPanel(n ? `这次处理了 ${n} 项` : '没找到需要处理的弹窗或折叠');
+    }
+
+    registerMenu();
+    if (hostSettings().disabled) {
         log('本站已停用', HOST);
         return;
     }
