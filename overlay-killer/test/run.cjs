@@ -140,18 +140,29 @@ async function settle(page, ms = 600) {
 
     // ---------------------------------------------------------------- 遮罩与滚动锁
 
-    /** 页面现在能不能滚：试着滚到 y，看 scrollY 有没有跟着走。 */
-    const canScrollTo = (page, y) => page.evaluate(y => {
-        window.scrollTo({ top: y, behavior: 'instant' })
-        return window.scrollY === y
-    }, y)
+    /*
+     * 页面现在能不能被用户滚动。不能用 scrollTo 试：overflow: hidden 只拦用户滚动，
+     * 脚本 scrollTo 照样能滚过去 —— 一开始这么写，锁没解开的用例也是绿的。
+     * 看 computed style（page.clock 装上时滚轮事件不好等），没装 clock 的用例再补一个真滚轮。
+     */
+    const scrollFree = page => page.evaluate(() => [document.documentElement, document.body].every(el => {
+        const s = getComputedStyle(el)
+        return s.overflowY !== 'hidden' && s.overflowY !== 'clip' && s.position !== 'fixed'
+    }))
+    const wheelScrolls = async page => {
+        await page.mouse.move(640, 400)
+        await page.mouse.wheel(0, 400)
+        await page.waitForTimeout(300)
+        return page.evaluate(() => window.scrollY > 0)
+    }
 
     await t.test('通用遮罩：遮罩和兄弟弹窗都隐藏，body 的 overflow: hidden 解开', async () => {
         const page = await open(browser, 'overlay.html')
         await settle(page)
         t.assert(!(await visible(page, '.mask')), '遮罩还在')
         t.assert(!(await visible(page, '.login-box')), '弹窗还在')
-        t.assert(await canScrollTo(page, 500), '页面还是滚不动')
+        t.assert(await scrollFree(page), '滚动锁还在')
+        t.assert(await wheelScrolls(page), '滚轮滚不动')
         await page.context().close()
     })
 
@@ -236,6 +247,26 @@ async function settle(page, ms = 600) {
         await page.context().close()
     })
 
+    await t.test('遮罩隐藏之后站点才锁滚动：锁也要解开', async () => {
+        const page = await open(browser, 'relock.html', { clock: true })
+        await page.waitForLoadState('load')
+        await page.clock.runFor(500)
+        t.assert(!(await visible(page, '#mask')), '遮罩没处理')
+        await page.clock.runFor(800)
+        t.assert(await scrollFree(page), '后加的滚动锁没解开')
+        await page.context().close()
+    })
+
+    await t.test('站点用内联 style 把遮罩重新显示出来：再隐藏，不重复记录', async () => {
+        const page = await open(browser, 'relock.html', { clock: true })
+        await page.waitForLoadState('load')
+        await page.clock.runFor(2500)
+        t.assert(!(await visible(page, '#mask')), '遮罩被站点重新显示了')
+        await h.menu(page, '本页处理记录')
+        t.assert(/本页处理记录（1）/.test(await panelText(page)), await panelText(page))
+        await page.context().close()
+    })
+
     // ---------------------------------------------------------------- 时机
 
     await t.test('延迟 2 秒弹出的遮罩：弹出前不动，弹出后被处理（page.clock）', async () => {
@@ -246,7 +277,7 @@ async function settle(page, ms = 600) {
         await page.clock.runFor(1000)
         t.eq(await page.$$eval('.mask', els => els.length), 1)
         t.assert(!(await visible(page, '.mask')), '遮罩还在')
-        t.assert(await canScrollTo(page, 500), '页面还是滚不动')
+        t.assert(await scrollFree(page), '滚动锁还在')
         await page.context().close()
     })
 

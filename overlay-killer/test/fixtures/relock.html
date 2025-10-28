@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>遮罩先出、滚动锁后加，还会被站点重新显示</title>
+<style>
+    body { margin: 0; font: 16px/1.6 sans-serif; }
+    main p { height: 600px; }
+    .mask { position: fixed; inset: 0; background: rgba(0, 0, 0, .6); z-index: 3000; }
+</style>
+</head>
+<body>
+<main><h1>文章</h1><p>正文。</p><p>正文。</p></main>
+<div class="mask" id="mask">打开 App 查看全文</div>
+<script>
+    // 弹窗库常在入场动画结束后才锁滚动；有的站还会定时检查遮罩是否还显示着，被隐藏了就再打开
+    setTimeout(() => { document.documentElement.style.overflow = 'hidden' }, 800)
+    setTimeout(() => { document.getElementById('mask').style.display = 'block' }, 1500)
+</script>
+</body>
+</html>

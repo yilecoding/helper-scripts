@@ -3,7 +3,7 @@
 // @name:zh-CN   弹窗遮罩清理
 // @name:en      Overlay Killer — Cookie Banners, Login Walls & Read-More Folds
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.10.27.8
+// @version      2025.10.28.9
 // @description  自动处理 Cookie 同意弹窗（优先点「拒绝全部 / 仅必要」，从不点「接受全部」）、「打开 App 阅读」「登录后查看全文」遮罩，并恢复被锁住的页面滚动；展开「阅读全文」折叠。不误伤视频全屏、图片灯箱和你自己点开的对话框。可按站点停用，可查看并撤销本页处理记录。
 // @description:zh-CN  自动处理 Cookie 同意弹窗（优先点「拒绝全部 / 仅必要」，从不点「接受全部」）、「打开 App 阅读」「登录后查看全文」遮罩，并恢复被锁住的页面滚动；展开「阅读全文」折叠。不误伤视频全屏、图片灯箱和你自己点开的对话框。可按站点停用，可查看并撤销本页处理记录。
 // @description:en  Automatically deals with cookie consent banners (prefers "Reject all / Necessary only", never clicks "Accept all"), "open in app" and "log in to read more" overlays, restores locked page scrolling, and expands "read more" folds. Leaves fullscreen video, image lightboxes and dialogs you opened yourself alone. Can be disabled per site; lists what it did on the page and can undo the last action.
@@ -90,11 +90,16 @@
         };
     }
 
+    /** 当前由脚本隐藏着的元素。站点把它们重新显示出来时，guard() 再藏回去。 */
+    const hiddenEls = new Set();
+
     /** 隐藏元素并打标记，返回撤销函数。 */
     function hide(el, how) {
         const restore = setImportant(el, 'display', 'none');
         el.setAttribute(MARK, how);
+        hiddenEls.add(el);
         return () => {
+            hiddenEls.delete(el);
             restore();
             el.setAttribute(MARK, 'undone');
         };
@@ -143,8 +148,9 @@
     /** { kind, label, time, undo?: () => void, undone?: boolean } —— 点了拒绝按钮的没有 undo */
     const records = [];
 
-    function record(kind, label, undo) {
-        records.push({ kind, label, time: Date.now(), undo });
+    /** opts.unlocked：这次处理解过滚动锁，guard() 据此判断后加的锁要不要再解。 */
+    function record(kind, label, undo, opts = {}) {
+        records.push({ kind, label, time: Date.now(), undo, ...opts });
         log(kind, label);
         if (panelHost) renderPanel();
     }
@@ -400,7 +406,7 @@
         if (!undos.length) return;
         // 带全屏遮罩的 CMP（Quantcast、Cookiebot 的弹窗模式）会锁滚动，用户表态后才由它自己解开
         undos.push(...unlockScroll());
-        record('cookie', `${name}：${why}`, () => undos.forEach(u => u()));
+        record('cookie', `${name}：${why}`, () => undos.forEach(u => u()), { unlocked: true });
     }
 
     function cookieCmp() {
@@ -646,7 +652,7 @@
             if (spareForUser([el, ...companions])) continue;
             const undos = [el, ...companions].map(x => hide(x, 'overlay'));
             undos.push(...unlockScroll());
-            record('overlay', `遮罩：${text.slice(0, 30) || '（无文字）'}`, () => undos.forEach(u => u()));
+            record('overlay', `遮罩：${text.slice(0, 30) || '（无文字）'}`, () => undos.forEach(u => u()), { unlocked: true });
             done.push(el);
         }
     }
@@ -817,11 +823,45 @@
     }
 
     // =========================================================================
+    // 守住已经处理好的：站点重新显示遮罩、遮罩没了才补锁滚动
+    // =========================================================================
+
+    /*
+     * 两种都是测出来的：
+     *   - 弹窗库常在入场动画结束后才锁滚动，那时遮罩已经被隐藏了，锁却刚加上；
+     *     遮罩那一步只在隐藏的当下解锁，后加的锁就一直留着，页面滚不动且看不出原因。
+     *   - 站点写 el.style.display = 'block' 重新显示遮罩：这一句会把内联的 display:none !important
+     *     整条换掉，!important 挡不住。元素带着标记，常规扫描会直接跳过它。
+     * 补锁只在「本页解过锁、且视口里没有别的大浮层」时做 —— 还开着的灯箱、用户自己打开的对话框
+     * 锁滚动是正常的，那把锁归它们。
+     */
+    function guard() {
+        for (const el of hiddenEls) {
+            if (el.isConnected && getComputedStyle(el).display !== 'none') {
+                el.style.setProperty('display', 'none', 'important');
+                log('站点重新显示了，再藏回去', el);
+            }
+        }
+        const last = [...records].reverse().find(r => r.unlocked && !r.undone);
+        if (!last || !scrollLocked()) return;
+        if (overlayCandidates().some(el => isShown(el) && coverage(el) >= CONFIG.overlayCoverage)) return;
+        const undos = unlockScroll();
+        if (!undos.length) return;
+        // 并进那条记录：撤销它时一起撤
+        const prev = last.undo;
+        last.undo = () => {
+            undos.forEach(u => u());
+            prev();
+        };
+        log('补解后加的滚动锁');
+    }
+
+    // =========================================================================
     // 主流程
     // =========================================================================
 
     /** 依次跑各个处理步骤；每一步各自 try，一步出错不影响别的。 */
-    const STEPS = [cookieCmp, overlays, edgeBars, expandFolds];
+    const STEPS = [cookieCmp, overlays, edgeBars, expandFolds, guard];
 
     function clean() {
         for (const step of STEPS) {
