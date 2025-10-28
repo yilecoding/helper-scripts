@@ -135,6 +135,7 @@ async function settle(page, ms = 600) {
         t.eq(await choice(page), null)
         t.assert(!(await visible(page, '#top-tip')), 'Cookie 横幅还在')
         t.assert(!(await visible(page, '#app-bar')), 'App 引导条还在')
+        t.assert(!(await visible(page, '#app-link')), '整条是一个链接的 App 引导条还在')
         await page.context().close()
     })
 

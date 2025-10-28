@@ -3,7 +3,7 @@
 // @name:zh-CN   弹窗遮罩清理
 // @name:en      Overlay Killer — Cookie Banners, Login Walls & Read-More Folds
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.10.28.9
+// @version      2025.10.28.10
 // @description  自动处理 Cookie 同意弹窗（优先点「拒绝全部 / 仅必要」，从不点「接受全部」）、「打开 App 阅读」「登录后查看全文」遮罩，并恢复被锁住的页面滚动；展开「阅读全文」折叠。不误伤视频全屏、图片灯箱和你自己点开的对话框。可按站点停用，可查看并撤销本页处理记录。
 // @description:zh-CN  自动处理 Cookie 同意弹窗（优先点「拒绝全部 / 仅必要」，从不点「接受全部」）、「打开 App 阅读」「登录后查看全文」遮罩，并恢复被锁住的页面滚动；展开「阅读全文」折叠。不误伤视频全屏、图片灯箱和你自己点开的对话框。可按站点停用，可查看并撤销本页处理记录。
 // @description:en  Automatically deals with cookie consent banners (prefers "Reject all / Necessary only", never clicks "Accept all"), "open in app" and "log in to read more" overlays, restores locked page scrolling, and expands "read more" folds. Leaves fullscreen video, image lightboxes and dialogs you opened yourself alone. Can be disabled per site; lists what it did on the page and can undo the last action.
@@ -466,6 +466,33 @@
         return [...found];
     }
 
+    /** 不在链接 / 按钮里的文字 —— 横幅的「说明句」。导航栏的字全在链接里，这里是空的。 */
+    function proseText(root) {
+        const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+        let out = '';
+        for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+            const p = n.parentElement;
+            if (p && !p.closest(BUTTON_SEL) && !p.closest('script, style')) out += n.data;
+        }
+        return out.replace(/\s+/g, ' ').trim();
+    }
+
+    /*
+     * 关键词只在「说明句」里找，不在整条横幅的文字里找：
+     * 顶栏里有「隐私政策」「下载 App」链接再正常不过，按整段文字匹配会把整条导航栏藏掉（测出来的）。
+     * 「打开 App」引导条还常常整条就是一个链接，没有说明句，所以另给一条路：
+     * 字少、可点的东西不超过 3 个的小条，整段文字匹配也算。
+     */
+    function classifyBar(bar) {
+        const prose = proseText(bar);
+        const clickable = bar.querySelectorAll(BUTTON_SEL).length;
+        if (clickable && clickable <= 8 && prose.length >= 10 && COOKIE_RE.test(prose)) return 'cookie';
+        if (APP_RE.test(prose)) return 'app';
+        const text = textOf(bar);
+        if (clickable <= 3 && text.length <= 40 && APP_RE.test(text)) return 'app';
+        return null;
+    }
+
     function edgeBars() {
         const vh = innerHeight;
         for (const bar of edgeCandidates()) {
@@ -475,11 +502,10 @@
             if (r.height > vh * 0.6) continue;
             if (r.top > 50 && r.bottom < vh - 50) continue;
             const text = textOf(bar);
-            if (text.length < 8 || text.length > 1500) continue;
-            const isCookie = COOKIE_RE.test(text) && bar.querySelector(BUTTON_SEL);
-            if (!isCookie && !APP_RE.test(text)) continue;
-            if (spareForUser([bar])) continue;
-            if (isCookie) {
+            if (text.length < 4 || text.length > 1500) continue;
+            const kind = classifyBar(bar);
+            if (!kind || spareForUser([bar])) continue;
+            if (kind === 'cookie') {
                 handleConsent('Cookie 横幅', bar, findRejectByText(bar), [bar]);
             } else {
                 const undo = hide(bar, 'app');
