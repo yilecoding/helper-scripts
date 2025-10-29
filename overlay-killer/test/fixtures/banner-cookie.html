@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>自建 Cookie 横幅</title>
+<style>
+    body { margin: 0; font: 16px/1.6 sans-serif; }
+    main p { height: 300px; }
+    /* 不是任何 CMP，站点自己写的卡片式横幅：离底边 16px，只占左边一块 */
+    .cookie-tip { position: fixed; left: 16px; bottom: 16px; width: 420px; padding: 16px; background: #fff; z-index: 1000; box-shadow: 0 2px 12px rgba(0,0,0,.3); }
+</style>
+</head>
+<body>
+<main><h1>文章</h1><p>正文。</p><p>正文。</p></main>
+<div class="cookie-tip">
+    <div><span>本站使用 Cookie 改善浏览体验，详见《隐私政策》。</span></div>
+    <button id="all">接受全部</button>
+    <button id="necessary">仅必要 Cookie</button>
+</div>
+<script>
+    window.__choice = null
+    for (const id of ['all', 'necessary']) {
+        document.getElementById(id).onclick = () => {
+            window.__choice = id
+            document.querySelector('.cookie-tip').remove()
+        }
+    }
+</script>
+</body>
+</html>

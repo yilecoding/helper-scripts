@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Quantcast</title>
+<style>
+    body { margin: 0; }
+    #qc-cmp2-container .qc-cmp2-main { position: fixed; inset: 0; background: rgba(0,0,0,.5); z-index: 2147483647; display: flex; align-items: center; justify-content: center; }
+    .qc-cmp2-summary-section { background: #fff; padding: 24px; width: 480px; }
+</style>
+</head>
+<body>
+<p>Article.</p>
+<!-- 「MORE OPTIONS」和「DISAGREE」都是 mode=secondary，只能按文字区分 -->
+<div id="qc-cmp2-container">
+    <div class="qc-cmp2-main">
+        <div class="qc-cmp2-summary-section">
+            <p>We value your privacy. We and our partners store and/or access information on a device, such as cookies.</p>
+            <div class="qc-cmp2-summary-buttons">
+                <button mode="secondary" id="more">MORE OPTIONS</button>
+                <button mode="secondary" id="disagree">DISAGREE</button>
+                <button mode="primary" id="agree">AGREE</button>
+            </div>
+        </div>
+    </div>
+</div>
+<script>
+    window.__choice = null
+    for (const id of ['more', 'disagree', 'agree']) {
+        document.getElementById(id).onclick = () => {
+            window.__choice = id
+            document.getElementById('qc-cmp2-container').remove()
+        }
+    }
+</script>
+</body>
+</html>

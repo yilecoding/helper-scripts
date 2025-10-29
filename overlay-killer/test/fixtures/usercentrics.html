@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Usercentrics</title>
+</head>
+<body>
+<p>Article.</p>
+<!-- Usercentrics v2 把整个横幅画在 #usercentrics-root 的 open shadow root 里 -->
+<div id="usercentrics-root"></div>
+<script>
+    window.__choice = null
+    const root = document.getElementById('usercentrics-root').attachShadow({ mode: 'open' })
+    root.innerHTML = `
+        <style>.banner { position: fixed; left: 0; right: 0; bottom: 0; background: #fff; padding: 16px; z-index: 99999; }</style>
+        <div class="banner" data-testid="uc-default-banner">
+            <p>This website uses cookies.</p>
+            <button data-testid="uc-more-button">Settings</button>
+            <button data-testid="uc-deny-all-button">Deny</button>
+            <button data-testid="uc-accept-all-button">Accept All</button>
+        </div>`
+    for (const b of root.querySelectorAll('button')) {
+        b.onclick = () => {
+            window.__choice = b.dataset.testid
+            root.querySelector('.banner').remove()
+        }
+    }
+</script>
+</body>
+</html>

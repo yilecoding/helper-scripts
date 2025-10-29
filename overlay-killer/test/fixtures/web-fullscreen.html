@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>网页全屏播放器</title>
+<style>
+    body { margin: 0; overflow: hidden; }
+    /* 播放器的「网页全屏」：不走 Fullscreen API，自己 fixed 铺满，背景半透明黑 */
+    #player.web-full { position: fixed; inset: 0; background: rgba(0, 0, 0, .92); z-index: 99999; }
+    #player video { width: 100%; height: 100%; }
+</style>
+</head>
+<body>
+<div id="player" class="web-full"><video muted></video></div>
+</body>
+</html>

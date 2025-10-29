@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>只有「我知道了」的横幅 + 打开 App 引导条</title>
+<style>
+    body { margin: 0; font: 16px/1.6 sans-serif; }
+    main { padding-top: 60px; }
+    main p { height: 300px; }
+    #top-tip { position: fixed; top: 0; left: 0; right: 0; padding: 8px; background: #333; color: #fff; z-index: 500; }
+    #app-bar { position: fixed; left: 0; right: 0; bottom: 0; height: 56px; background: #f60; color: #fff; z-index: 500; }
+</style>
+</head>
+<body>
+<div id="top-tip">我们使用 cookies 来分析流量。<a href="#" id="ok">我知道了</a></div>
+<main><h1>文章</h1><p>正文。</p><p>正文。</p></main>
+<!-- 第二种 App 引导条：整条就是一个链接，没有说明句 -->
+<a id="app-link" href="#" style="position:fixed;top:40px;right:0;z-index:600;background:#f60;color:#fff;padding:4px 8px">App 内打开</a>
+<div id="app-bar"><span>打开 App，阅读体验更好</span><a href="#" id="open-app">立即打开</a></div>
+<script>
+    window.__choice = null
+    document.getElementById('ok').onclick = e => { e.preventDefault(); window.__choice = 'ok' }
+    document.getElementById('open-app').onclick = e => { e.preventDefault(); window.__choice = 'app' }
+</script>
+</body>
+</html>
