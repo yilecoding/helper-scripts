@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>basic</title>
+<style>
+    body { margin: 0; }
+    img { display: block; width: 200px; height: 150px; }
+    #a { position: absolute; left: 20px; top: 20px; }
+    #text { position: absolute; left: 300px; top: 20px; width: 200px; height: 100px; }
+</style>
+</head>
+<body>
+<img id="a" src="https://img.example/400x300/a.png" alt="a">
+<p id="text">这里只有文字，Alt + 右键不应当弹菜单。</p>
+<script>
+    // 很多站这样屏蔽右键；页面自己的处理器记一下有没有被调用
+    window.pageContextMenus = 0
+    document.oncontextmenu = () => { window.pageContextMenus++; return false }
+</script>
+</body>
+</html>
