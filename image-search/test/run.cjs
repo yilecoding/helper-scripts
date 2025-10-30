@@ -141,6 +141,35 @@ async function main() {
         await page.close()
     })
 
+    console.log('取图片地址')
+    const SOURCES = {
+        '#srcset': 'https://img.example/1600x1200/l.png',
+        '#packed': 'https://img.example/300x300/3x.png',
+        '#pic': 'https://img.example/1200x900/p-large.webp',
+        '#lazy': 'https://img.example/640x480/lazy.png',
+        '#bg': 'https://img.example/500x300/bg.png',
+        '#covered': 'https://img.example/400x300/under.png',
+        '#rel': 'https://site.example/300x200/rel.png',
+        '#shadow': 'https://img.example/350x250/in-shadow.png',
+        '#comma': 'https://img.example/c_fill,w_1600/x.png',
+    }
+    for (const [sel, want] of Object.entries(SOURCES)) {
+        await t.test(`${sel} → ${want.replace(/^https:\/\/[^/]+/, '')}`, async () => {
+            const page = await openPage('sources.html')
+            await altRightClick(page, sel)
+            t.assert(await isOpen(page), '菜单应当打开')
+            t.eq((await menuState(page)).url, want)
+            await page.close()
+        })
+    }
+
+    await t.test('整页底纹（body 背景）不算图片', async () => {
+        const page = await openPage('sources.html')
+        await altRightClick(page, '#blank')
+        t.assert(!(await isOpen(page)), '空白处不应当弹菜单')
+        await page.close()
+    })
+
     await env.close()
     t.done()
 }

@@ -3,7 +3,7 @@
 // @name:zh-CN   以图搜图
 // @name:en      Image Search — Reverse Image Search from Any Image
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.10.30.1
+// @version      2025.10.30.2
 // @description  在网页图片上按住 Alt 点右键，弹出搜图菜单，一键用 Google Lens / Bing / Yandex / 百度识图 / SauceNAO / TinEye / IQDB / ascii2d / Trace.moe 搜这张图。
 // @description:zh-CN  在网页图片上按住 Alt 点右键，弹出搜图菜单，一键用 Google Lens / Bing / Yandex / 百度识图 / SauceNAO / TinEye / IQDB / ascii2d / Trace.moe 搜这张图。
 // @description:en  Alt + right-click any image to pop up a reverse image search menu: Google Lens / Bing / Yandex / Baidu / SauceNAO / TinEye / IQDB / ascii2d / Trace.moe.
@@ -35,6 +35,16 @@
     const CONFIG = {
         zIndex: 2147483647,
         menuMargin: 8,   // 菜单离视口边缘至少留这么多像素，贴边时翻到鼠标另一侧
+
+        /*
+         * 懒加载库把真图地址藏在这些属性里，src 只是占位图（常见是 1×1 的 data: gif）。
+         * 按顺序取第一个有值的。
+         */
+        lazyAttrs: [
+            'data-src', 'data-original', 'data-lazy-src', 'data-lazy', 'data-actualsrc',
+            'data-original-src', 'data-echo', 'lazy-src',
+        ],
+        lazySrcsetAttrs: ['data-srcset', 'data-lazy-srcset'],
     };
 
     const enc = encodeURIComponent;
@@ -73,25 +83,134 @@
     // 取图片地址
     // =========================================================================
 
+    /**
+     * 转成绝对地址。#hash 去掉：服务器根本收不到它，带着反而会被搜图引擎当成地址的一部分。
+     */
     function normalizeUrl(raw) {
         if (!raw) return null;
+        raw = raw.trim();
+        if (!raw) return null;
         try {
-            const u = new URL(raw.trim(), document.baseURI);
+            const u = new URL(raw, document.baseURI);
             if (!/^(https?|data|blob):$/.test(u.protocol)) return null;
+            if (u.protocol !== 'data:') u.hash = '';
             return u.href;
         } catch (e) {
             return null;
         }
     }
 
-    /** 鼠标位置下的图片：{ url, el }，没有返回 null。 */
-    function findImageAt(x, y) {
-        for (const el of document.elementsFromPoint(x, y)) {
-            if (el.id === HOST_ID) continue;
-            if (el.tagName === 'IMG') {
-                const url = normalizeUrl(el.currentSrc || el.getAttribute('src'));
-                if (url) return { url, el };
+    /**
+     * 解析 srcset，返回 [{ url, w, x }]。没有描述符的候选按 1x 算。
+     *
+     * 不能按「逗号 + 空白」切：压缩过的 HTML 里逗号后面常常没有空格（a.jpg 1x,b.jpg 2x）。
+     * 也不能按逗号切：Cloudinary 之类的 URL 自带逗号（c_fill,w_800）。按规范来 ——
+     * URL 是一段不含空白的字符，URL 末尾的逗号才是分隔符；描述符读到下一个逗号为止。
+     */
+    function parseSrcset(srcset) {
+        const out = [];
+        const s = srcset || '';
+        let i = 0;
+        while (i < s.length) {
+            while (i < s.length && /[\s,]/.test(s[i])) i++;
+            if (i >= s.length) break;
+            let start = i;
+            while (i < s.length && !/\s/.test(s[i])) i++;
+            let url = s.slice(start, i);
+            let desc = '';
+            if (url.endsWith(',')) {
+                url = url.replace(/,+$/, '');
+            } else {
+                start = i;
+                while (i < s.length && s[i] !== ',') i++;
+                desc = s.slice(start, i).trim();
             }
+            if (!url) continue;
+            const m = /^([\d.]+)([wx])$/i.exec(desc);
+            out.push({
+                url,
+                w: m && m[2].toLowerCase() === 'w' ? parseFloat(m[1]) : 0,
+                x: m && m[2].toLowerCase() === 'x' ? parseFloat(m[1]) : 1,
+            });
+        }
+        return out;
+    }
+
+    /** 几个 srcset 合起来挑最大的。w 描述符一律压过 x（有宽度的才是真实尺寸）。 */
+    function bestFromSrcsets(srcsets) {
+        let best = null;
+        let bestScore = -1;
+        for (const s of srcsets) {
+            for (const c of parseSrcset(s)) {
+                const score = c.w ? 1e6 + c.w : c.x;
+                if (score > bestScore) {
+                    best = c.url;
+                    bestScore = score;
+                }
+            }
+        }
+        return best;
+    }
+
+    /**
+     * 一个 <img> 取一张：<picture><source> + srcset 里最大的 > 懒加载属性 > currentSrc > src。
+     * currentSrc 是浏览器按屏幕挑的那一张，往往不是最大的，所以排在 srcset 后面。
+     * 懒加载属性里的 data: 是占位图，跳过；src 本身是占位图时同理要先看懒加载属性。
+     */
+    function pickImgUrl(img) {
+        const srcsets = [];
+        const pic = img.parentElement;
+        if (pic && pic.tagName === 'PICTURE') {
+            for (const s of pic.children) {
+                if (s.tagName !== 'SOURCE') continue;
+                for (const a of ['srcset', ...CONFIG.lazySrcsetAttrs]) srcsets.push(s.getAttribute(a));
+            }
+        }
+        for (const a of ['srcset', ...CONFIG.lazySrcsetAttrs]) srcsets.push(img.getAttribute(a));
+        const best = bestFromSrcsets(srcsets);
+        if (best) return best;
+
+        for (const a of CONFIG.lazyAttrs) {
+            const v = img.getAttribute(a);
+            if (v && !v.trim().startsWith('data:')) return v;
+        }
+        return img.currentSrc || img.getAttribute('src');
+    }
+
+    /** background-image 计算值里的第一个 url(...)；渐变之类的忽略。 */
+    function backgroundUrl(el) {
+        const value = getComputedStyle(el).backgroundImage;
+        if (!value || value === 'none') return null;
+        const m = /url\(\s*(['"]?)(.*?)\1\s*\)/.exec(value);
+        return m ? m[2] : null;
+    }
+
+    /** 单个元素能给出的图片，给不出返回 null。 */
+    function imageFromElement(el) {
+        let raw = null;
+        if (el.tagName === 'IMG') raw = pickImgUrl(el);
+        // <html> / <body> 的背景是整页底纹，鼠标在任何空白处都会命中它，不算
+        else if (el !== document.documentElement && el !== document.body) raw = backgroundUrl(el);
+        const url = normalizeUrl(raw);
+        return url ? { url, el } : null;
+    }
+
+    /**
+     * 鼠标位置下的图片：{ url, el }，没有返回 null。
+     *
+     * 用 elementsFromPoint 从上往下逐层找，而不是只看事件的 target：Instagram、Pinterest、
+     * 各种防盗图的站点都在图片上盖一层透明 div，target 永远是那层壳。
+     * open shadow root 要进去再找一遍 —— 从 document 上只能拿到宿主元素。
+     */
+    function findImageAt(x, y, root = document, depth = 0) {
+        for (const el of root.elementsFromPoint(x, y)) {
+            if (el.id === HOST_ID) continue;
+            if (el.shadowRoot && el.shadowRoot !== root && depth < 5) {
+                const inner = findImageAt(x, y, el.shadowRoot, depth + 1);
+                if (inner) return inner;
+            }
+            const found = imageFromElement(el);
+            if (found) return found;
         }
         return null;
     }
