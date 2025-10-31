@@ -170,6 +170,90 @@ async function main() {
         await page.close()
     })
 
+    console.log('引擎地址 / 全部打开 / 定位')
+    // 浏览器规范化之后的地址：路径里的中文、空格转义，query 里的中文转义，#part 被去掉
+    const WEIRD = 'https://img.example/300x200/%E5%9B%BE%E7%89%87%20a&b%23c.png?size=%E5%A4%A7&v=1'
+    /** 从各引擎的地址里把图片地址取回来，取回来的必须和原地址一字不差。 */
+    const EXTRACT = {
+        lens: u => u.searchParams.get('url'),
+        bing: u => u.searchParams.get('q').replace(/^imgurl:/, ''),
+        yandex: u => u.searchParams.get('url'),
+        baidu: u => u.searchParams.get('queryImageUrl'),
+        sogou: u => u.searchParams.get('query'),
+        saucenao: u => u.searchParams.get('url'),
+        tineye: u => u.searchParams.get('url'),
+        iqdb: u => u.searchParams.get('url'),
+        ascii2d: u => decodeURIComponent(u.pathname.replace(/^\/search\/url\//, '')),
+        tracemoe: u => u.searchParams.get('url'),
+    }
+
+    await t.test('每个引擎的地址：含中文、&、# 的图片地址编码正确，能原样取回', async () => {
+        const page = await openPage('edge.html')
+        for (const id of DEFAULT_ENGINES) {
+            await altRightClick(page, '#weird')
+            t.eq((await menuState(page)).url, WEIRD, '菜单里的图片地址')
+            await clickEngine(page, id)
+        }
+        const opened = (await h.gm(page)).opened.map(o => new URL(o.url))
+        t.eq(opened.length, DEFAULT_ENGINES.length)
+        opened.forEach((u, i) => {
+            const id = DEFAULT_ENGINES[i]
+            t.eq(EXTRACT[id](u), WEIRD, `${id} 取回的地址`)
+            t.eq(u.hash, '', `${id} 的地址不应当带 #（图片地址里的 # 必须被编码）`)
+        })
+        // 关键几个的原始字符串也钉死，防止「编码两次再解码两次」这种对称错误蒙混过关
+        t.eq(opened[0].href, 'https://lens.google.com/uploadbyurl?url=' + encodeURIComponent(WEIRD))
+        t.eq(opened[DEFAULT_ENGINES.indexOf('ascii2d')].href, 'https://ascii2d.net/search/url/' + encodeURIComponent(WEIRD))
+        t.eq(opened[1].href, 'https://www.bing.com/images/search?view=detailv2&iss=sbi&q=imgurl:' + encodeURIComponent(WEIRD))
+        await page.close()
+    })
+
+    await t.test('全部打开：每个启用的引擎各开一个后台标签，顺序和菜单一致', async () => {
+        const page = await openPage('basic.html')
+        await altRightClick(page, '#a')
+        t.eq(await inMenu(page, root => root.querySelector('.all').textContent), `全部打开（${DEFAULT_ENGINES.length}）`)
+        await inMenu(page, root => root.querySelector('.all').click())
+        const opened = (await h.gm(page)).opened
+        t.eq(opened.length, DEFAULT_ENGINES.length)
+        t.eq(opened.map(o => new URL(o.url).hostname), [
+            'lens.google.com', 'www.bing.com', 'yandex.com', 'graph.baidu.com', 'saucenao.com',
+            'tineye.com', 'iqdb.org', 'ascii2d.net', 'trace.moe',
+        ])
+        t.assert(opened.every(o => o.options.active === false), '全部打开应当是后台标签')
+        t.assert(!(await isOpen(page)), '点完应当关闭菜单')
+        await page.close()
+    })
+
+    const popRect = page => inMenu(page, (root) => {
+        const pop = root.querySelector('.pop')
+        const r = pop.getBoundingClientRect()
+        return { left: r.left, top: r.top, right: r.right, bottom: r.bottom, flipX: !!pop.dataset.flipX, flipY: !!pop.dataset.flipY }
+    })
+
+    await t.test('菜单左上角在鼠标处；贴右下角时翻到鼠标左上方，不出视口', async () => {
+        const page = await openPage('edge.html')
+        const p1 = await altRightClick(page, '#tl', 30, 30)
+        const r1 = await popRect(page)
+        t.eq([r1.left, r1.top, r1.flipX, r1.flipY], [p1.x, p1.y, false, false])
+
+        await page.keyboard.press('Escape')
+        const p2 = await altRightClick(page, '#br', 100, 80)
+        const r2 = await popRect(page)
+        t.assert(r2.flipX && r2.flipY, '应当两个方向都翻转')
+        t.eq([r2.right, r2.bottom], [p2.x, p2.y], '翻转后右下角对着鼠标')
+        t.assert(r2.left >= 8 && r2.top >= 8, `不应当出视口：${JSON.stringify(r2)}`)
+        await page.close()
+    })
+
+    await t.test('页面滚动时关闭菜单', async () => {
+        const page = await openPage('edge.html')
+        await page.evaluate(() => { document.body.style.height = '3000px' })
+        await altRightClick(page, '#tl')
+        await page.mouse.wheel(0, 300)
+        await page.waitForFunction(sel => !document.querySelector(sel), HOST)
+        await page.close()
+    })
+
     await env.close()
     t.done()
 }

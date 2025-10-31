@@ -3,7 +3,7 @@
 // @name:zh-CN   以图搜图
 // @name:en      Image Search — Reverse Image Search from Any Image
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.10.30.2
+// @version      2025.10.31.3
 // @description  在网页图片上按住 Alt 点右键，弹出搜图菜单，一键用 Google Lens / Bing / Yandex / 百度识图 / SauceNAO / TinEye / IQDB / ascii2d / Trace.moe 搜这张图。
 // @description:zh-CN  在网页图片上按住 Alt 点右键，弹出搜图菜单，一键用 Google Lens / Bing / Yandex / 百度识图 / SauceNAO / TinEye / IQDB / ascii2d / Trace.moe 搜这张图。
 // @description:en  Alt + right-click any image to pop up a reverse image search menu: Google Lens / Bing / Yandex / Baidu / SauceNAO / TinEye / IQDB / ascii2d / Trace.moe.
@@ -271,23 +271,61 @@
             src.textContent = src.title = target.url;
             pop.append(head, src);
 
-            for (const engine of ENGINES.filter(e => e.defaultOn)) {
-                const b = document.createElement('button');
-                b.className = 'item engine';
-                b.dataset.engine = engine.id;
-                b.setAttribute('role', 'menuitem');
-                b.textContent = engine.name;
-                b.addEventListener('click', () => {
+            const engines = ENGINES.filter(e => e.defaultOn);
+            for (const engine of engines) {
+                const b = this.item(engine.name, () => {
                     GM_openInTab(engine.url(target.url), { active: true, insert: true, setParent: true });
                     this.close();
                 });
+                b.classList.add('engine');
+                b.dataset.engine = engine.id;
                 pop.append(b);
+            }
+            if (engines.length > 1) {
+                const all = this.item(`全部打开（${engines.length}）`, () => {
+                    // 后台打开：一次弹出八九个前台标签，焦点会停在最后一个上，还得一个个切回来
+                    for (const engine of engines) GM_openInTab(engine.url(target.url), { active: false, insert: true, setParent: true });
+                    this.close();
+                });
+                all.classList.add('all');
+                pop.append(all);
             }
 
             document.documentElement.appendChild(host);
             this.host = host;
-            pop.style.left = x + 'px';
-            pop.style.top = y + 'px';
+            this.place(pop, x, y);
+        },
+
+        item(label, onClick) {
+            const b = document.createElement('button');
+            b.className = 'item';
+            b.setAttribute('role', 'menuitem');
+            b.textContent = label;
+            b.addEventListener('click', onClick);
+            return b;
+        },
+
+        /**
+         * 左上角放在鼠标处；右边 / 下边放不下就翻到鼠标的另一侧，翻过去还放不下就贴着视口边。
+         * 只能先插进文档再量尺寸 —— 菜单项数量随启用的引擎变，高度没法预先算。
+         */
+        place(pop, x, y) {
+            const m = CONFIG.menuMargin;
+            const vw = document.documentElement.clientWidth;
+            const vh = document.documentElement.clientHeight;
+            const { width: w, height: h } = pop.getBoundingClientRect();
+            let left = x;
+            let top = y;
+            if (left + w > vw - m) {
+                left = x - w;
+                pop.dataset.flipX = '1';
+            }
+            if (top + h > vh - m) {
+                top = y - h;
+                pop.dataset.flipY = '1';
+            }
+            pop.style.left = Math.max(m, Math.min(left, vw - w - m)) + 'px';
+            pop.style.top = Math.max(m, Math.min(top, vh - h - m)) + 'px';
         },
 
         close() {
@@ -329,6 +367,11 @@
     window.addEventListener('pointerdown', (e) => {
         if (Menu.isOpen() && !e.composedPath().includes(Menu.host)) Menu.close();
     }, true);
+
+    // 菜单是 fixed 定位在鼠标处的，页面一滚动它就和图片错开了
+    window.addEventListener('scroll', () => Menu.close(), { capture: true, passive: true });
+    window.addEventListener('resize', () => Menu.close());
+    window.addEventListener('blur', () => Menu.close());
 
     console.log(TAG, '已加载');
 })();
