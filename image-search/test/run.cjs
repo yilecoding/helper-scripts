@@ -141,6 +141,46 @@ async function main() {
         await page.close()
     })
 
+    console.log('悬停按 S')
+    await t.test('鼠标停在图片上按 S 弹出菜单，页面自己的 S 快捷键收不到', async () => {
+        const page = await openPage('basic.html')
+        const p = await pointOf(page, '#a', 50, 40)
+        await page.mouse.move(p.x, p.y)
+        await page.keyboard.press('s')
+        t.assert(await isOpen(page), '菜单应当打开')
+        t.eq((await menuState(page)).url, 'https://img.example/400x300/a.png')
+        const r = await inMenu(page, root => root.querySelector('.pop').getBoundingClientRect().toJSON())
+        t.eq([r.left, r.top], [p.x, p.y], '菜单在鼠标处')
+        t.eq(await page.evaluate(() => window.pageKeys), '')
+        await page.close()
+    })
+
+    await t.test('鼠标不在图片上、带修饰键时按 S 都原样交给页面', async () => {
+        const page = await openPage('basic.html')
+        const p = await pointOf(page, '#text')
+        await page.mouse.move(p.x, p.y)
+        await page.keyboard.press('s')
+        t.assert(!(await isOpen(page)), '文字上不应当弹菜单')
+        const a = await pointOf(page, '#a')
+        await page.mouse.move(a.x, a.y)
+        await page.keyboard.press('Shift+S')
+        await page.keyboard.press('Control+s')
+        t.assert(!(await isOpen(page)), '带修饰键不应当弹菜单')
+        t.eq(await page.evaluate(() => window.pageKeys), 'sShiftSControls')
+        await page.close()
+    })
+
+    await t.test('焦点在输入框里时按 S 是打字，即使鼠标停在图片上', async () => {
+        const page = await openPage('basic.html')
+        await page.click('#box')
+        const a = await pointOf(page, '#a')
+        await page.mouse.move(a.x, a.y)
+        await page.keyboard.type('ss')
+        t.assert(!(await isOpen(page)), '不应当弹菜单')
+        t.eq(await page.inputValue('#box'), 'ss')
+        await page.close()
+    })
+
     console.log('取图片地址')
     const SOURCES = {
         '#srcset': 'https://img.example/1600x1200/l.png',

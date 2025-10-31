@@ -3,10 +3,10 @@
 // @name:zh-CN   以图搜图
 // @name:en      Image Search — Reverse Image Search from Any Image
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.10.31.3
-// @description  在网页图片上按住 Alt 点右键，弹出搜图菜单，一键用 Google Lens / Bing / Yandex / 百度识图 / SauceNAO / TinEye / IQDB / ascii2d / Trace.moe 搜这张图。
-// @description:zh-CN  在网页图片上按住 Alt 点右键，弹出搜图菜单，一键用 Google Lens / Bing / Yandex / 百度识图 / SauceNAO / TinEye / IQDB / ascii2d / Trace.moe 搜这张图。
-// @description:en  Alt + right-click any image to pop up a reverse image search menu: Google Lens / Bing / Yandex / Baidu / SauceNAO / TinEye / IQDB / ascii2d / Trace.moe.
+// @version      2025.10.31.4
+// @description  在网页图片上按住 Alt 点右键（或鼠标悬停按 S），弹出搜图菜单，一键用 Google Lens / Bing / Yandex / 百度识图 / SauceNAO / TinEye / IQDB / ascii2d / Trace.moe 搜这张图。
+// @description:zh-CN  在网页图片上按住 Alt 点右键（或鼠标悬停按 S），弹出搜图菜单，一键用 Google Lens / Bing / Yandex / 百度识图 / SauceNAO / TinEye / IQDB / ascii2d / Trace.moe 搜这张图。
+// @description:en  Alt + right-click any image (or hover it and press S) to pop up a reverse image search menu: Google Lens / Bing / Yandex / Baidu / SauceNAO / TinEye / IQDB / ascii2d / Trace.moe.
 // @author       壹樂（V：ita1125）
 // @match        *://*/*
 // @grant        GM_openInTab
@@ -35,6 +35,12 @@
     const CONFIG = {
         zIndex: 2147483647,
         menuMargin: 8,   // 菜单离视口边缘至少留这么多像素，贴边时翻到鼠标另一侧
+
+        /*
+         * 鼠标悬停在图片上时按这个键（不带修饰键）弹出菜单。设成 '' 关闭。
+         * 输入框、可编辑区域里不响应；鼠标下面不是图片时按键原样交给页面。
+         */
+        hoverKey: 's',
 
         /*
          * 懒加载库把真图地址藏在这些属性里，src 只是占位图（常见是 1×1 的 data: gif）。
@@ -355,12 +361,44 @@
         Menu.open(target, e.clientX, e.clientY);
     }, true);
 
+    /** 鼠标最后的位置。按 S 时没有鼠标事件可用，只能靠这里记下的坐标找图。 */
+    const pointer = { x: 0, y: 0, known: false };
+    window.addEventListener('mousemove', (e) => {
+        pointer.x = e.clientX;
+        pointer.y = e.clientY;
+        pointer.known = true;
+    }, { capture: true, passive: true });
+
+    /** 焦点在可输入的地方（穿透 shadow DOM 找真正的焦点元素）。 */
+    function isEditable(el) {
+        while (el && el.shadowRoot && el.shadowRoot.activeElement) el = el.shadowRoot.activeElement;
+        if (!el || el.nodeType !== 1) return false;
+        if (el.isContentEditable) return true;
+        const tag = el.tagName;
+        if (tag === 'TEXTAREA' || tag === 'SELECT') return true;
+        if (tag === 'INPUT') return !/^(button|submit|reset|checkbox|radio|range|color|file|image)$/i.test(el.type);
+        return false;
+    }
+
+    /*
+     * 捕获阶段：GitHub 的 S 是「聚焦搜索框」、不少阅读站的 S 是「下一页」，冒泡阶段轮到我们时
+     * 页面已经处理过了。但只有鼠标下面确实有图才截下来，否则原样放给页面。
+     */
     window.addEventListener('keydown', (e) => {
         if (Menu.isOpen() && e.key === 'Escape') {
             e.preventDefault();
             e.stopImmediatePropagation();
             Menu.close();
+            return;
         }
+        if (!CONFIG.hoverKey || e.key.toLowerCase() !== CONFIG.hoverKey) return;
+        if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey || e.repeat || e.isComposing) return;
+        if (!pointer.known || isEditable(document.activeElement)) return;
+        const target = findImageAt(pointer.x, pointer.y);
+        if (!target) return;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        Menu.open(target, pointer.x, pointer.y);
     }, true);
 
     /** 点菜单外面关闭。composedPath 里有宿主元素就是点在菜单里（shadow DOM 里的点击 target 被重定向成宿主）。 */
