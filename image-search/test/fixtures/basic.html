@@ -8,11 +8,15 @@
     img { display: block; width: 200px; height: 150px; }
     #a { position: absolute; left: 20px; top: 20px; }
     #text { position: absolute; left: 300px; top: 20px; width: 200px; height: 100px; }
+    #inline { position: absolute; left: 20px; top: 300px; width: 100px; height: 100px; }
+    #php { position: absolute; left: 150px; top: 300px; width: 100px; height: 100px; }
     #box { position: absolute; left: 20px; top: 250px; }
 </style>
 </head>
 <body>
 <img id="a" src="https://img.example/400x300/a.png" alt="a">
+<img id="inline" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==">
+<img id="php" src="https://img.example/200x200/show.php?id=3">
 <input id="box" placeholder="在这里打字">
 <p id="text">这里只有文字，Alt + 右键不应当弹菜单。</p>
 <script>

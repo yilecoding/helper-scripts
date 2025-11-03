@@ -3,13 +3,15 @@
 // @name:zh-CN   以图搜图
 // @name:en      Image Search — Reverse Image Search from Any Image
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.10.31.4
+// @version      2025.11.03.5
 // @description  在网页图片上按住 Alt 点右键（或鼠标悬停按 S），弹出搜图菜单，一键用 Google Lens / Bing / Yandex / 百度识图 / SauceNAO / TinEye / IQDB / ascii2d / Trace.moe 搜这张图。
 // @description:zh-CN  在网页图片上按住 Alt 点右键（或鼠标悬停按 S），弹出搜图菜单，一键用 Google Lens / Bing / Yandex / 百度识图 / SauceNAO / TinEye / IQDB / ascii2d / Trace.moe 搜这张图。
 // @description:en  Alt + right-click any image (or hover it and press S) to pop up a reverse image search menu: Google Lens / Bing / Yandex / Baidu / SauceNAO / TinEye / IQDB / ascii2d / Trace.moe.
 // @author       壹樂（V：ita1125）
 // @match        *://*/*
 // @grant        GM_openInTab
+// @grant        GM_setClipboard
+// @grant        GM_download
 // @license      CC BY-NC-SA
 // @run-at       document-end
 // @noframes
@@ -222,6 +224,97 @@
     }
 
     // =========================================================================
+    // 原图：打开 / 下载
+    // =========================================================================
+
+    const IMG_EXT_RE = /^(jpe?g|png|gif|webp|avif|svg|bmp|ico|tiff?|heic|heif|jfif)$/i;
+    const MIME_EXT = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/gif': 'gif', 'image/webp': 'webp',
+        'image/avif': 'avif', 'image/svg+xml': 'svg', 'image/bmp': 'bmp', 'image/x-icon': 'ico' };
+
+    /**
+     * data: 地址同步解码成 Blob，不用 fetch(data:)：一来点击处理里同步拿到才能 window.open 不被拦，
+     * 二来 fetch(data:) 受页面 CSP 的 connect-src 管。
+     */
+    function dataUrlToBlob(dataUrl) {
+        const m = /^data:([^;,]*)((?:;[^;,]*)*?),(.*)$/s.exec(dataUrl);
+        if (!m) throw new Error('不是合法的 data: 地址');
+        const mime = m[1] || 'application/octet-stream';
+        const isBase64 = /;base64/i.test(m[2]);
+        const text = isBase64 ? atob(m[3].replace(/\s+/g, '')) : decodeURIComponent(m[3]);
+        const bytes = new Uint8Array(text.length);
+        for (let i = 0; i < text.length; i++) bytes[i] = text.charCodeAt(i) & 0xff;
+        return new Blob([bytes], { type: mime });
+    }
+
+    /** 下载用的文件名：路径最后一段；看不出扩展名就按 MIME 补，再不行补 jpg。 */
+    function fileNameFor(url, mime) {
+        let base = 'image';
+        let ext = MIME_EXT[(mime || '').toLowerCase()] || '';
+        if (/^https?:/.test(url)) {
+            let seg = '';
+            try {
+                seg = decodeURIComponent(new URL(url).pathname.split('/').pop() || '');
+            } catch (e) { /* 路径里有非法的 % 转义 */ }
+            const m = /^(.+?)(?:\.([a-z0-9]{2,5}))?$/i.exec(seg);
+            if (m) {
+                base = m[1];
+                // image.php?id=1 这种，扩展名不是图片格式就不用它
+                if (m[2] && IMG_EXT_RE.test(m[2])) ext = m[2].toLowerCase();
+                else if (m[2]) base = seg;
+            }
+        }
+        base = base.replace(/[\\/:*?"<>|\x00-\x1f]+/g, '_').slice(0, 100) || 'image';
+        return `${base}.${ext || 'jpg'}`;
+    }
+
+    /**
+     * http(s) 走 GM_openInTab。data: / blob: 在页面里 window.open 一个 blob: 地址：
+     * 顶层导航到 data: 被 Chrome / Firefox 禁了；页面创建的 blob: 交给扩展去开，
+     * 各家管理器的表现没有核实过，留在页面里开最稳。
+     */
+    function openOriginal(url) {
+        if (/^https?:/.test(url)) {
+            GM_openInTab(url, { active: true, insert: true, setParent: true });
+            return;
+        }
+        const href = url.startsWith('data:') ? URL.createObjectURL(dataUrlToBlob(url)) : url;
+        window.open(href, '_blank', 'noopener');
+    }
+
+    /** 下载原图。返回 Promise，失败时 reject 一句给人看的原因。 */
+    function downloadOriginal(url) {
+        if (!/^https?:/.test(url)) {
+            // data: / blob: 是页面自己的，<a download> 就能存，不必经过扩展
+            try {
+                const blob = url.startsWith('data:') ? dataUrlToBlob(url) : null;
+                const a = document.createElement('a');
+                a.href = blob ? URL.createObjectURL(blob) : url;
+                a.download = fileNameFor(url, blob && blob.type);
+                document.documentElement.appendChild(a);
+                a.click();
+                a.remove();
+                if (blob) setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+                return Promise.resolve();
+            } catch (e) {
+                return Promise.reject(e.message || String(e));
+            }
+        }
+        return new Promise((resolve, reject) => {
+            try {
+                GM_download({
+                    url,
+                    name: fileNameFor(url),
+                    onload: () => resolve(),
+                    onerror: e => reject((e && (e.details || e.error)) || '未知错误'),
+                    ontimeout: () => reject('超时'),
+                });
+            } catch (e) {
+                reject(e.message || String(e));
+            }
+        });
+    }
+
+    // =========================================================================
     // 菜单
     // =========================================================================
 
@@ -245,7 +338,13 @@
             text-align: left; cursor: pointer;
         }
         .item:hover, .item:focus-visible { background: #eef3ff; outline: none; }
+        .sep { margin: 4px 0; border-top: 1px solid #e5e5e5; }
+        .status { padding: 6px 12px 2px; color: #555; font-size: 12px; word-break: break-all; }
+        .status.error { color: #c62828; }
         @media (prefers-color-scheme: dark) {
+            .sep { border-color: #444; }
+            .status { color: #bbb; }
+            .status.error { color: #ff8a80; }
             .pop { background: #2a2a2e; color: #eee; border-color: #444; }
             .item:hover, .item:focus-visible { background: #3a3f55; }
         }
@@ -297,6 +396,36 @@
                 pop.append(all);
             }
 
+            const sep = document.createElement('div');
+            sep.className = 'sep';
+            pop.append(sep);
+            const act = (name, label, fn) => {
+                const b = this.item(label, fn);
+                b.dataset.act = name;
+                pop.append(b);
+            };
+            act('copy', '复制图片地址', () => {
+                GM_setClipboard(target.url, 'text');
+                this.close();
+            });
+            act('open', '在新标签打开原图', () => {
+                openOriginal(target.url);
+                this.close();
+            });
+            act('download', '下载原图', () => {
+                this.setStatus('正在下载…');
+                downloadOriginal(target.url).then(
+                    () => this.close(),
+                    err => this.setStatus('下载失败：' + err + '。可以点「在新标签打开原图」后右键另存。', true),
+                );
+            });
+
+            const status = document.createElement('div');
+            status.className = 'status';
+            status.setAttribute('aria-live', 'polite');
+            status.hidden = true;
+            pop.append(status);
+
             document.documentElement.appendChild(host);
             this.host = host;
             this.place(pop, x, y);
@@ -332,6 +461,16 @@
             }
             pop.style.left = Math.max(m, Math.min(left, vw - w - m)) + 'px';
             pop.style.top = Math.max(m, Math.min(top, vh - h - m)) + 'px';
+        },
+
+        /** 菜单底部的状态行。出错时菜单不关，让用户看得到原因。 */
+        setStatus(text, isError = false) {
+            if (!this.host) return;
+            const el = this.host.shadowRoot.querySelector('.status');
+            el.hidden = !text;
+            el.textContent = text || '';
+            el.classList.toggle('error', isError);
+            if (isError) console.warn(TAG, text);
         },
 
         close() {

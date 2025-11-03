@@ -79,6 +79,11 @@ const menuState = page => inMenu(page, (root) => {
     const pop = root.querySelector('.pop')
     return { url: pop.dataset.url, engines: [...root.querySelectorAll('[data-engine]')].map(b => b.dataset.engine) }
 })
+const clickAct = (page, name) => inMenu(page, (root, n) => root.querySelector(`[data-act="${n}"]`).click(), name)
+const statusText = page => inMenu(page, root => {
+    const el = root.querySelector('.status')
+    return el.hidden ? '' : el.textContent
+})
 const clickEngine = (page, id) => inMenu(page, (root, i) => root.querySelector(`[data-engine="${i}"]`).click(), id)
 
 const DEFAULT_ENGINES = ['lens', 'bing', 'yandex', 'baidu', 'saucenao', 'tineye', 'iqdb', 'ascii2d', 'tracemoe']
@@ -178,6 +183,67 @@ async function main() {
         await page.keyboard.type('ss')
         t.assert(!(await isOpen(page)), '不应当弹菜单')
         t.eq(await page.inputValue('#box'), 'ss')
+        await page.close()
+    })
+
+    console.log('复制 / 打开 / 下载原图')
+    await t.test('复制图片地址', async () => {
+        const page = await openPage('basic.html')
+        await altRightClick(page, '#a')
+        await clickAct(page, 'copy')
+        t.eq((await h.gm(page)).clipboard, { text: 'https://img.example/400x300/a.png', type: 'text' })
+        t.assert(!(await isOpen(page)), '复制后关闭菜单')
+        await page.close()
+    })
+
+    await t.test('在新标签打开原图（前台）', async () => {
+        const page = await openPage('basic.html')
+        await altRightClick(page, '#a')
+        await clickAct(page, 'open')
+        const opened = (await h.gm(page)).opened
+        t.eq(opened.map(o => [o.url, o.options.active]), [['https://img.example/400x300/a.png', true]])
+        await page.close()
+    })
+
+    await t.test('下载原图：文件名取路径最后一段；.php 这类不当扩展名', async () => {
+        const page = await openPage('basic.html')
+        await altRightClick(page, '#a')
+        await clickAct(page, 'download')
+        await page.waitForFunction(sel => !document.querySelector(sel), HOST)
+        await altRightClick(page, '#php')
+        await clickAct(page, 'download')
+        await page.waitForFunction(sel => !document.querySelector(sel), HOST)
+        t.eq((await h.gm(page)).downloads, [
+            { url: 'https://img.example/400x300/a.png', name: 'a.png' },
+            { url: 'https://img.example/200x200/show.php?id=3', name: 'show.php.jpg' },
+        ])
+        await page.close()
+    })
+
+    await t.test('下载失败时菜单不关，状态行写出原因', async () => {
+        const page = await openPage('basic.html', { failDownloads: /a\.png/ })
+        await altRightClick(page, '#a')
+        await clickAct(page, 'download')
+        await page.waitForFunction(sel => {
+            const st = document.querySelector(sel).shadowRoot.querySelector('.status')
+            return st.classList.contains('error')
+        }, HOST)
+        t.assert((await statusText(page)).startsWith('下载失败：harness: failDownloads'), await statusText(page))
+        t.assert(await isOpen(page), '出错时菜单应当留着')
+        await page.close()
+    })
+
+    await t.test('data: 图片：下载走 <a download>（不经过 GM_download），打开走页面里的 blob: 地址', async () => {
+        const page = await openPage('basic.html')
+        await altRightClick(page, '#inline')
+        const [dl] = await Promise.all([page.waitForEvent('download'), clickAct(page, 'download')])
+        t.eq(dl.suggestedFilename(), 'image.png')
+        t.eq((await h.gm(page)).downloads, [], '不应当调用 GM_download')
+
+        await altRightClick(page, '#inline')
+        const [popup] = await Promise.all([page.waitForEvent('popup'), clickAct(page, 'open')])
+        t.assert(popup.url().startsWith('blob:https://site.example/'), popup.url())
+        t.eq((await h.gm(page)).opened, [], '不应当调用 GM_openInTab')
         await page.close()
     })
 
