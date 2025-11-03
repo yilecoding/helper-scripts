@@ -3,7 +3,7 @@
 // @name:zh-CN   以图搜图
 // @name:en      Image Search — Reverse Image Search from Any Image
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.11.03.5
+// @version      2025.11.03.6
 // @description  在网页图片上按住 Alt 点右键（或鼠标悬停按 S），弹出搜图菜单，一键用 Google Lens / Bing / Yandex / 百度识图 / SauceNAO / TinEye / IQDB / ascii2d / Trace.moe 搜这张图。
 // @description:zh-CN  在网页图片上按住 Alt 点右键（或鼠标悬停按 S），弹出搜图菜单，一键用 Google Lens / Bing / Yandex / 百度识图 / SauceNAO / TinEye / IQDB / ascii2d / Trace.moe 搜这张图。
 // @description:en  Alt + right-click any image (or hover it and press S) to pop up a reverse image search menu: Google Lens / Bing / Yandex / Baidu / SauceNAO / TinEye / IQDB / ascii2d / Trace.moe.
@@ -12,6 +12,10 @@
 // @grant        GM_openInTab
 // @grant        GM_setClipboard
 // @grant        GM_download
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_registerMenuCommand
+// @grant        GM_unregisterMenuCommand
 // @license      CC BY-NC-SA
 // @run-at       document-end
 // @noframes
@@ -86,6 +90,59 @@
     ];
 
     const HOST_ID = '__image-search-host';
+    const HOST = location.hostname;
+
+    // =========================================================================
+    // 设置（GM 存储）
+    // =========================================================================
+
+    /*
+     * 存的是 { enabled: 启用的引擎 id（按菜单顺序）, known: 保存时脚本认识的全部 id }。
+     * known 用来区分「用户关掉的」和「脚本更新后新加的」：新引擎不在 known 里，
+     * 按它的 defaultOn 追加到末尾；否则用户一保存过设置，以后加的引擎就永远不会出现。
+     */
+    const Settings = {
+        enabledEngines() {
+            const saved = GM_getValue('engines', null);
+            if (!saved || !Array.isArray(saved.enabled)) return ENGINES.filter(e => e.defaultOn);
+            const byId = new Map(ENGINES.map(e => [e.id, e]));
+            const known = new Set(saved.known || []);
+            const list = saved.enabled.map(id => byId.get(id)).filter(Boolean);
+            for (const e of ENGINES) if (e.defaultOn && !known.has(e.id) && !list.includes(e)) list.push(e);
+            return list;
+        },
+        saveEngines(ids) {
+            GM_setValue('engines', { enabled: ids, known: ENGINES.map(e => e.id) });
+        },
+        resetEngines() {
+            GM_setValue('engines', null);
+        },
+        siteDisabled() {
+            return (GM_getValue('disabledHosts', []) || []).includes(HOST);
+        },
+        setSiteDisabled(off) {
+            const list = (GM_getValue('disabledHosts', []) || []).filter(h => h !== HOST);
+            if (off) list.push(HOST);
+            GM_setValue('disabledHosts', list);
+        },
+    };
+
+    /**
+     * 把 prompt 里填的内容解析成引擎 id 列表：逗号 / 空格 / 顿号分隔，填 id 或序号都行。
+     * 返回 { ids } 或 { error }。
+     */
+    function parseEngineInput(text) {
+        const tokens = String(text).split(/[\s,，、;；]+/).filter(Boolean);
+        const ids = [];
+        for (const tok of tokens) {
+            const n = /^\d+$/.test(tok) ? +tok : NaN;
+            const engine = n ? ENGINES[n - 1] : ENGINES.find(e => e.id === tok.toLowerCase());
+            if (!engine) return { error: `不认识「${tok}」` };
+            if (!ids.includes(engine.id)) ids.push(engine.id);
+        }
+        if (!ids.length) return { error: '至少要启用一个引擎' };
+        return { ids };
+    }
 
     // =========================================================================
     // 取图片地址
@@ -376,7 +433,7 @@
             src.textContent = src.title = target.url;
             pop.append(head, src);
 
-            const engines = ENGINES.filter(e => e.defaultOn);
+            const engines = Settings.enabledEngines();
             for (const engine of engines) {
                 const b = this.item(engine.name, () => {
                     GM_openInTab(engine.url(target.url), { active: true, insert: true, setParent: true });
@@ -491,8 +548,10 @@
      * 加 Alt 在 Windows / macOS 上没有默认行为。
      * 捕获阶段监听：页面自己屏蔽右键（contextmenu 里 preventDefault + stopPropagation）时也能先拿到。
      */
+    let siteOff = Settings.siteDisabled();
+
     window.addEventListener('contextmenu', (e) => {
-        if (!e.altKey) return;
+        if (siteOff || !e.altKey) return;
         const target = findImageAt(e.clientX, e.clientY);
         if (!target) return;
         e.preventDefault();
@@ -530,7 +589,7 @@
             Menu.close();
             return;
         }
-        if (!CONFIG.hoverKey || e.key.toLowerCase() !== CONFIG.hoverKey) return;
+        if (siteOff || !CONFIG.hoverKey || e.key.toLowerCase() !== CONFIG.hoverKey) return;
         if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey || e.repeat || e.isComposing) return;
         if (!pointer.known || isEditable(document.activeElement)) return;
         const target = findImageAt(pointer.x, pointer.y);
@@ -550,5 +609,40 @@
     window.addEventListener('resize', () => Menu.close());
     window.addEventListener('blur', () => Menu.close());
 
-    console.log(TAG, '已加载');
+    // =========================================================================
+    // 脚本菜单
+    // =========================================================================
+
+    function editEngines() {
+        const current = Settings.enabledEngines().map(e => e.id).join(', ');
+        const lines = ENGINES.map((e, i) => `${i + 1}. ${e.id} —— ${e.name}`).join('\n');
+        const input = window.prompt(
+            `按顺序填要启用的引擎（id 或序号，逗号分隔），没填的就是停用：\n${lines}`, current);
+        if (input === null) return;
+        const r = parseEngineInput(input);
+        if (r.error) {
+            window.alert(`没有保存：${r.error}`);
+            return;
+        }
+        Settings.saveEngines(r.ids);
+        console.log(TAG, '启用的引擎', r.ids);
+    }
+
+    let siteCmd = null;
+    function registerSiteCommand() {
+        if (siteCmd !== null) GM_unregisterMenuCommand(siteCmd);
+        siteCmd = GM_registerMenuCommand(siteOff ? `▶️ 在 ${HOST} 上启用` : `⛔ 在 ${HOST} 上停用`, () => {
+            siteOff = !siteOff;
+            Settings.setSiteDisabled(siteOff);
+            Menu.close();
+            console.log(TAG, siteOff ? '本站已停用' : '本站已启用', HOST);
+            registerSiteCommand();
+        });
+    }
+
+    GM_registerMenuCommand('⚙️ 选择 / 排序搜图引擎', editEngines);
+    GM_registerMenuCommand('↩️ 恢复默认引擎', () => Settings.resetEngines());
+    registerSiteCommand();
+
+    console.log(TAG, siteOff ? `已加载（${HOST} 上停用）` : '已加载');
 })();

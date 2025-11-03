@@ -87,6 +87,26 @@ const statusText = page => inMenu(page, root => {
 const clickEngine = (page, id) => inMenu(page, (root, i) => root.querySelector(`[data-engine="${i}"]`).click(), id)
 
 const DEFAULT_ENGINES = ['lens', 'bing', 'yandex', 'baidu', 'saucenao', 'tineye', 'iqdb', 'ascii2d', 'tracemoe']
+const ALL_ENGINES = ['lens', 'bing', 'yandex', 'baidu', 'sogou', 'saucenao', 'tineye', 'iqdb', 'ascii2d', 'tracemoe']
+/** GM 存储里「全部启用」的设置。 */
+const ALL_ON = { engines: { enabled: ALL_ENGINES, known: ALL_ENGINES } }
+
+/** 让下一个 prompt 返回 answer（null = 点取消），alert 的内容收进返回的数组。 */
+function answerDialogs(page, answer) {
+    const alerts = []
+    const prompts = []
+    page.on('dialog', async (d) => {
+        if (d.type() === 'prompt') {
+            prompts.push(d.message())
+            if (answer === null) await d.dismiss()
+            else await d.accept(answer)
+        } else {
+            alerts.push(d.message())
+            await d.accept()
+        }
+    })
+    return { alerts, prompts }
+}
 
 async function main() {
     const env = await h.setup(FIXTURES)
@@ -294,22 +314,22 @@ async function main() {
     }
 
     await t.test('每个引擎的地址：含中文、&、# 的图片地址编码正确，能原样取回', async () => {
-        const page = await openPage('edge.html')
-        for (const id of DEFAULT_ENGINES) {
+        const page = await openPage('edge.html', { values: ALL_ON })
+        for (const id of ALL_ENGINES) {
             await altRightClick(page, '#weird')
             t.eq((await menuState(page)).url, WEIRD, '菜单里的图片地址')
             await clickEngine(page, id)
         }
         const opened = (await h.gm(page)).opened.map(o => new URL(o.url))
-        t.eq(opened.length, DEFAULT_ENGINES.length)
+        t.eq(opened.length, ALL_ENGINES.length)
         opened.forEach((u, i) => {
-            const id = DEFAULT_ENGINES[i]
+            const id = ALL_ENGINES[i]
             t.eq(EXTRACT[id](u), WEIRD, `${id} 取回的地址`)
             t.eq(u.hash, '', `${id} 的地址不应当带 #（图片地址里的 # 必须被编码）`)
         })
         // 关键几个的原始字符串也钉死，防止「编码两次再解码两次」这种对称错误蒙混过关
         t.eq(opened[0].href, 'https://lens.google.com/uploadbyurl?url=' + encodeURIComponent(WEIRD))
-        t.eq(opened[DEFAULT_ENGINES.indexOf('ascii2d')].href, 'https://ascii2d.net/search/url/' + encodeURIComponent(WEIRD))
+        t.eq(opened[ALL_ENGINES.indexOf('ascii2d')].href, 'https://ascii2d.net/search/url/' + encodeURIComponent(WEIRD))
         t.eq(opened[1].href, 'https://www.bing.com/images/search?view=detailv2&iss=sbi&q=imgurl:' + encodeURIComponent(WEIRD))
         await page.close()
     })
@@ -357,6 +377,78 @@ async function main() {
         await altRightClick(page, '#tl')
         await page.mouse.wheel(0, 300)
         await page.waitForFunction(sel => !document.querySelector(sel), HOST)
+        await page.close()
+    })
+
+    console.log('脚本菜单')
+    await t.test('注册了三条菜单命令', async () => {
+        const page = await openPage('basic.html')
+        t.eq((await h.gm(page)).menu, ['⚙️ 选择 / 排序搜图引擎', '↩️ 恢复默认引擎', '⛔ 在 site.example 上停用'])
+        await page.close()
+    })
+
+    await t.test('选择 / 排序引擎：填 id 和序号混着来，菜单按填的顺序列出，全部打开跟着变', async () => {
+        const page = await openPage('basic.html')
+        const d = answerDialogs(page, 'tineye，lens 5 tineye')
+        await h.menu(page, '选择 / 排序搜图引擎')
+        t.assert(d.prompts[0].includes('5. sogou —— 搜狗识图'), d.prompts[0])
+        await altRightClick(page, '#a')
+        t.eq((await menuState(page)).engines, ['tineye', 'lens', 'sogou'], '重复的 tineye 只算一次')
+        await inMenu(page, root => root.querySelector('.all').click())
+        t.eq((await h.gm(page)).opened.map(o => new URL(o.url).hostname), ['tineye.com', 'lens.google.com', 'pic.sogou.com'])
+        // 刷新后还在
+        await page.reload()
+        await altRightClick(page, '#a')
+        t.eq((await menuState(page)).engines, ['tineye', 'lens', 'sogou'])
+        await page.close()
+    })
+
+    await t.test('填错不保存并提示；只剩一个引擎时没有「全部打开」', async () => {
+        const page = await openPage('basic.html', { values: { engines: { enabled: ['iqdb'], known: ALL_ENGINES } } })
+        const d = answerDialogs(page, 'lens, google')
+        await h.menu(page, '选择 / 排序搜图引擎')
+        t.eq(d.alerts, ['没有保存：不认识「google」'])
+        await altRightClick(page, '#a')
+        t.eq((await menuState(page)).engines, ['iqdb'])
+        t.eq(await inMenu(page, root => !!root.querySelector('.all')), false)
+        await page.close()
+    })
+
+    await t.test('清空不保存；恢复默认引擎', async () => {
+        const page = await openPage('basic.html', { values: { engines: { enabled: ['iqdb'], known: ALL_ENGINES } } })
+        const d = answerDialogs(page, '  ')
+        await h.menu(page, '选择 / 排序搜图引擎')
+        t.eq(d.alerts, ['没有保存：至少要启用一个引擎'])
+        await h.menu(page, '恢复默认引擎')
+        await altRightClick(page, '#a')
+        t.eq((await menuState(page)).engines, DEFAULT_ENGINES)
+        await page.close()
+    })
+
+    await t.test('脚本更新加了新引擎：存过设置的用户也能看到它（按 defaultOn 追加到末尾）', async () => {
+        // 模拟旧版本存下的设置：known 里没有 tracemoe
+        const known = ALL_ENGINES.filter(id => id !== 'tracemoe')
+        const page = await openPage('basic.html', { values: { engines: { enabled: ['bing', 'lens'], known } } })
+        await altRightClick(page, '#a')
+        t.eq((await menuState(page)).engines, ['bing', 'lens', 'tracemoe'])
+        await page.close()
+    })
+
+    await t.test('本站停用：Alt + 右键和 S 都不再响应，刷新后仍停用；再点一次恢复', async () => {
+        const page = await openPage('basic.html')
+        await h.menu(page, '在 site.example 上停用')
+        t.eq((await h.gm(page)).menu.slice(-1), ['▶️ 在 site.example 上启用'])
+        await altRightClick(page, '#a')
+        t.assert(!(await isOpen(page)), '停用后 Alt + 右键不应当弹菜单')
+        t.eq(await page.evaluate(() => window.pageContextMenus), 1, '停用后右键原样交给页面')
+        await page.reload()
+        const p = await pointOf(page, '#a')
+        await page.mouse.move(p.x, p.y)
+        await page.keyboard.press('s')
+        t.assert(!(await isOpen(page)), '刷新后仍停用')
+        await h.menu(page, '在 site.example 上启用')
+        await altRightClick(page, '#a')
+        t.assert(await isOpen(page), '恢复后应当能弹菜单')
         await page.close()
     })
 
