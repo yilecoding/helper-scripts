@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>private</title>
+<style>
+    body { margin: 0; }
+    .c { position: absolute; display: block; width: 140px; height: 100px; }
+    #pub { left: 10px; top: 10px; }
+    #dataimg { left: 170px; top: 10px; }
+    #blobimg { left: 330px; top: 10px; }
+    #lan { left: 490px; top: 10px; }
+    #nas { left: 650px; top: 10px; }
+    #canvas { left: 10px; top: 130px; }
+    #tainted { left: 170px; top: 130px; }
+    #login { left: 330px; top: 130px; }
+    #v6 { left: 490px; top: 130px; }
+</style>
+</head>
+<body>
+<img class="c" id="pub" src="https://img.example/300x200/pub.png">
+<img class="c" id="dataimg" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==">
+<img class="c" id="blobimg">
+<img class="c" id="lan" src="http://192.168.1.20/cam/snap.png">
+<img class="c" id="nas" src="http://nas/photos/1.png">
+<canvas class="c" id="canvas" width="140" height="100"></canvas>
+<canvas class="c" id="tainted" width="140" height="100"></canvas>
+<!-- 同源、要 cookie 才给图（没 cookie 返回登录页） -->
+<img class="c" id="login" src="/private/40x30/me.png">
+<img class="c" id="v6" src="http://[fd00::12]/a.png">
+<script>
+    document.cookie = 'session=ok; path=/'
+    // 页面自己生成的 blob: 图（截图工具、图片编辑器常见）
+    fetch('https://site.example/32x24/made.png').then(r => r.blob()).then(b => {
+        document.getElementById('blobimg').src = URL.createObjectURL(b)
+        window.blobReady = true
+    })
+    const c = document.getElementById('canvas').getContext('2d')
+    c.fillStyle = '#e53935'
+    c.fillRect(0, 0, 140, 100)
+    // 画一张跨域图（没有 CORS 头）→ 画布被污染
+    const img = new Image()
+    img.onload = () => {
+        document.getElementById('tainted').getContext('2d').drawImage(img, 0, 0)
+        window.taintReady = true
+    }
+    img.src = 'https://img.example/50x50/cross.png'
+</script>
+</body>
+</html>
