@@ -3,7 +3,7 @@
 // @name:zh-CN   以图搜图
 // @name:en      Image Search — Reverse Image Search from Any Image
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.11.05.8
+// @version      2025.11.05.9
 // @description  在网页图片上按住 Alt 点右键（或鼠标悬停按 S），弹出搜图菜单，一键用 Google Lens / Bing / Yandex / 百度识图 / SauceNAO / TinEye / IQDB / ascii2d / Trace.moe 搜这张图；本地、内网、canvas 图片自动改为上传。
 // @description:zh-CN  在网页图片上按住 Alt 点右键（或鼠标悬停按 S），弹出搜图菜单，一键用 Google Lens / Bing / Yandex / 百度识图 / SauceNAO / TinEye / IQDB / ascii2d / Trace.moe 搜这张图；本地、内网、canvas 图片自动改为上传。
 // @description:en  Alt + right-click any image (or hover it and press S) to pop up a reverse image search menu: Google Lens / Bing / Yandex / Baidu / SauceNAO / TinEye / IQDB / ascii2d / Trace.moe. Local, intranet and canvas images are uploaded instead.
@@ -328,11 +328,24 @@
         }
     }
 
+    /**
+     * 透明垫片图：Flickr 在照片上盖一张拉伸成照片大小的 1×1 透明 gif（spaceball.gif），
+     * 它在 elementsFromPoint 的最上层，不跳过的话搜的就是那个透明像素。
+     * 只认「挑出来的就是正在显示的那张、而且真实尺寸不超过 2×2」—— 懒加载占位图另有 data-src，不会走到这里。
+     */
+    function isSpacer(img, raw) {
+        if (!img.complete || !img.naturalWidth || img.naturalWidth > 2 || img.naturalHeight > 2) return false;
+        return normalizeUrl(raw) === normalizeUrl(img.currentSrc || img.getAttribute('src'));
+    }
+
     /** 单个元素能给出的图片，给不出返回 null。 */
     function imageFromElement(el) {
         if (el.tagName === 'CANVAS') return canvasTarget(el);
         let raw = null;
-        if (el.tagName === 'IMG') raw = pickImgUrl(el);
+        if (el.tagName === 'IMG') {
+            raw = pickImgUrl(el);
+            if (isSpacer(el, raw)) return null;
+        }
         // <html> / <body> 的背景是整页底纹，鼠标在任何空白处都会命中它，不算
         else if (el !== document.documentElement && el !== document.body) raw = backgroundUrl(el);
         const url = normalizeUrl(raw);
@@ -347,7 +360,8 @@
      * open shadow root 要进去再找一遍 —— 从 document 上只能拿到宿主元素。
      */
     function findImageAt(x, y, root = document, depth = 0) {
-        for (const el of root.elementsFromPoint(x, y)) {
+        const stack = root.elementsFromPoint(x, y);
+        for (const el of stack) {
             if (el.id === HOST_ID) continue;
             if (el.shadowRoot && el.shadowRoot !== root && depth < 5) {
                 const inner = findImageAt(x, y, el.shadowRoot, depth + 1);
@@ -355,6 +369,26 @@
             }
             const found = imageFromElement(el);
             if (found) return found;
+        }
+        return findByRect(stack, x, y);
+    }
+
+    /**
+     * pointer-events: none 的元素不会出现在 elementsFromPoint 里（防拖拽的站常给 <img> 加这个）。
+     * 兜底：在最上面几层元素里找几何上盖住鼠标的 <img> / <canvas>，后出现的在上层，倒着找。
+     * 到 <body> 就停 —— 再往下就是整页范围，命中的多半不是用户指的那张。
+     */
+    function findByRect(stack, x, y) {
+        for (const el of stack.slice(0, 5)) {
+            if (el === document.body || el === document.documentElement || el.id === HOST_ID) break;
+            const candidates = [...el.querySelectorAll('img, canvas')].reverse();
+            for (const c of candidates) {
+                const r = c.getBoundingClientRect();
+                if (x < r.left || x >= r.right || y < r.top || y >= r.bottom) continue;
+                if (getComputedStyle(c).visibility === 'hidden') continue;
+                const found = imageFromElement(c);
+                if (found) return found;
+            }
         }
         return null;
     }
@@ -1102,7 +1136,8 @@
             Menu.close();
             return;
         }
-        if (siteOff || !CONFIG.hoverKey || e.key.toLowerCase() !== CONFIG.hoverKey) return;
+        // 不是所有 keydown 都有 key：new Event('keydown') 这种合成事件就没有（Chrome 的自动填充也被不少项目报过）
+        if (siteOff || !CONFIG.hoverKey || typeof e.key !== 'string' || e.key.toLowerCase() !== CONFIG.hoverKey) return;
         if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey || e.repeat || e.isComposing) return;
         if (!pointer.known || isEditable(document.activeElement)) return;
         const target = findImageAt(pointer.x, pointer.y);

@@ -19,6 +19,10 @@
     #shadow { left: 370px; top: 150px; display: block; }
     #comma { left: 550px; top: 150px; }
     #blank { left: 730px; top: 150px; }
+    #spacer { left: 10px; top: 290px; }
+    #spacer .ball { position: absolute; inset: 0; width: 160px; height: 120px; }
+    #nopointer { left: 190px; top: 290px; }
+    #nopointer img { pointer-events: none; }
 </style>
 </head>
 <body>
@@ -50,6 +54,10 @@
 <div class="cell" id="comma"><img src="https://img.example/c_fill,w_400/x.png"
     srcset="https://img.example/c_fill,w_800/x.png 800w, https://img.example/c_fill,w_1600/x.png 1600w"></div>
 <div class="cell" id="blank"></div>
+<!-- Flickr 的做法：照片上面盖一张拉伸的 1×1 透明图（spaceball.gif），右键另存只能存到它 -->
+<div class="cell" id="spacer"><img src="https://img.example/1024x768/photo.png"><img class="ball" src="https://img.example/1x1/spaceball.gif"></div>
+<!-- 图片本身 pointer-events: none（有些站这样防拖拽），elementsFromPoint 会跳过它 -->
+<div class="cell" id="nopointer"><img src="https://img.example/600x400/nopointer.png"></div>
 <script>
     customElements.define('x-card', class extends HTMLElement {
         constructor() {

@@ -294,6 +294,16 @@ async function main() {
         await page.close()
     })
 
+    await t.test('没有 key 的 keydown（new Event("keydown") 这类合成事件）不报错', async () => {
+        const page = await openPage('basic.html')
+        const p = await pointOf(page, '#a')
+        await page.mouse.move(p.x, p.y)
+        await page.evaluate(() => document.getElementById('box').dispatchEvent(new Event('keydown', { bubbles: true })))
+        await page.evaluate(() => new Promise(r => setTimeout(r, 50)))
+        t.eq(h.errors(page).map(String), [])
+        await page.close()
+    })
+
     console.log('复制 / 打开 / 下载原图')
     await t.test('复制图片地址', async () => {
         const page = await openPage('basic.html')
@@ -366,10 +376,13 @@ async function main() {
         '#rel': 'https://site.example/300x200/rel.png',
         '#shadow': 'https://img.example/350x250/in-shadow.png',
         '#comma': 'https://img.example/c_fill,w_1600/x.png',
+        '#spacer': 'https://img.example/1024x768/photo.png',
+        '#nopointer': 'https://img.example/600x400/nopointer.png',
     }
     for (const [sel, want] of Object.entries(SOURCES)) {
         await t.test(`${sel} → ${want.replace(/^https:\/\/[^/]+/, '')}`, async () => {
             const page = await openPage('sources.html')
+            await page.waitForLoadState('load')
             await altRightClick(page, sel)
             t.assert(await isOpen(page), '菜单应当打开')
             t.eq((await menuState(page)).url, want)
