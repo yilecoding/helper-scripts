@@ -3,10 +3,10 @@
 // @name:zh-CN   以图搜图
 // @name:en      Image Search — Reverse Image Search from Any Image
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.11.04.7
+// @version      2025.11.05.8
 // @description  在网页图片上按住 Alt 点右键（或鼠标悬停按 S），弹出搜图菜单，一键用 Google Lens / Bing / Yandex / 百度识图 / SauceNAO / TinEye / IQDB / ascii2d / Trace.moe 搜这张图；本地、内网、canvas 图片自动改为上传。
-// @description:zh-CN  在网页图片上按住 Alt 点右键（或鼠标悬停按 S），弹出搜图菜单，一键用 Google Lens / Bing / Yandex / 百度识图 / SauceNAO / TinEye / IQDB / ascii2d / Trace.moe 搜这张图。
-// @description:en  Alt + right-click any image (or hover it and press S) to pop up a reverse image search menu: Google Lens / Bing / Yandex / Baidu / SauceNAO / TinEye / IQDB / ascii2d / Trace.moe.
+// @description:zh-CN  在网页图片上按住 Alt 点右键（或鼠标悬停按 S），弹出搜图菜单，一键用 Google Lens / Bing / Yandex / 百度识图 / SauceNAO / TinEye / IQDB / ascii2d / Trace.moe 搜这张图；本地、内网、canvas 图片自动改为上传。
+// @description:en  Alt + right-click any image (or hover it and press S) to pop up a reverse image search menu: Google Lens / Bing / Yandex / Baidu / SauceNAO / TinEye / IQDB / ascii2d / Trace.moe. Local, intranet and canvas images are uploaded instead.
 // @author       壹樂（V：ita1125）
 // @match        *://*/*
 // @grant        GM_openInTab
@@ -17,6 +17,8 @@
 // @grant        GM_registerMenuCommand
 // @grant        GM_unregisterMenuCommand
 // @grant        GM_xmlhttpRequest
+// @grant        GM_listValues
+// @grant        GM_deleteValue
 // @connect      lens.google.com
 // @connect      *
 // @license      CC BY-NC-SA
@@ -71,8 +73,11 @@
     /*
      * 引擎表。
      *   url(imageUrl)  「按地址搜」的结果页地址
-     *   upload(blob)   「上传图片搜」，返回 Promise<结果页地址>；没有这一项的写 noUpload 说明原因，
-     *                  上传模式下菜单里置灰并显示这句话
+     *   upload(blob)   「上传图片搜」，返回 Promise<结果页地址>
+     *   relay          「接力上传」：结果页是 POST 表单直接返回的 HTML、或者要页面脚本签名的引擎，
+     *                  在原页面拿不到结果地址。把图片暂存进 GM 存储，打开引擎自己的页面（landing），
+     *                  由本脚本在那个页面里 run(file) 把图交给它的表单 —— 见「接力上传」一节
+     *   noUpload       两种上传都没有时写明原因，上传模式下菜单里置灰并显示这句话
      * 各地址格式、上传接口的核实情况见 notes.md —— 有几家只能从公开资料确认，本机网络到不了。
      * defaultOn: false 的默认不出现在菜单里（能打开但实测搜不出结果的）。
      */
@@ -88,19 +93,24 @@
             noUpload: 'Yandex 的上传接口实测已停用' },
         { id: 'baidu', name: '百度识图', defaultOn: true,
             url: u => 'https://graph.baidu.com/pcpage/index?tpl_from=pc&queryImageUrl=' + enc(u),
-            noUpload: '百度识图的上传要页面脚本生成的签名，暂不支持' },
+            // 上传接口要页面脚本现算的 sdkParams 签名，自己拼请求会被拒（实测 status 1002 / Reject）；
+            // 按地址搜也一样，只认页面输入框 —— 两条路都由本脚本在识图页里代填
+            relay: { landing: 'https://graph.baidu.com/pcpage/index?tpl_from=pc', run: file => baiduRelayFile(file) } },
         { id: 'sogou', name: '搜狗识图', defaultOn: false,
             url: u => 'https://pic.sogou.com/ris?flag=1&drag=0&query=' + enc(u),
             noUpload: '搜狗识图没有找到能用的上传入口' },
         { id: 'saucenao', name: 'SauceNAO', defaultOn: true,
             url: u => 'https://saucenao.com/search.php?url=' + enc(u),
-            noUpload: 'SauceNAO 上传暂不支持' },
+            relay: { landing: 'https://saucenao.com/', run: file => submitForm('/search.php', [{ name: 'file', file }]) } },
         { id: 'tineye', name: 'TinEye', defaultOn: true,
             url: u => 'https://tineye.com/search?url=' + enc(u),
             noUpload: 'TinEye 的上传接口没有核实，暂不支持' },
         { id: 'iqdb', name: 'IQDB', defaultOn: true,
             url: u => 'https://iqdb.org/?url=' + enc(u),
-            noUpload: 'IQDB 上传暂不支持' },
+            relay: {
+                landing: 'https://iqdb.org/',
+                run: file => submitForm('/', [{ name: 'MAX_FILE_SIZE', value: '8388608' }, { name: 'file', file }]),
+            } },
         { id: 'ascii2d', name: 'ascii2d', defaultOn: true,
             url: u => 'https://ascii2d.net/search/url/' + enc(u),
             noUpload: 'ascii2d 的上传要 CSRF 令牌，还套着 Cloudflare 人机验证' },
@@ -108,6 +118,8 @@
             url: u => 'https://trace.moe/?url=' + enc(u),
             noUpload: 'trace.moe 网页版没有可提交的上传表单' },
     ];
+
+    const canUpload = e => !!(e.upload || e.relay);
 
     const HOST_ID = '__image-search-host';
     const HOST = location.hostname;
@@ -566,6 +578,188 @@
     }
 
     // =========================================================================
+    // 接力上传：图片暂存进 GM 存储 → 打开引擎页面 → 本脚本在那边把图交给它的表单
+    // =========================================================================
+
+    /*
+     * 为什么不在原页面直接提交一个 target=_blank 的表单：
+     *   - 原页面的 CSP form-action 会拦（GitHub 等站只允许提交到自己的域名）
+     *   - 图片字节要异步取，取完再提交时点击手势已经过期，新窗口会被弹窗拦截
+     * GM 存储是脚本全局共享的（不分站点），所以能把图从 A 站带到 B 站。
+     */
+    const RELAY_HASH = '__image-search=';
+    const RELAY_PREFIX = 'relay:';
+    const RELAY_TTL = 10 * 60 * 1000;
+
+    function blobToDataUrl(blob) {
+        return new Promise((resolve, reject) => {
+            const r = new FileReader();
+            r.onload = () => resolve(r.result);
+            r.onerror = () => reject(r.error || new Error('读取失败'));
+            r.readAsDataURL(blob);
+        });
+    }
+
+    const Relay = {
+        /** 暂存图片，返回 token。pending 是还没来取的引擎，全部取完就删。 */
+        async put(blob, engineIds) {
+            const token = Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+            GM_setValue(RELAY_PREFIX + token, {
+                dataUrl: await blobToDataUrl(blob),
+                name: uploadFileName(blob),
+                pending: engineIds,
+                t: Date.now(),
+            });
+            return token;
+        },
+
+        landingUrl(engine, token) {
+            return engine.relay.landing + '#' + RELAY_HASH + token;
+        },
+
+        /** 引擎页面这边取走图片。取不到（过期 / 已被取过）返回 null。 */
+        take(token, engineId) {
+            const key = RELAY_PREFIX + token;
+            const v = GM_getValue(key, null);
+            if (!v || !v.dataUrl) return null;
+            const pending = (v.pending || []).filter(id => id !== engineId);
+            if (pending.length) GM_setValue(key, { ...v, pending });
+            else GM_deleteValue(key);
+            const blob = dataUrlToBlob(v.dataUrl);
+            return new File([blob], v.name || 'image.jpg', { type: blob.type });
+        },
+
+        /** 清掉没人来取的暂存（标签被拦、引擎页没打开…），不然一张张几 MB 的图会一直堆在存储里。 */
+        sweep() {
+            try {
+                for (const key of GM_listValues()) {
+                    if (!key.startsWith(RELAY_PREFIX)) continue;
+                    const v = GM_getValue(key, null);
+                    if (!v || !(Date.now() - v.t < RELAY_TTL)) GM_deleteValue(key);
+                }
+            } catch (e) {
+                console.warn(TAG, '清理暂存失败', e);
+            }
+        },
+    };
+
+    function setFiles(input, file) {
+        const dt = new DataTransfer();
+        dt.items.add(file);
+        input.files = dt.files;
+    }
+
+    /** 在当前（引擎自己的）页面上造一个表单提交。同源提交，不受谁的 CSP 限制。 */
+    function submitForm(action, fields) {
+        const form = document.createElement('form');
+        form.method = 'post';
+        form.enctype = 'multipart/form-data';
+        form.action = action;
+        form.style.display = 'none';
+        for (const f of fields) {
+            const input = document.createElement('input');
+            input.name = f.name;
+            if (f.file) {
+                input.type = 'file';
+                setFiles(input, f.file);
+            } else {
+                input.type = 'hidden';
+                input.value = f.value;
+            }
+            form.append(input);
+        }
+        document.body.append(form);
+        // 用原型上的 submit：表单里要是有 name="submit" 的控件，form.submit 会被它遮住
+        HTMLFormElement.prototype.submit.call(form);
+    }
+
+    /** 等某个元素出现（引擎页面多是前端渲染，脚本运行时输入框还没生成）。 */
+    function waitFor(selector, timeout = 15000) {
+        return new Promise((resolve, reject) => {
+            const found = document.querySelector(selector);
+            if (found) return resolve(found);
+            const ob = new MutationObserver(() => {
+                const el = document.querySelector(selector);
+                if (el) {
+                    ob.disconnect();
+                    clearTimeout(timer);
+                    resolve(el);
+                }
+            });
+            ob.observe(document.documentElement, { childList: true, subtree: true });
+            const timer = setTimeout(() => {
+                ob.disconnect();
+                reject(new Error(`页面上没找到 ${selector}，可能改版了`));
+            }, timeout);
+        });
+    }
+
+    /*
+     * 百度识图（graph.baidu.com/pcpage/index，React 页面）：
+     *   文件 → 页面自带的 <input type=file class=general-upload-file>，塞进文件后派发 change
+     *   地址 → 「粘贴图片网址」输入框，原生 setter 写值（绕过 React 的受控值缓存）+ input 事件 + 回车
+     * 两种都在真实页面上用合成事件试过，会跳到 graph.baidu.com/s?... 的结果页。
+     */
+    async function baiduRelayFile(file) {
+        const input = await waitFor('input.general-upload-file');
+        setFiles(input, file);
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+
+    async function baiduFillUrl(url) {
+        const input = await waitFor('input.graph-d20-search-wrapper-input');
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, url);
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        for (const type of ['keydown', 'keypress', 'keyup']) {
+            input.dispatchEvent(new KeyboardEvent(type, { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+        }
+    }
+
+    /** 引擎页面上的一句提示（接力失败时用）—— 不能只打日志，用户看着一个没反应的首页不知道发生了什么。 */
+    function pageNotice(text) {
+        const div = document.createElement('div');
+        div.textContent = '以图搜图：' + text;
+        div.style.cssText = `position:fixed;z-index:${CONFIG.zIndex};left:50%;top:16px;transform:translateX(-50%);`
+            + 'max-width:80vw;padding:10px 16px;border-radius:8px;background:#c62828;color:#fff;'
+            + 'font:14px/1.4 system-ui,sans-serif;box-shadow:0 4px 16px rgba(0,0,0,.25)';
+        div.dataset.imageSearchNotice = '';
+        document.documentElement.appendChild(div);
+        setTimeout(() => div.remove(), 15000);
+        console.warn(TAG, text);
+    }
+
+    /** 本页是不是某个引擎的接力落地页；是就把图交出去。和「本站停用」无关 —— 这是用户自己发起的搜索。 */
+    async function runRelayHere() {
+        const engine = ENGINES.find(e => e.relay && new URL(e.relay.landing).hostname === location.hostname);
+        if (!engine) return;
+        const idx = location.hash.indexOf(RELAY_HASH);
+        if (idx !== -1) {
+            const token = location.hash.slice(idx + RELAY_HASH.length);
+            // 先把 #token 从地址栏去掉：刷新、前进后退回到这页时不要再提交一遍
+            history.replaceState(history.state, '', location.href.split('#')[0]);
+            const file = Relay.take(token, engine.id);
+            if (!file) {
+                pageNotice('暂存的图片已经过期或被用过了，请回到原页面重新搜索。');
+                return;
+            }
+            try {
+                await engine.relay.run(file);
+                console.log(TAG, `已把图片交给 ${engine.name}`);
+            } catch (e) {
+                pageNotice(`没能把图片交给 ${engine.name}：${e.message}`);
+            }
+            return;
+        }
+        if (engine.id === 'baidu' && location.pathname === '/pcpage/index') {
+            const q = new URLSearchParams(location.search).get('queryImageUrl');
+            const key = '__image-search:baidu:' + q;
+            if (!q || sessionStorage.getItem(key)) return;
+            sessionStorage.setItem(key, '1');
+            baiduFillUrl(q).catch(e => pageNotice(`没能把图片地址填进百度识图：${e.message}`));
+        }
+    }
+
+    // =========================================================================
     // 菜单
     // =========================================================================
 
@@ -700,12 +894,12 @@
             pop.dataset.mode = this.mode;
             box.textContent = '';
             const engines = Settings.enabledEngines();
-            const usable = engines.filter(e => !upload || e.upload);
+            const usable = engines.filter(e => !upload || canUpload(e));
             for (const engine of engines) {
                 const b = this.item(engine.name, () => this.search([engine], true));
                 b.classList.add('engine');
                 b.dataset.engine = engine.id;
-                if (upload && !engine.upload) {
+                if (upload && !canUpload(engine)) {
                     b.disabled = true;
                     b.title = engine.noUpload;
                     b.dataset.reason = engine.noUpload;
@@ -774,7 +968,21 @@
                     this.setStatus(e.message, true);
                     return;
                 }
+                // 接力的几家共用一份暂存（「全部打开」时不必把同一张图存三遍）
+                const relayed = engines.filter(e => e.relay);
+                let token = null;
+                if (relayed.length) {
+                    try {
+                        token = await Relay.put(blob, relayed.map(e => e.id));
+                    } catch (err) {
+                        failed.push(`暂存图片失败：${err.message}`);
+                    }
+                }
                 for (const e of engines) {
+                    if (e.relay) {
+                        if (token) tab(Relay.landingUrl(e, token));
+                        continue;
+                    }
                     this.setStatus(`正在上传到 ${e.name}…`);
                     try {
                         tab(await e.upload(blob));
@@ -850,6 +1058,9 @@
      * 加 Alt 在 Windows / macOS 上没有默认行为。
      * 捕获阶段监听：页面自己屏蔽右键（contextmenu 里 preventDefault + stopPropagation）时也能先拿到。
      */
+    Relay.sweep();
+    runRelayHere();
+
     let siteOff = Settings.siteDisabled();
 
     window.addEventListener('contextmenu', (e) => {

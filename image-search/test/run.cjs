@@ -44,6 +44,17 @@ async function routes(page) {
         return route.fulfill({ path: file })
     })
     await page.route(/^https:\/\/img\.example\//, route => servePng(route, new URL(route.request().url()).pathname))
+    // 接力上传的落地页（引擎首页 / 百度识图页的替身）；POST 记进 page.__posts
+    page.__posts = []
+    await page.route(/^https:\/\/(saucenao\.com|iqdb\.org)\//, (route) => {
+        const req = route.request()
+        if (req.method() === 'POST') {
+            page.__posts.push({ url: req.url(), contentType: req.headers()['content-type'], body: req.postDataBuffer() })
+            return route.fulfill({ status: 200, contentType: 'text/html', body: '<h1>results</h1>' })
+        }
+        return route.fulfill({ path: path.join(FIXTURES, 'engine.html') })
+    })
+    await page.route(/^https:\/\/graph\.baidu\.com\/pcpage\/index/, route => route.fulfill({ path: path.join(FIXTURES, 'baidu.html') }))
     // 内网地址：只让页面上的 <img> 能显示出来，脚本取字节走的是 GM_xmlhttpRequest（由 opts.xhr 模拟）
     await page.route(/^http:\/\/(192\.168\.1\.20|nas|\[fd00::12\])\//, route => route.fulfill({ status: 200, contentType: 'image/png', body: png(10, 10) }))
 }
@@ -89,6 +100,11 @@ function xhrLog(handler) {
     }
     return { calls, xhr }
 }
+
+/** 和脚本里一致的「按地址搜」地址（只用于构造落地页 URL）。 */
+const ENGINE_URL = (id, u) => ({
+    baidu: 'https://graph.baidu.com/pcpage/index?tpl_from=pc&queryImageUrl=' + encodeURIComponent(u),
+})[id]
 
 const LENS_RESULT = 'https://www.google.com/search?vsrid=test&udm=26'
 /** 默认的 xhr 模拟：内网图返回 PNG（latin1 字符串，脚本按 x-user-defined 解），Lens 上传返回 303。 */
@@ -154,6 +170,9 @@ const statusText = page => inMenu(page, root => {
     return el.hidden ? '' : el.textContent
 })
 const clickEngine = (page, id) => inMenu(page, (root, i) => root.querySelector(`[data-engine="${i}"]`).click(), id)
+
+// edge.html 里 #weird 那张图规范化之后的地址：路径里的中文、空格转义，query 里的中文转义，#part 被去掉
+const WEIRD = 'https://img.example/300x200/%E5%9B%BE%E7%89%87%20a&b%23c.png?size=%E5%A4%A7&v=1'
 
 const DEFAULT_ENGINES = ['lens', 'bing', 'yandex', 'baidu', 'saucenao', 'tineye', 'iqdb', 'ascii2d', 'tracemoe']
 const ALL_ENGINES = ['lens', 'bing', 'yandex', 'baidu', 'sogou', 'saucenao', 'tineye', 'iqdb', 'ascii2d', 'tracemoe']
@@ -366,8 +385,6 @@ async function main() {
     })
 
     console.log('引擎地址 / 全部打开 / 定位')
-    // 浏览器规范化之后的地址：路径里的中文、空格转义，query 里的中文转义，#part 被去掉
-    const WEIRD = 'https://img.example/300x200/%E5%9B%BE%E7%89%87%20a&b%23c.png?size=%E5%A4%A7&v=1'
     /** 从各引擎的地址里把图片地址取回来，取回来的必须和原地址一字不差。 */
     const EXTRACT = {
         lens: u => u.searchParams.get('url'),
@@ -494,9 +511,9 @@ async function main() {
         await t.test(`${sel} 识别为不可公开（${reason}），锁定上传模式，不支持上传的引擎置灰并写明原因`, async () => {
             const { page } = await openPrivate()
             await altRightClick(page, sel)
-            t.eq(await menuInfo(page), { mode: 'upload', badge: reason, checked: true, locked: true, all: '全部打开（1）' })
+            t.eq(await menuInfo(page), { mode: 'upload', badge: reason, checked: true, locked: true, all: '全部打开（4）' })
             const btns = await engineButtons(page)
-            t.eq(btns.filter(b => !b.disabled).map(b => b.id), ['lens'])
+            t.eq(btns.filter(b => !b.disabled).map(b => b.id), ['lens', 'baidu', 'saucenao', 'iqdb'])
             t.assert(btns.filter(b => b.disabled).every(b => b.reason.length > 4), '每个置灰的引擎都要有原因')
             const shown = await inMenu(page, root => root.querySelector('[data-engine="yandex"] .hint').textContent)
             t.eq(shown, 'Yandex 的上传接口实测已停用', '原因要显示在菜单里，不能只放在 title 上')
@@ -608,6 +625,133 @@ async function main() {
         t.eq(await statusText(page), 'Google Lens 上传失败：HTTP 500')
         t.assert(await isOpen(page))
         t.eq((await h.gm(page)).opened, [])
+        await page.close()
+    })
+
+    console.log('接力上传（SauceNAO / IQDB / 百度识图）')
+    /** 读本页 GM 存储（harness 存在 localStorage 的 __gm: 前缀下）。 */
+    const gmStore = page => page.evaluate(() => Object.fromEntries(Object.keys(localStorage)
+        .filter(k => k.startsWith('__gm:') && k !== '__gm:__seeded').map(k => [k.slice(5), JSON.parse(localStorage.getItem(k))])))
+
+    await t.test('原页面：点 SauceNAO → 图片暂存进 GM 存储，打开 saucenao.com 落地页（#token）', async () => {
+        const { page, calls } = await openPrivate()
+        await altRightClick(page, '#dataimg')
+        await clickEngine(page, 'saucenao')
+        await waitUpload(page)
+        const opened = (await h.gm(page)).opened
+        t.eq(opened.length, 1)
+        const m = /^https:\/\/saucenao\.com\/#__image-search=(\w+)$/.exec(opened[0].url)
+        t.assert(m, opened[0].url)
+        const stored = (await gmStore(page))['relay:' + m[1]]
+        const raw = await page.evaluate(() => document.getElementById('dataimg').src)
+        t.eq([stored.dataUrl, stored.name, stored.pending], [raw, 'image.png', ['saucenao']])
+        t.eq(calls.length, 0, '接力不经过 GM_xmlhttpRequest')
+        await page.close()
+    })
+
+    await t.test('上传模式下全部打开：Lens 直接上传，三家接力共用一份暂存，都在后台打开', async () => {
+        const { page } = await openPrivate()
+        await altRightClick(page, '#canvas')
+        await inMenu(page, root => root.querySelector('.all').click())
+        await waitUpload(page)
+        const urls = (await h.gm(page)).opened.map(o => (t.eq(o.options.active, false), o.url))
+        t.eq(urls[0], LENS_RESULT)
+        const tokens = urls.slice(1).map(u => u.split('#__image-search=')[1])
+        t.eq(urls.slice(1).map(u => u.split('#')[0]), [
+            'https://graph.baidu.com/pcpage/index?tpl_from=pc', 'https://saucenao.com/', 'https://iqdb.org/',
+        ])
+        t.assert(tokens[0] && tokens.every(x => x === tokens[0]), '三家应当共用一个 token')
+        const relays = Object.entries(await gmStore(page)).filter(([k]) => k.startsWith('relay:'))
+        t.eq(relays.length, 1, '只存一份')
+        t.eq(relays[0][1].pending, ['baidu', 'saucenao', 'iqdb'])
+        await page.close()
+    })
+
+    /*
+     * 落地页这一侧。harness 的 GM 存储是按源（localStorage）隔离的，A 站存的东西 B 站读不到 ——
+     * 真实 Tampermonkey 里是脚本全局共享。所以这里直接把暂存数据作为初始值灌进引擎那个源。
+     */
+    const RELAY_PNG = png(20, 10)
+    function relayValues(token, pending, extra = {}) {
+        return {
+            ['relay:' + token]: { dataUrl: 'data:image/png;base64,' + RELAY_PNG.toString('base64'), name: 'image.png', pending, t: Date.now() },
+            ...extra,
+        }
+    }
+    async function openLanding(url, values) {
+        const page = await browser.newPage()
+        await h.install(page, SCRIPT, { values })
+        await routes(page)
+        await page.goto(url)
+        return page
+    }
+
+    await t.test('saucenao.com 落地页：提交 multipart 表单到 /search.php，file 字段是原图字节；暂存随即删除', async () => {
+        const page = await openLanding('https://saucenao.com/#__image-search=tok1', relayValues('tok1', ['saucenao']))
+        await page.waitForURL('https://saucenao.com/search.php')
+        t.eq(page.__posts.length, 1)
+        const post = page.__posts[0]
+        t.assert(/^multipart\/form-data; boundary=/.test(post.contentType), post.contentType)
+        const field = multipartField(post.contentType, post.body, 'file')
+        t.assert(field && /filename="image\.png"/.test(field.headers), field && field.headers)
+        t.assert(field.body.equals(RELAY_PNG), '文件内容应当是暂存的原图')
+        t.eq((await gmStore(page))['relay:tok1'], undefined, '取走后应当删除')
+        await page.close()
+    })
+
+    await t.test('iqdb.org 落地页：POST 到 /，带 MAX_FILE_SIZE 和 file；还有别的引擎没取时暂存保留', async () => {
+        const page = await openLanding('https://iqdb.org/#__image-search=tok2', relayValues('tok2', ['iqdb', 'saucenao']))
+        await page.waitForFunction(() => document.querySelector('h1') && document.querySelector('h1').textContent === 'results')
+        const post = page.__posts[0]
+        t.eq(post.url, 'https://iqdb.org/')
+        t.eq(multipartField(post.contentType, post.body, 'MAX_FILE_SIZE').body.toString(), '8388608')
+        t.assert(multipartField(post.contentType, post.body, 'file').body.equals(RELAY_PNG))
+        t.eq((await gmStore(page))['relay:tok2'].pending, ['saucenao'])
+        await page.close()
+    })
+
+    await t.test('百度识图落地页：等输入框渲染出来，把文件塞进页面自带的上传控件', async () => {
+        const page = await openLanding('https://graph.baidu.com/pcpage/index?tpl_from=pc#__image-search=tok3', relayValues('tok3', ['baidu']))
+        await page.waitForFunction(() => window.got.files.length > 0)
+        const got = await page.evaluate(() => window.got.files[0])
+        t.eq([got.name, got.type], ['image.png', 'image/png'])
+        t.assert(Buffer.from(got.bytes).equals(RELAY_PNG))
+        t.eq(page.url(), 'https://graph.baidu.com/pcpage/index?tpl_from=pc', '#token 应当从地址栏去掉')
+        await page.close()
+    })
+
+    await t.test('百度识图按地址搜：落地页读 queryImageUrl 填进网址框并回车；刷新不再重复', async () => {
+        const page = await openLanding(ENGINE_URL('baidu', WEIRD), {})
+        await page.waitForFunction(() => window.got.urls.length > 0)
+        t.eq(await page.evaluate(() => window.got.urls), [WEIRD])
+        await page.reload()
+        await page.waitForSelector('.graph-d20-search-wrapper-input')
+        await page.waitForTimeout(300)
+        t.eq(await page.evaluate(() => window.got.urls), [], '同一个地址刷新后不应当再提交')
+        await page.close()
+    })
+
+    await t.test('暂存过期 / 不存在：落地页上明确提示，不提交任何东西', async () => {
+        const page = await openLanding('https://saucenao.com/#__image-search=gone', {})
+        await page.waitForSelector('[data-image-search-notice]')
+        t.eq(await page.textContent('[data-image-search-notice]'), '以图搜图：暂存的图片已经过期或被用过了，请回到原页面重新搜索。')
+        t.eq(page.__posts.length, 0)
+        await page.close()
+    })
+
+    await t.test('引擎站点被「本站停用」时接力照常进行（那是用户自己发起的搜索）', async () => {
+        const page = await openLanding('https://saucenao.com/#__image-search=tok4', relayValues('tok4', ['saucenao'], { disabledHosts: ['saucenao.com'] }))
+        await page.waitForURL('https://saucenao.com/search.php')
+        t.eq(page.__posts.length, 1)
+        await page.close()
+    })
+
+    await t.test('没人来取的暂存超过 10 分钟就清掉', async () => {
+        const stale = { dataUrl: 'data:image/png;base64,AA==', name: 'image.png', pending: ['iqdb'], t: Date.now() - 11 * 60 * 1000 }
+        const fresh = { ...stale, t: Date.now() }
+        const page = await openPage('basic.html', { values: { 'relay:old': stale, 'relay:new': fresh } })
+        const store = await gmStore(page)
+        t.eq(['relay:old' in store, 'relay:new' in store], [false, true])
         await page.close()
     })
 
