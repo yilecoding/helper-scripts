@@ -630,6 +630,18 @@ async function main() {
         await page.close()
     })
 
+    await t.test('对象存储常见的 binary/octet-stream 也当图片收（只拦 HTML / 文本这类明显不是图的）', async () => {
+        const { page, calls } = await openPrivate({
+            xhr: d => d.method === 'GET'
+                ? { status: 200, responseHeaders: 'content-type: binary/octet-stream\r\n', responseText: png(60, 40).toString('latin1') }
+                : defaultXhr(d),
+        })
+        const field = await uploadViaLens(page, calls, '#lan')
+        t.assert(field.body.equals(png(60, 40)))
+        t.assert(/filename="image\.png"\r\nContent-Type: image\/png/.test(field.headers), '按文件头认出 PNG：' + field.headers)
+        await page.close()
+    })
+
     await t.test('引擎返回错误：状态行写明哪个引擎、什么错，菜单不关', async () => {
         const { page } = await openPrivate({ xhr: d => ({ status: 500, responseText: 'oops' }) })
         await altRightClick(page, '#dataimg')

@@ -3,7 +3,7 @@
 // @name:zh-CN   以图搜图
 // @name:en      Image Search — Reverse Image Search from Any Image
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.11.05.9
+// @version      2025.11.05.10
 // @description  在网页图片上按住 Alt 点右键（或鼠标悬停按 S），弹出搜图菜单，一键用 Google Lens / Bing / Yandex / 百度识图 / SauceNAO / TinEye / IQDB / ascii2d / Trace.moe 搜这张图；本地、内网、canvas 图片自动改为上传。
 // @description:zh-CN  在网页图片上按住 Alt 点右键（或鼠标悬停按 S），弹出搜图菜单，一键用 Google Lens / Bing / Yandex / 百度识图 / SauceNAO / TinEye / IQDB / ascii2d / Trace.moe 搜这张图；本地、内网、canvas 图片自动改为上传。
 // @description:en  Alt + right-click any image (or hover it and press S) to pop up a reverse image search menu: Google Lens / Bing / Yandex / Baidu / SauceNAO / TinEye / IQDB / ascii2d / Trace.moe. Local, intranet and canvas images are uploaded instead.
@@ -508,15 +508,29 @@
      * 跨域响应转 Blob。正常是 responseType: 'blob' 直接给 Blob；老一些的管理器不认 responseType，
      * 只给 responseText —— 配合 overrideMimeType 的 x-user-defined，每个字符的低 8 位就是原字节。
      */
-    function responseToBlob(r, fallbackType) {
-        const type = (/^content-type:\s*([^;\r\n]+)/im.exec(r.responseHeaders || '') || [])[1] || fallbackType || '';
+    function responseToBlob(r) {
+        // 类型只认响应头：overrideMimeType 会连带改掉 Blob 自己的 type（变成 text/plain; charset=x-user-defined）
+        const type = (/^content-type:\s*([^;\r\n]+)/im.exec(r.responseHeaders || '') || [])[1] || '';
         const body = r.response;
-        if (body instanceof Blob) return body.type ? body : new Blob([body], { type });
+        if (body instanceof Blob) return new Blob([body], { type });
         if (body instanceof ArrayBuffer) return new Blob([body], { type });
         const text = typeof body === 'string' ? body : r.responseText || '';
         const bytes = new Uint8Array(text.length);
         for (let i = 0; i < text.length; i++) bytes[i] = text.charCodeAt(i) & 0xff;
         return new Blob([bytes], { type });
+    }
+
+    /** 按文件头认图片格式，认不出返回 ''。 */
+    async function sniffImageType(blob) {
+        const b = new Uint8Array(await blob.slice(0, 16).arrayBuffer());
+        const ascii = (from, to) => String.fromCharCode(...b.subarray(from, to));
+        if (b[0] === 0x89 && ascii(1, 4) === 'PNG') return 'image/png';
+        if (b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return 'image/jpeg';
+        if (ascii(0, 4) === 'GIF8') return 'image/gif';
+        if (ascii(0, 4) === 'RIFF' && ascii(8, 12) === 'WEBP') return 'image/webp';
+        if (ascii(0, 2) === 'BM') return 'image/bmp';
+        if (ascii(4, 8) === 'ftyp' && /^avi[fs]$/.test(ascii(8, 12))) return 'image/avif';
+        return '';
     }
 
     function sameOrigin(url) {
@@ -556,9 +570,14 @@
             if (r.status < 200 || r.status >= 300) throw new Error(`读取图片失败：HTTP ${r.status}`);
             blob = responseToBlob(r);
         }
-        // 要登录的图没带上 cookie 时，服务器常常 200 返回一个登录页
-        if (blob.type && !/^image\//i.test(blob.type) && blob.type !== 'application/octet-stream') {
-            throw new Error(`拿到的不是图片（${blob.type}），可能需要先登录`);
+        if (!/^image\//i.test(blob.type)) {
+            // 对象存储（S3 / OSS）常把图存成 binary/octet-stream，看文件头认出真实格式；
+            // 认不出、又明显是网页 / 文本的，多半是没带上 cookie 时服务器 200 返回的登录页
+            const sniffed = await sniffImageType(blob);
+            if (sniffed) blob = new Blob([blob], { type: sniffed });
+            else if (/^(text\/|application\/(json|xml|xhtml\+xml))/i.test(blob.type)) {
+                throw new Error(`拿到的不是图片（${blob.type}），可能需要先登录`);
+            }
         }
         if (!blob.size) throw new Error('图片是空的');
         if (blob.size > CONFIG.maxUploadBytes) {
