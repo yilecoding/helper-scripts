@@ -3,7 +3,7 @@
 // @name:zh-CN   以图搜图
 // @name:en      Image Search — Reverse Image Search from Any Image
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.11.05.10
+// @version      2025.11.07.11
 // @description  在网页图片上按住 Alt 点右键（或鼠标悬停按 S），弹出搜图菜单，一键用 Google Lens / Bing / Yandex / 百度识图 / SauceNAO / TinEye / IQDB / ascii2d / Trace.moe 搜这张图；本地、内网、canvas 图片自动改为上传。
 // @description:zh-CN  在网页图片上按住 Alt 点右键（或鼠标悬停按 S），弹出搜图菜单，一键用 Google Lens / Bing / Yandex / 百度识图 / SauceNAO / TinEye / IQDB / ascii2d / Trace.moe 搜这张图；本地、内网、canvas 图片自动改为上传。
 // @description:en  Alt + right-click any image (or hover it and press S) to pop up a reverse image search menu: Google Lens / Bing / Yandex / Baidu / SauceNAO / TinEye / IQDB / ascii2d / Trace.moe. Local, intranet and canvas images are uploaded instead.
@@ -65,7 +65,7 @@
 
         fetchTimeout: 30000,             // 取图片字节的超时（毫秒）
         uploadTimeout: 60000,            // 上传到引擎的超时
-        maxUploadBytes: 20 * 1024 * 1024, // 超过就不传了：各家上限都在 10～20 MB 上下，传了也是白等
+        maxUploadBytes: 20 * 1024 * 1024, // 超过就不传了（各家的上限都没有核实过，取个宽松值）
     };
 
     const enc = encodeURIComponent;
@@ -90,7 +90,7 @@
             noUpload: 'Bing 的上传接口没有核实，暂不支持' },
         { id: 'yandex', name: 'Yandex', defaultOn: true,
             url: u => 'https://yandex.com/images/search?rpt=imageview&url=' + enc(u),
-            noUpload: 'Yandex 的上传接口实测已停用' },
+            noUpload: 'Yandex 的上传接口实测只返回「服务建设中」，暂不支持' },
         { id: 'baidu', name: '百度识图', defaultOn: true,
             url: u => 'https://graph.baidu.com/pcpage/index?tpl_from=pc&queryImageUrl=' + enc(u),
             // 上传接口要页面脚本现算的 sdkParams 签名，自己拼请求会被拒（实测 status 1002 / Reject）；
@@ -116,7 +116,7 @@
             noUpload: 'ascii2d 的上传要 CSRF 令牌，还套着 Cloudflare 人机验证' },
         { id: 'tracemoe', name: 'Trace.moe（动画截图）', defaultOn: true,
             url: u => 'https://trace.moe/?url=' + enc(u),
-            noUpload: 'trace.moe 网页版没有可提交的上传表单' },
+            noUpload: 'trace.moe 的上传方式没有核实，暂不支持' },
     ];
 
     const canUpload = e => !!(e.upload || e.relay);

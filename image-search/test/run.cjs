@@ -529,7 +529,7 @@ async function main() {
             t.eq(btns.filter(b => !b.disabled).map(b => b.id), ['lens', 'baidu', 'saucenao', 'iqdb'])
             t.assert(btns.filter(b => b.disabled).every(b => b.reason.length > 4), '每个置灰的引擎都要有原因')
             const shown = await inMenu(page, root => root.querySelector('[data-engine="yandex"] .hint').textContent)
-            t.eq(shown, 'Yandex 的上传接口实测已停用', '原因要显示在菜单里，不能只放在 title 上')
+            t.eq(shown, 'Yandex 的上传接口实测只返回「服务建设中」，暂不支持', '原因要显示在菜单里，不能只放在 title 上')
             await page.close()
         })
     }
