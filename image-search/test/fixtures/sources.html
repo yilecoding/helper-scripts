@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>sources</title>
+<style>
+    /* 整页底纹：Alt + 右键空白处不应当把它当成图片 */
+    body { margin: 0; background: #fafafa url("https://img.example/64x64/page-bg.png"); }
+    .cell { position: absolute; width: 160px; height: 120px; }
+    .cell img { display: block; width: 160px; height: 120px; }
+    #srcset { left: 10px; top: 10px; }
+    #packed { left: 190px; top: 10px; }
+    #pic { left: 370px; top: 10px; }
+    #lazy { left: 550px; top: 10px; }
+    #bg { left: 730px; top: 10px; background: url('https://img.example/500x300/bg.png') center / cover; }
+    #covered { left: 10px; top: 150px; }
+    #covered .shade { position: absolute; inset: 0; background: transparent; }
+    #rel { left: 190px; top: 150px; }
+    #shadow { left: 370px; top: 150px; display: block; }
+    #comma { left: 550px; top: 150px; }
+    #blank { left: 730px; top: 150px; }
+    #spacer { left: 10px; top: 290px; }
+    #spacer .ball { position: absolute; inset: 0; width: 160px; height: 120px; }
+    #nopointer { left: 190px; top: 290px; }
+    #nopointer img { pointer-events: none; }
+</style>
+</head>
+<body>
+<!-- srcset 取最大的，不管书写顺序 -->
+<div class="cell" id="srcset"><img src="https://img.example/200x150/s.png"
+    srcset="https://img.example/200x150/s.png 200w, https://img.example/1600x1200/l.png 1600w, https://img.example/800x600/m.png 800w"
+    sizes="160px"></div>
+<!-- 压缩过的 HTML：逗号后没有空格 -->
+<div class="cell" id="packed"><img src="https://img.example/100x100/1x.png"
+    srcset="https://img.example/100x100/1x.png 1x,https://img.example/300x300/3x.png 3x,https://img.example/200x200/2x.png 2x"></div>
+<!-- <picture> 的 <source> 比 <img src> 大 -->
+<div class="cell" id="pic"><picture>
+    <source type="image/webp" srcset="https://img.example/1200x900/p-large.webp 1200w, https://img.example/600x450/p-mid.webp 600w">
+    <img src="https://img.example/300x200/p-small.png">
+</picture></div>
+<!-- 懒加载：src 是占位图 -->
+<div class="cell" id="lazy"><img
+    src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"
+    data-src="https://img.example/640x480/lazy.png"></div>
+<!-- 背景图 -->
+<div class="cell" id="bg"></div>
+<!-- 图片上盖了一层透明壳（防盗图常见做法），事件 target 是壳 -->
+<div class="cell" id="covered"><img src="https://img.example/400x300/under.png"><div class="shade"></div></div>
+<!-- 相对地址 + #hash -->
+<div class="cell" id="rel"><img src="/300x200/rel.png#frag"></div>
+<!-- open shadow DOM 里的图 -->
+<x-card class="cell" id="shadow"></x-card>
+<!-- URL 自带逗号（Cloudinary 风格） -->
+<div class="cell" id="comma"><img src="https://img.example/c_fill,w_400/x.png"
+    srcset="https://img.example/c_fill,w_800/x.png 800w, https://img.example/c_fill,w_1600/x.png 1600w"></div>
+<div class="cell" id="blank"></div>
+<!-- Flickr 的做法：照片上面盖一张拉伸的 1×1 透明图（spaceball.gif），右键另存只能存到它 -->
+<div class="cell" id="spacer"><img src="https://img.example/1024x768/photo.png"><img class="ball" src="https://img.example/1x1/spaceball.gif"></div>
+<!-- 图片本身 pointer-events: none（有些站这样防拖拽），elementsFromPoint 会跳过它 -->
+<div class="cell" id="nopointer"><img src="https://img.example/600x400/nopointer.png"></div>
+<script>
+    customElements.define('x-card', class extends HTMLElement {
+        constructor() {
+            super()
+            this.attachShadow({ mode: 'open' }).innerHTML =
+                '<style>img{display:block;width:160px;height:120px}</style><img src="https://img.example/350x250/in-shadow.png">'
+        }
+    })
+</script>
+</body>
+</html>

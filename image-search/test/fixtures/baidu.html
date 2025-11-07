@@ -1,0 +1,24 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>百度识图（替身）</title></head>
+<body>
+<div id="app"></div>
+<script>
+    // 模仿 React 页面：脚本跑起来时输入框还没渲染
+    window.got = { files: [], urls: [] }
+    setTimeout(() => {
+        document.getElementById('app').innerHTML =
+            '<input type="text" class="graph-d20-search-wrapper-input" placeholder="在此处粘贴图片网址">' +
+            '<input type="file" class="general-upload-file" name="file">'
+        const text = document.querySelector('.graph-d20-search-wrapper-input')
+        text.addEventListener('keydown', e => { if (e.keyCode === 13) window.got.urls.push(text.value) })
+        const file = document.querySelector('.general-upload-file')
+        file.addEventListener('change', async () => {
+            const f = file.files[0]
+            const bytes = Array.from(new Uint8Array(await f.arrayBuffer()))
+            window.got.files.push({ name: f.name, type: f.type, bytes })
+        })
+    }, 300)
+</script>
+</body>
+</html>
