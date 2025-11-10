@@ -17,9 +17,23 @@ const FIXTURES = path.join(__dirname, 'fixtures')
 const t = h.createRunner('site-timer')
 let env
 
+/** 8 bit 单声道静音 WAV。<video> 也能放纯音频，用它当「正在播放的视频」，不用带二进制 fixture。 */
+function silentWav(seconds) {
+    const rate = 8000
+    const n = rate * seconds
+    const buf = Buffer.alloc(44 + n, 0x80) // 8 bit PCM 的静音是 0x80
+    buf.write('RIFF', 0); buf.writeUInt32LE(36 + n, 4); buf.write('WAVE', 8)
+    buf.write('fmt ', 12); buf.writeUInt32LE(16, 16); buf.writeUInt16LE(1, 20); buf.writeUInt16LE(1, 22)
+    buf.writeUInt32LE(rate, 24); buf.writeUInt32LE(rate, 28); buf.writeUInt16LE(1, 32); buf.writeUInt16LE(8, 34)
+    buf.write('data', 36); buf.writeUInt32LE(n, 40)
+    return buf
+}
+const WAV = silentWav(30)
+
 /** 任意 https 假域名的请求都用 fixtures 应答：路径对应文件名，`/` 回 index.html。 */
 async function serveFixtures(route) {
     const url = new URL(route.request().url())
+    if (url.pathname.endsWith('.wav')) return route.fulfill({ contentType: 'audio/wav', body: WAV })
     const name = url.pathname === '/' ? 'index.html' : path.basename(url.pathname)
     const fp = path.join(FIXTURES, name)
     if (!fs.existsSync(fp)) return route.fulfill({ status: 404, body: 'not found' })
@@ -206,6 +220,49 @@ async function main() {
         near(await stored(page), 15, '下一个 15 秒之前不再写')
         await page.reload()
         near(await stored(page), 21, '刷新前落盘')
+        await page.context().close()
+    })
+
+    console.log('媒体')
+    /** 开始播放并等到真的在播（paused=false 不够，要等 playing）。 */
+    async function play(page, sel = '#v') {
+        await page.$eval(sel, v => new Promise((resolve, reject) => {
+            v.addEventListener('playing', resolve, { once: true })
+            v.play().catch(reject)
+        }))
+    }
+    await t.test('有声音的视频在播：没有输入也算', async () => {
+        const page = await open(SITE + 'video.html')
+        await play(page)
+        await run(page, 10 * 60000)
+        await pagehide(page)
+        near(await stored(page), 600)
+        await page.context().close()
+    })
+    await t.test('静音视频不顶替空闲判定', async () => {
+        const page = await open(SITE + 'video.html')
+        await page.$eval('#v', v => { v.muted = true })
+        await play(page)
+        await run(page, 10 * 60000)
+        await pagehide(page)
+        near(await stored(page), 300)
+        await page.context().close()
+    })
+    await t.test('窗口失焦但视频在播（副屏看视频）照算；标签页切走不算；暂停后回到空闲判定', async () => {
+        const page = await open(SITE + 'video.html')
+        await play(page)
+        await setFocus(page, false)
+        await run(page, 60000)
+        await pagehide(page)
+        near(await stored(page), 60, '失焦 + 播放')
+        await setVisible(page, false)
+        await run(page, 60000)
+        near(await stored(page), 60, '切走后不算')
+        await setVisible(page, true)
+        await page.$eval('#v', v => v.pause())
+        await run(page, 60000)
+        await pagehide(page)
+        near(await stored(page), 60, '失焦 + 暂停')
         await page.context().close()
     })
 

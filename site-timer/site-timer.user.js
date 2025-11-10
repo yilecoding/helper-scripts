@@ -3,7 +3,7 @@
 // @name:zh-CN   网站使用时长统计与限制
 // @name:en      Site Timer — Track and Limit Time Spent on Websites
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.11.10.2
+// @version      2025.11.10.3
 // @description  统计每个网站「真正在用」的时间（标签页可见、窗口聚焦、最近有操作，播放中的视频也算），按主域名归并，同一站点开多个标签只算一份；可给站点设每日上限，快到时提醒、超时全屏遮罩；统计面板看今天 / 近 7 天排行，导出 CSV。
 // @description:zh-CN  统计每个网站「真正在用」的时间（标签页可见、窗口聚焦、最近有操作，播放中的视频也算），按主域名归并，同一站点开多个标签只算一份；可给站点设每日上限，快到时提醒、超时全屏遮罩；统计面板看今天 / 近 7 天排行，导出 CSV。
 // @description:en  Tracks the time you actually spend on each website (tab visible, window focused, recent input, or a video playing), grouped by registrable domain and counted once no matter how many tabs are open. Set a daily limit per site to get a heads-up near the end and a full-screen block when time is up. A stats panel ranks sites for today and the last 7 days and exports CSV.
@@ -133,13 +133,28 @@
             // 切回来、点回窗口本身就是「在用」，不等下一次输入
             document.addEventListener('visibilitychange', () => { if (!document.hidden) mark(); });
             window.addEventListener('focus', mark);
+            // 媒体事件不冒泡，同样挂捕获；开始播放不算「输入」，只唤醒计时
+            document.addEventListener('playing', () => { if (this.onWake) this.onWake(); }, true);
         },
 
-        /** 标签页可见、窗口聚焦、最近有输入。 */
+        /**
+         * 标签页可见，并且：窗口聚焦且最近有输入，或者有带声音的媒体在播放。
+         *
+         * 放视频时不碰键鼠是常态，所以媒体播放顶替空闲判定；也顶替焦点判定 ——
+         * 副屏放着视频、主屏在别的窗口打字，这段时间确实在看这个站。
+         * 静音的不算：信息流里自动播放的静音视频、页面背景视频会让空闲永远不触发。
+         */
         isActive(now) {
             if (document.visibilityState !== 'visible') return false;
-            if (!document.hasFocus()) return false;
-            return now - this.lastInput <= CONFIG.idleMinutes * 60000;
+            if (document.hasFocus() && now - this.lastInput <= CONFIG.idleMinutes * 60000) return true;
+            return this.mediaPlaying();
+        },
+
+        mediaPlaying() {
+            for (const m of document.querySelectorAll('video, audio')) {
+                if (!m.paused && !m.ended && !m.muted && m.volume > 0) return true;
+            }
+            return false;
         },
     };
 
@@ -165,7 +180,8 @@
             document.addEventListener('visibilitychange', () => {
                 if (document.hidden) this.stop();
             });
-            window.addEventListener('blur', () => this.stop());
+            // 失焦：先把失焦前这段记上；还在放视频的话接着算
+            window.addEventListener('blur', () => { this.stop(); this.resume(); });
             // pagehide 比 beforeunload / unload 可靠：bfcache、移动端切走都会触发
             window.addEventListener('pagehide', () => this.stop());
             window.addEventListener('pageshow', () => this.resume());
