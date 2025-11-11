@@ -62,14 +62,23 @@ async function newContext(opts = {}) {
         Object.defineProperty(document, 'hidden', { configurable: true, get: () => vis() !== 'visible' })
         const real = Document.prototype.hasFocus
         document.hasFocus = () => (window.__focus === undefined ? real.call(document) : window.__focus)
+        // window.__crash = true 之后关页面，模拟崩溃：先于脚本注册的捕获监听把卸载相关事件全吞掉
+        const swallow = e => { if (window.__crash) e.stopImmediatePropagation() }
+        for (const type of ['pagehide', 'blur']) window.addEventListener(type, swallow, true)
+        document.addEventListener('visibilitychange', swallow, true)
     })
-    if (opts.time !== null) await context.clock.install({ time: opts.time || T0 })
+    if (opts.time !== null) {
+        // 装上就停住：不停的话页面加载期间假时钟按真实速度走，脚本启动时刻每次不同，秒数对不齐
+        const time = opts.time || T0
+        await context.clock.install({ time: time - 1000 })
+        await context.clock.pauseAt(time)
+    }
     return context
 }
 
 /**
  * 在 context 里开页面（没给就新建一个）。返回的 page 带 __logs（控制台输出）。
- * 装了假时钟的话，打开后把时间停在当前时刻：之后只有 runFor 才会走，用例里的秒数是确定的。
+ * 假时钟是停着的，只有 runFor 才会走，用例里的秒数是确定的。
  */
 async function open(url, opts = {}) {
     const context = opts.context || (await newContext(opts))
@@ -78,7 +87,6 @@ async function open(url, opts = {}) {
     page.on('console', m => page.__logs.push(m.text()))
     await h.install(page, SCRIPT, { values: opts.values })
     await page.goto(url)
-    if (opts.time !== null) await page.clock.pauseAt(await page.evaluate(() => Date.now() + 1))
     return page
 }
 
@@ -263,6 +271,61 @@ async function main() {
         await run(page, 60000)
         await pagehide(page)
         near(await stored(page), 60, '失焦 + 暂停')
+        await page.context().close()
+    })
+
+    console.log('多标签')
+    /** 同一个 context 里开两个同源标签页：GM 存储（localStorage）和假时钟都共享，和真实的多标签一样。 */
+    async function twoTabs(url = SITE) {
+        const context = await newContext()
+        const a = await open(url, { context })
+        const b = await open(url, { context })
+        return { context, a, b }
+    }
+    await t.test('同站两个标签都可见且聚焦：只算一份', async () => {
+        const { context, a, b } = await twoTabs()
+        await run(a, 60000)
+        await pagehide(a)
+        await pagehide(b)
+        near(await stored(a), 60)
+        await context.close()
+    })
+    await t.test('持有租约的标签页切走：另一个立即接手，总时长连续', async () => {
+        const { context, a, b } = await twoTabs()
+        await run(a, 30000)
+        await setVisible(a, false) // a 先开、先拿到租约
+        await run(a, 30000)
+        await pagehide(b)
+        near(await stored(a), 60, '交接时不丢也不重')
+        await setVisible(b, false)
+        await setVisible(a, true)
+        await run(a, 30000)
+        await pagehide(a)
+        near(await stored(a), 90, '再交回来')
+        await context.close()
+    })
+    await t.test('持有者崩溃（来不及 pagehide）：租约过期后另一个接手', async () => {
+        const { context, a, b } = await twoTabs()
+        await run(a, 20000) // 15 秒时 a 落过一次盘
+        await a.evaluate(() => { window.__crash = true })
+        await a.close() // 卸载事件被吞掉，租约和没落盘的时长都留不下来
+        await run(b, 60000)
+        await pagehide(b)
+        // a 在 20 秒时最后一次续约，35 秒过期，b 接手算到 80 秒：a 落盘的 15 + b 的 45；
+        // a 没落盘的 5 秒随崩溃丢了。等租约过期的这 15 秒也没算 —— 不能两边都算
+        near(await stored(b), 60)
+        await context.close()
+    })
+    await t.test('竞争：租约被别的标签页覆盖后立即停算', async () => {
+        const page = await open(SITE)
+        await run(page, 10000)
+        // 模拟另一个标签页同时抢租约、并且它的写入后到（存储收敛成它的 id）
+        await page.evaluate(k => localStorage.setItem('__gm:' + k, JSON.stringify({ id: 'other-tab', ts: Date.now() })), 'lease:' + DOMAIN)
+        await run(page, 10000)
+        await pagehide(page)
+        near(await stored(page), 10, '被抢之后的 10 秒不算')
+        const lease = await page.evaluate(k => JSON.parse(localStorage.getItem('__gm:' + k)), 'lease:' + DOMAIN)
+        t.eq(lease.id, 'other-tab', '不能把别人的租约删掉')
         await page.context().close()
     })
 
