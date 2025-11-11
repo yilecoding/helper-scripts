@@ -116,6 +116,14 @@ function stored(page, day = TODAY, domain = DOMAIN) {
     return page.evaluate(k => JSON.parse(localStorage.getItem('__gm:' + k) || '0'), `t:${day}:${domain}`)
 }
 
+/** 开始播放并等到真的在播（paused=false 不够，要等 playing）。 */
+async function play(page, sel = '#v') {
+    await page.$eval(sel, v => new Promise((resolve, reject) => {
+        v.addEventListener('playing', resolve, { once: true })
+        v.play().catch(reject)
+    }))
+}
+
 /** 毫秒数约等于 sec 秒（tick 是 1 秒粒度，允许差 1 秒）。 */
 function near(ms, sec, msg) {
     t.assert(Math.abs(ms - sec * 1000) <= 1000, `${msg || ''} 期望约 ${sec}s，实际 ${ms / 1000}s`)
@@ -232,13 +240,6 @@ async function main() {
     })
 
     console.log('媒体')
-    /** 开始播放并等到真的在播（paused=false 不够，要等 playing）。 */
-    async function play(page, sel = '#v') {
-        await page.$eval(sel, v => new Promise((resolve, reject) => {
-            v.addEventListener('playing', resolve, { once: true })
-            v.play().catch(reject)
-        }))
-    }
     await t.test('有声音的视频在播：没有输入也算', async () => {
         const page = await open(SITE + 'video.html')
         await play(page)
@@ -271,6 +272,35 @@ async function main() {
         await run(page, 60000)
         await pagehide(page)
         near(await stored(page), 60, '失焦 + 暂停')
+        await page.context().close()
+    })
+
+    console.log('跨天与睡眠')
+    await t.test('跨本地零点：一段时间切到两天', async () => {
+        const page = await open(SITE, { time: new Date('2026-10-29T23:59:30+08:00').getTime() })
+        await run(page, 60000)
+        await pagehide(page)
+        near(await stored(page, '2026-10-29'), 30, '零点前')
+        near(await stored(page, '2026-10-30'), 30, '零点后')
+        await page.context().close()
+    })
+    await t.test('睡眠（定时器停了几小时）：醒来那一跳不计入，之后照常', async () => {
+        const page = await open(SITE + 'video.html')
+        await play(page) // 有声视频在播，醒来时仍算「在用」，只有跳变检测能挡住
+        await run(page, 10000)
+        await page.clock.fastForward(2 * 3600000) // 跳过去，期间到期的定时器最多触发一次 = 醒来后的第一次 tick
+        await run(page, 10000)
+        await pagehide(page)
+        near(await stored(page), 20)
+        t.assert(page.__logs.some(l => l.includes('判定为睡眠')), page.__logs.join('\n'))
+        await page.context().close()
+    })
+    await t.test('睡眠后先来的是切走事件（锁屏）：同样不计入', async () => {
+        const page = await open(SITE)
+        await run(page, 10000)
+        await page.clock.setSystemTime(T0 + 10000 + 3 * 3600000) // 只改时间，一个定时器都不触发
+        await setVisible(page, false)
+        near(await stored(page), 10)
         await page.context().close()
     })
 

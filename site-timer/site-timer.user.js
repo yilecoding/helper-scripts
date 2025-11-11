@@ -3,7 +3,7 @@
 // @name:zh-CN   网站使用时长统计与限制
 // @name:en      Site Timer — Track and Limit Time Spent on Websites
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.11.11.4
+// @version      2025.11.11.5
 // @description  统计每个网站「真正在用」的时间（标签页可见、窗口聚焦、最近有操作，播放中的视频也算），按主域名归并，同一站点开多个标签只算一份；可给站点设每日上限，快到时提醒、超时全屏遮罩；统计面板看今天 / 近 7 天排行，导出 CSV。
 // @description:zh-CN  统计每个网站「真正在用」的时间（标签页可见、窗口聚焦、最近有操作，播放中的视频也算），按主域名归并，同一站点开多个标签只算一份；可给站点设每日上限，快到时提醒、超时全屏遮罩；统计面板看今天 / 近 7 天排行，导出 CSV。
 // @description:en  Tracks the time you actually spend on each website (tab visible, window focused, recent input, or a video playing), grouped by registrable domain and counted once no matter how many tabs are open. Set a daily limit per site to get a heads-up near the end and a full-screen block when time is up. A stats panel ranks sites for today and the last 7 days and exports CSV.
@@ -41,6 +41,7 @@
         idleMinutes: 5,         // 这么久没有键盘 / 鼠标 / 滚动 / 触摸就算离开了
         leaseRenewMs: 5000,     // 计时的标签页每隔这么久续一次租约
         leaseTtlMs: 15000,      // 租约这么久没续就算持有者没了（崩溃、被冻结），别的标签页可以接手
+        maxGapMs: 30000,        // 两次 tick 之间隔了这么久：电脑睡过了（或页面被冻结），这段不算
     };
 
     // =========================================================================
@@ -269,10 +270,29 @@
             Lease.release();
         },
 
+        /**
+         * 记一段 [from, to)。跨本地零点的按零点切开分别记到两天。
+         *
+         * 睡眠：合上盖子时定时器不跑，醒来后第一次 tick（或者先来的 blur / visibilitychange）
+         * 看到的「上次 tick」是几小时前。正常 tick 间隔是 1 秒，所以间隔突然超过 maxGapMs
+         * 就整段丢掉。判定放在这里而不是 tick 里：醒来后先触发的往往是锁屏解锁带来的
+         * 失焦 / 可见性事件，走的是 stop()，不经过 tick。
+         * 系统时间往回调（to < from）同样整段丢掉。
+         */
         add(from, to) {
             if (to <= from) return;
-            const day = dayKey(from);
-            this.pending.set(day, (this.pending.get(day) || 0) + (to - from));
+            if (to - from > CONFIG.maxGapMs) {
+                console.info(TAG, `间隔 ${Math.round((to - from) / 1000)} 秒，判定为睡眠 / 冻结，不计入`);
+                return;
+            }
+            while (from < to) {
+                const midnight = new Date(from);
+                midnight.setHours(24, 0, 0, 0);     // 下一个本地零点；夏令时那天也对
+                const end = Math.min(to, midnight.getTime());
+                const day = dayKey(from);
+                this.pending.set(day, (this.pending.get(day) || 0) + (end - from));
+                from = end;
+            }
         },
 
         flush() {
