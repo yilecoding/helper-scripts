@@ -57,7 +57,11 @@ async function newContext(opts = {}) {
     const context = await env.browser.newContext({ timezoneId: 'Asia/Shanghai' })
     await context.route(/^https:\/\//, serveFixtures)
     await context.addInitScript(() => {
-        const vis = () => window.__vis || 'visible'
+        // 没覆盖时要回落到真实值，不能写死 'visible'：刷新 / 关页面时浏览器会派发真的
+        // visibilitychange(hidden)，写死的话脚本读到「可见」，把它当成切回来，将卸载的页面又抢走租约，
+        // 刷新出来的新页面要等租约过期才能计时（测试里实际撞到过，是测试替身的错，不是脚本的）
+        const realVis = Object.getOwnPropertyDescriptor(Document.prototype, 'visibilityState').get
+        const vis = () => window.__vis || realVis.call(document)
         Object.defineProperty(document, 'visibilityState', { configurable: true, get: vis })
         Object.defineProperty(document, 'hidden', { configurable: true, get: () => vis() !== 'visible' })
         const real = Document.prototype.hasFocus
@@ -115,6 +119,18 @@ function pagehide(page) {
 function stored(page, day = TODAY, domain = DOMAIN) {
     return page.evaluate(k => JSON.parse(localStorage.getItem('__gm:' + k) || '0'), `t:${day}:${domain}`)
 }
+
+/** 持续「在用」ms 毫秒：每分钟动一下鼠标，不触发空闲判定。 */
+async function use(page, ms) {
+    for (let left = ms, i = 0; left > 0; left -= 60000, i++) {
+        await page.mouse.move(100 + (i % 2) * 50, 100)
+        await run(page, Math.min(60000, left))
+    }
+}
+
+/** 遮罩 / 提醒条（shadow DOM 是 open 的，locator 能穿进去）。 */
+const overlay = page => page.locator('site-timer-ui .overlay')
+const toast = page => page.locator('site-timer-ui .toast')
 
 /** 开始播放并等到真的在播（paused=false 不够，要等 playing）。 */
 async function play(page, sel = '#v') {
@@ -356,6 +372,105 @@ async function main() {
         near(await stored(page), 10, '被抢之后的 10 秒不算')
         const lease = await page.evaluate(k => JSON.parse(localStorage.getItem('__gm:' + k)), 'lease:' + DOMAIN)
         t.eq(lease.id, 'other-tab', '不能把别人的租约删掉')
+        await page.context().close()
+    })
+
+    console.log('每日上限')
+    await t.test('剩 5 分钟时右下角提醒一次，关掉后不再弹', async () => {
+        const page = await open(SITE, { values: { limits: { [DOMAIN]: 10 } } })
+        await use(page, 4 * 60000)
+        t.eq(await toast(page).count(), 0, '还剩 6 分钟时不提醒')
+        await use(page, 61000)
+        t.assert((await toast(page).innerText()).includes('今天还剩 5 分钟'), await toast(page).innerText())
+        await page.click('site-timer-ui .toast [data-act=close]')
+        await use(page, 60000)
+        t.eq(await toast(page).count(), 0, '同一个上限只提醒一次')
+        await page.reload()
+        await use(page, 10000)
+        t.eq(await toast(page).count(), 0, '刷新后也不再提醒')
+        await page.context().close()
+    })
+    await t.test('到上限：全屏遮罩、暂停视频、停止计时；遮罩期间页面再起播也压回去', async () => {
+        const page = await open(SITE + 'video.html', { values: { limits: { [DOMAIN]: 1 } } })
+        await play(page)
+        await play(page, '#a')
+        await run(page, 61000)
+        await overlay(page).waitFor()
+        t.assert((await overlay(page).innerText()).includes('今日已用 1 分钟'), await overlay(page).innerText())
+        t.eq(await page.$$eval('video, audio', ms => ms.map(m => m.paused)), [true, true], '视频音频都暂停')
+        await page.$eval('#v', v => v.play().catch(() => {}))
+        await page.waitForFunction(() => document.querySelector('#v').paused)
+        await run(page, 60000)
+        near(await stored(page), 60, '遮罩期间不计时')
+        t.eq(await page.evaluate(() => document.documentElement.style.overflow), 'hidden', '页面不能滚')
+        await page.context().close()
+    })
+    await t.test('「再给 5 分钟」：收起遮罩、恢复计时，5 分钟后再遮；每天最多 3 次', async () => {
+        const page = await open(SITE + 'video.html', { values: { limits: { [DOMAIN]: 1 } } })
+        await play(page)
+        await run(page, 61000)
+        await overlay(page).waitFor()
+        t.assert((await page.locator('site-timer-ui [data-act=extend]').innerText()).includes('还能 3 次'))
+        for (let i = 1; i <= 3; i++) {
+            await page.click('site-timer-ui [data-act=extend]')
+            t.eq(await overlay(page).count(), 0, `第 ${i} 次再给后收起`)
+            t.eq(await page.evaluate(() => document.documentElement.style.overflow), '', '恢复滚动')
+            await play(page)
+            await run(page, 4 * 60000)
+            t.eq(await overlay(page).count(), 0, '再给的 5 分钟还没用完')
+            t.eq(await toast(page).count(), 0, '再给的 5 分钟里不弹「还剩 5 分钟」')
+            await run(page, 61000)
+            await overlay(page).waitFor()
+            t.assert((await overlay(page).innerText()).includes(`今日已用 ${1 + 5 * i} 分钟`), await overlay(page).innerText())
+        }
+        t.assert(await page.locator('site-timer-ui [data-act=extend]').isDisabled(), '用完 3 次后按钮禁用')
+        await page.reload()
+        await overlay(page).waitFor()
+        t.assert(await page.locator('site-timer-ui [data-act=extend]').isDisabled(), '刷新后次数仍在')
+        await page.context().close()
+    })
+    await t.test('「今天不再提醒」：收起后接着计时不再遮，刷新也不遮；第二天恢复', async () => {
+        const page = await open(SITE, {
+            time: new Date('2026-10-29T23:00:00+08:00').getTime(),
+            values: {
+                limits: { [DOMAIN]: 30 },
+                [`t:${TODAY}:${DOMAIN}`]: 40 * 60000,
+                [`t:2026-10-30:${DOMAIN}`]: 40 * 60000, // 预置第二天也已超限，零点一过就该遮
+            },
+        })
+        await overlay(page).waitFor() // 已经超了：一打开就遮
+        await page.click('site-timer-ui [data-act=quiet]')
+        t.eq(await overlay(page).count(), 0)
+        await use(page, 5 * 60000)
+        t.eq(await overlay(page).count(), 0, '不再遮')
+        await page.reload()
+        await use(page, 10000)
+        t.eq(await overlay(page).count(), 0, '刷新后也不遮')
+        await pagehide(page)
+        near(await stored(page), 40 * 60 + 5 * 60 + 10, '照常计时')
+        await use(page, 55 * 60000) // 过零点
+        await overlay(page).waitFor()
+        t.assert((await overlay(page).innerText()).includes('今日已用 40 分钟'), '第二天按第二天的用量重新遮')
+        await page.context().close()
+    })
+    await t.test('菜单设上限：输入分钟数保存，留空取消；改了上限立即生效', async () => {
+        const page = await open(SITE, { values: { [`t:${TODAY}:${DOMAIN}`]: 20 * 60000 } })
+        t.assert((await h.gm(page)).menu.some(m => m.includes('给当前站点设上限（example.com）')))
+        // 多个 once 监听会一起收到同一个对话框，按顺序排队应答
+        const answers = []
+        page.on('dialog', d => answers.shift()(d))
+        answers.push(d => d.accept('15'))
+        await h.menu(page, '给当前站点设上限')
+        t.eq(await page.evaluate(() => JSON.parse(localStorage.getItem('__gm:limits'))), { [DOMAIN]: 15 })
+        await overlay(page).waitFor()
+        answers.push(d => d.accept(''))
+        await h.menu(page, '给当前站点设上限')
+        t.eq(await page.evaluate(() => JSON.parse(localStorage.getItem('__gm:limits'))), {})
+        t.eq(await overlay(page).count(), 0, '取消上限后收起遮罩')
+        answers.push(d => d.accept('abc'), d => d.accept()) // 第二个是「不是有效的分钟数」
+        await h.menu(page, '给当前站点设上限')
+        t.eq(await page.evaluate(() => JSON.parse(localStorage.getItem('__gm:limits'))), {}, '非法输入不保存')
+        t.eq(h.errors(page).map(String), [])
         await page.context().close()
     })
 

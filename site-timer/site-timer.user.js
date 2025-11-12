@@ -3,7 +3,7 @@
 // @name:zh-CN   网站使用时长统计与限制
 // @name:en      Site Timer — Track and Limit Time Spent on Websites
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.11.11.5
+// @version      2025.11.12.6
 // @description  统计每个网站「真正在用」的时间（标签页可见、窗口聚焦、最近有操作，播放中的视频也算），按主域名归并，同一站点开多个标签只算一份；可给站点设每日上限，快到时提醒、超时全屏遮罩；统计面板看今天 / 近 7 天排行，导出 CSV。
 // @description:zh-CN  统计每个网站「真正在用」的时间（标签页可见、窗口聚焦、最近有操作，播放中的视频也算），按主域名归并，同一站点开多个标签只算一份；可给站点设每日上限，快到时提醒、超时全屏遮罩；统计面板看今天 / 近 7 天排行，导出 CSV。
 // @description:en  Tracks the time you actually spend on each website (tab visible, window focused, recent input, or a video playing), grouped by registrable domain and counted once no matter how many tabs are open. Set a daily limit per site to get a heads-up near the end and a full-screen block when time is up. A stats panel ranks sites for today and the last 7 days and exports CSV.
@@ -14,6 +14,7 @@
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_deleteValue
+// @grant        GM_registerMenuCommand
 // @license      CC BY-NC-SA
 // @run-at       document-end
 // @homepageURL  https://github.com/yilecoding/helper-scripts
@@ -42,6 +43,10 @@
         leaseRenewMs: 5000,     // 计时的标签页每隔这么久续一次租约
         leaseTtlMs: 15000,      // 租约这么久没续就算持有者没了（崩溃、被冻结），别的标签页可以接手
         maxGapMs: 30000,        // 两次 tick 之间隔了这么久：电脑睡过了（或页面被冻结），这段不算
+        warnMinutes: 5,         // 离上限还剩这么多分钟时右下角提醒一次
+        extendMinutes: 5,       // 遮罩上「再给 N 分钟」
+        maxExtends: 3,          // 每个站点每天最多再给几次
+        toastMs: 10000,         // 提醒条显示多久
     };
 
     // =========================================================================
@@ -105,6 +110,26 @@
         },
         addTime(day, domain, ms) {
             GM_setValue(this.timeKey(day, domain), this.getTime(day, domain) + ms);
+        },
+
+        /** 每日上限：{ 站点: 分钟 }。全局一个键，只在用户设置时写，不存在并发写。 */
+        getLimits() {
+            return GM_getValue('limits', {});
+        },
+        setLimit(domain, minutes) {
+            const limits = this.getLimits();
+            if (minutes > 0) limits[domain] = minutes;
+            else delete limits[domain];
+            GM_setValue('limits', limits);
+        },
+
+        /** 当天的限制状态：再给了几次、是否「今天不再提醒」、已对哪个上限提醒过。和时长一样按天 + 站点一个键。 */
+        flagKey: (day, domain) => `f:${day}:${domain}`,
+        getFlags(day, domain) {
+            return { extends: 0, quiet: false, warned: 0, ...GM_getValue(this.flagKey(day, domain), {}) };
+        },
+        setFlags(day, domain, flags) {
+            GM_setValue(this.flagKey(day, domain), flags);
         },
     };
 
@@ -239,7 +264,7 @@
          * 已经在算的时候不能重置 lastTick，否则把上次 tick 到现在这段丢了。
          */
         resume() {
-            if (this.counting) return;
+            if (this.counting || Limit.blocked) return;
             const now = Date.now();
             if (!Activity.isActive(now) || !Lease.acquire(now)) return;
             this.counting = true;
@@ -248,7 +273,8 @@
 
         tick() {
             const now = Date.now();
-            const counting = Activity.isActive(now) && Lease.acquire(now);
+            // 遮罩挡着的时候用不了这个站，不算
+            const counting = !Limit.blocked && Activity.isActive(now) && Lease.acquire(now);
             if (counting && this.counting) this.add(this.lastTick, now);
             if (this.counting && !counting) {
                 // 刚停下：可能是不在用了，也可能是租约被别的标签页抢走 —— 都先把攒的写掉
@@ -258,6 +284,12 @@
             this.counting = counting;
             this.lastTick = now;
             if (now - this.lastFlush >= CONFIG.flushMs) this.flush();
+            Limit.check(now);
+        },
+
+        /** 今天在本站已用的毫秒数：已落盘的 + 自己内存里还没落盘的。 */
+        usedMs(day) {
+            return Store.getTime(day, DOMAIN) + (this.pending.get(day) || 0);
         },
 
         /** 页面隐藏 / 失焦 / 卸载：先把这一段补记上（事件可能夹在两次 tick 之间），再落盘、交出租约。 */
@@ -303,6 +335,192 @@
     };
 
     // =========================================================================
+    // 界面（shadow DOM）
+    // =========================================================================
+
+    /**
+     * 提醒条、遮罩、统计面板都挂在同一个宿主元素的 shadow root 里：页面样式进不来，
+     * 我们的样式也漏不出去。宿主挂在 <html> 下而不是 <body>，有的站点会整体替换 body。
+     */
+    const UI = {
+        host: null,
+        root: null,
+
+        mount() {
+            if (!this.host) {
+                this.host = document.createElement('site-timer-ui');
+                this.root = this.host.attachShadow({ mode: 'open' });
+                this.root.innerHTML = `<style>${UI_CSS}</style>`;
+            }
+            if (!this.host.isConnected) document.documentElement.appendChild(this.host);
+            return this.root;
+        },
+
+        el(html) {
+            const t = document.createElement('template');
+            t.innerHTML = html.trim();
+            return t.content.firstElementChild;
+        },
+    };
+
+    const UI_CSS = `
+        :host { all: initial; }
+        * { box-sizing: border-box; }
+        .toast, .overlay, .card { font: 14px/1.5 system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; color: #1f2328; }
+        .toast {
+            position: fixed; right: 16px; bottom: 16px; z-index: 2147483646; max-width: 320px;
+            display: flex; gap: 12px; align-items: flex-start; padding: 12px 14px;
+            background: #fff8e1; border: 1px solid #f0c36d; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,.15);
+        }
+        .toast button { all: unset; cursor: pointer; color: #8a6d3b; font-size: 16px; line-height: 1; }
+        .overlay {
+            position: fixed; inset: 0; z-index: 2147483647; display: flex; align-items: center; justify-content: center;
+            background: rgba(20, 22, 26, .92); backdrop-filter: blur(6px);
+        }
+        .overlay .card { background: #fff; border-radius: 12px; padding: 28px 32px; width: min(420px, calc(100vw - 32px)); text-align: center; }
+        .overlay h2 { margin: 0 0 8px; font-size: 22px; }
+        .overlay p { margin: 0 0 20px; color: #59636e; }
+        .actions { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+        .btn { all: unset; cursor: pointer; padding: 8px 14px; border-radius: 6px; border: 1px solid #d1d9e0; background: #f6f8fa; }
+        .btn.primary { background: #1f6feb; border-color: #1f6feb; color: #fff; }
+        .btn[disabled] { opacity: .45; cursor: not-allowed; }
+    `;
+
+    // =========================================================================
+    // 每日上限
+    // =========================================================================
+
+    const Limit = {
+        blocked: false,
+        overlay: null,
+        toast: null,
+        savedOverflow: null,
+
+        init() {
+            // 遮罩期间页面自己再起播（自动连播、快捷键）也压回去；play 不冒泡，挂捕获
+            document.addEventListener('play', e => {
+                if (this.blocked && e.target instanceof HTMLMediaElement) e.target.pause();
+            }, true);
+            // 遮罩期间吞掉页面的键盘快捷键（空格翻页、播放器快捷键）；遮罩自己的按钮照常
+            window.addEventListener('keydown', e => {
+                if (this.blocked && e.target !== UI.host) {
+                    e.preventDefault();
+                    e.stopImmediatePropagation();
+                }
+            }, true);
+        },
+
+        /** 今天本站的有效上限（毫秒，含「再给」的）；没设上限返回 0。 */
+        limitMs(flags) {
+            const minutes = Store.getLimits()[DOMAIN];
+            return minutes ? (minutes + flags.extends * CONFIG.extendMinutes) * 60000 : 0;
+        },
+
+        /** 每次 tick 和设置变化后调：决定显示 / 收起遮罩，以及要不要提醒。 */
+        check(now) {
+            if (document.visibilityState !== 'visible') return;
+            const day = dayKey(now);
+            const flags = Store.getFlags(day, DOMAIN);
+            const limit = this.limitMs(flags);
+            // 没设上限、今天不再提醒、或者别的标签页里加了时间 / 改了上限 / 过了零点：收起
+            if (!limit || flags.quiet) return this.unblock();
+            const used = Timer.usedMs(day);
+            if (used >= limit) return this.block(used, flags);
+            this.unblock();
+            if (limit - used <= CONFIG.warnMinutes * 60000 && flags.warned !== limit) {
+                flags.warned = limit;   // 按上限值记：同一个上限只提醒一次，改了上限会重新提醒
+                Store.setFlags(day, DOMAIN, flags);
+                this.showToast(Math.ceil((limit - used) / 60000), Store.getLimits()[DOMAIN]);
+            }
+        },
+
+        showToast(left, limitMin) {
+            const root = UI.mount();
+            if (this.toast) this.toast.remove();
+            this.toast = UI.el(`<div class="toast" role="status">
+                <div><b>${DOMAIN}</b> 今天还剩 <b>${left}</b> 分钟（每日上限 ${limitMin} 分钟）</div>
+                <button type="button" data-act="close" title="关闭">×</button></div>`);
+            const toast = this.toast;
+            toast.querySelector('[data-act=close]').onclick = () => toast.remove();
+            root.appendChild(toast);
+            setTimeout(() => toast.remove(), CONFIG.toastMs);
+        },
+
+        block(used, flags) {
+            const root = UI.mount();
+            const usedMin = Math.floor(used / 60000);
+            const left = CONFIG.maxExtends - flags.extends;
+            if (!this.overlay) {
+                this.overlay = UI.el(`<div class="overlay" role="dialog" aria-modal="true"><div class="card">
+                    <h2></h2><p></p><div class="actions">
+                    <button type="button" class="btn primary" data-act="extend"></button>
+                    <button type="button" class="btn" data-act="quiet">今天不再提醒</button>
+                    </div></div></div>`);
+                this.overlay.querySelector('[data-act=extend]').onclick = () => this.extend();
+                this.overlay.querySelector('[data-act=quiet]').onclick = () => this.quiet();
+                root.appendChild(this.overlay);
+            }
+            this.overlay.querySelector('h2').textContent = `今日已用 ${usedMin} 分钟`;
+            this.overlay.querySelector('p').textContent = `${DOMAIN} 的每日上限是 ${Store.getLimits()[DOMAIN]} 分钟` +
+                (flags.extends ? `，已经再给过 ${flags.extends} 次` : '') + '。';
+            const btn = this.overlay.querySelector('[data-act=extend]');
+            btn.textContent = `再给 ${CONFIG.extendMinutes} 分钟（今天还能 ${left} 次）`;
+            btn.disabled = left <= 0;
+            if (this.blocked) return;
+
+            this.blocked = true;
+            if (this.toast) this.toast.remove();
+            console.info(TAG, `已达上限，今日已用 ${usedMin} 分钟`);
+            for (const m of document.querySelectorAll('video, audio')) if (!m.paused) m.pause();
+            // 全屏的视频在 top layer 里，盖在任何 z-index 之上，遮罩会被它挡住
+            if (document.fullscreenElement && document.exitFullscreen) document.exitFullscreen().catch(() => {});
+            this.savedOverflow = document.documentElement.style.overflow;
+            document.documentElement.style.overflow = 'hidden';
+            Timer.stop();
+        },
+
+        unblock() {
+            if (!this.blocked) return;
+            this.blocked = false;
+            this.overlay.remove();
+            this.overlay = null;
+            document.documentElement.style.overflow = this.savedOverflow;
+            Timer.resume();
+        },
+
+        extend() {
+            const day = dayKey(Date.now());
+            const flags = Store.getFlags(day, DOMAIN);
+            if (flags.extends >= CONFIG.maxExtends) return;
+            flags.extends++;
+            flags.warned = this.limitMs(flags);    // 刚给的 5 分钟本来就在「最后 5 分钟」里，不再弹提醒
+            Store.setFlags(day, DOMAIN, flags);
+            this.check(Date.now());
+        },
+
+        quiet() {
+            const day = dayKey(Date.now());
+            Store.setFlags(day, DOMAIN, { ...Store.getFlags(day, DOMAIN), quiet: true });
+            this.check(Date.now());
+        },
+
+        /** 菜单：给当前站点设上限。 */
+        prompt() {
+            const cur = Store.getLimits()[DOMAIN] || '';
+            const input = window.prompt(`${DOMAIN} 每天最多用多少分钟？\n留空或填 0 取消上限。`, cur);
+            if (input === null) return;
+            const minutes = input.trim() === '' ? 0 : Number(input);
+            if (!Number.isFinite(minutes) || minutes < 0) {
+                window.alert(`「${input}」不是有效的分钟数`);
+                return;
+            }
+            Store.setLimit(DOMAIN, Math.round(minutes));
+            console.info(TAG, minutes > 0 ? `${DOMAIN} 每日上限 ${Math.round(minutes)} 分钟` : `${DOMAIN} 取消上限`);
+            this.check(Date.now());
+        },
+    };
+
+    // =========================================================================
     // 启动
     // =========================================================================
 
@@ -310,5 +528,8 @@
     if (!DOMAIN) return;
     console.info(TAG, '站点', DOMAIN);
     Activity.init();
+    Limit.init();
     Timer.start();
+    Limit.check(Date.now());
+    GM_registerMenuCommand(`给当前站点设上限（${DOMAIN}）`, () => Limit.prompt());
 })();
