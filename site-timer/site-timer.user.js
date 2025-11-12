@@ -3,7 +3,7 @@
 // @name:zh-CN   网站使用时长统计与限制
 // @name:en      Site Timer — Track and Limit Time Spent on Websites
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.11.12.6
+// @version      2025.11.12.7
 // @description  统计每个网站「真正在用」的时间（标签页可见、窗口聚焦、最近有操作，播放中的视频也算），按主域名归并，同一站点开多个标签只算一份；可给站点设每日上限，快到时提醒、超时全屏遮罩；统计面板看今天 / 近 7 天排行，导出 CSV。
 // @description:zh-CN  统计每个网站「真正在用」的时间（标签页可见、窗口聚焦、最近有操作，播放中的视频也算），按主域名归并，同一站点开多个标签只算一份；可给站点设每日上限，快到时提醒、超时全屏遮罩；统计面板看今天 / 近 7 天排行，导出 CSV。
 // @description:en  Tracks the time you actually spend on each website (tab visible, window focused, recent input, or a video playing), grouped by registrable domain and counted once no matter how many tabs are open. Set a daily limit per site to get a heads-up near the end and a full-screen block when time is up. A stats panel ranks sites for today and the last 7 days and exports CSV.
@@ -14,6 +14,7 @@
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_deleteValue
+// @grant        GM_listValues
 // @grant        GM_registerMenuCommand
 // @license      CC BY-NC-SA
 // @run-at       document-end
@@ -112,6 +113,16 @@
             GM_setValue(this.timeKey(day, domain), this.getTime(day, domain) + ms);
         },
 
+        /** 所有已落盘的时长：[{ day, domain, ms }]。 */
+        allTimes() {
+            const out = [];
+            for (const key of GM_listValues()) {
+                const m = /^t:(\d{4}-\d{2}-\d{2}):(.+)$/.exec(key);
+                if (m) out.push({ day: m[1], domain: m[2], ms: GM_getValue(key, 0) });
+            }
+            return out;
+        },
+
         /** 每日上限：{ 站点: 分钟 }。全局一个键，只在用户设置时写，不存在并发写。 */
         getLimits() {
             return GM_getValue('limits', {});
@@ -132,6 +143,21 @@
             GM_setValue(this.flagKey(day, domain), flags);
         },
     };
+
+    /** 今天往前数 n 天（含今天）的日期键。用 new Date(y, m, d - i) 而不是减 86400000：夏令时那天不是 24 小时。 */
+    function recentDays(n, now = Date.now()) {
+        const d = new Date(now);
+        return Array.from({ length: n }, (_, i) => dayKey(new Date(d.getFullYear(), d.getMonth(), d.getDate() - i).getTime()));
+    }
+
+    /** 毫秒 → 「1 小时 5 分」「12 分」「40 秒」。 */
+    function fmtDuration(ms) {
+        const sec = Math.floor(ms / 1000);
+        if (sec < 60) return `${sec} 秒`;
+        const min = Math.floor(sec / 60);
+        if (min < 60) return `${min} 分`;
+        return `${Math.floor(min / 60)} 小时 ${min % 60} 分`;
+    }
 
     /** 本地日期 YYYY-MM-DD。按本地零点切天，不用 toISOString（那是 UTC，东八区早上 8 点前会算到前一天）。 */
     function dayKey(ts) {
@@ -384,6 +410,29 @@
         .btn { all: unset; cursor: pointer; padding: 8px 14px; border-radius: 6px; border: 1px solid #d1d9e0; background: #f6f8fa; }
         .btn.primary { background: #1f6feb; border-color: #1f6feb; color: #fff; }
         .btn[disabled] { opacity: .45; cursor: not-allowed; }
+
+        .mask { position: fixed; inset: 0; z-index: 2147483645; background: rgba(0,0,0,.35); display: flex; align-items: center; justify-content: center; }
+        .panel { width: min(560px, calc(100vw - 32px)); max-height: calc(100vh - 64px); display: flex; flex-direction: column;
+            background: #fff; border-radius: 12px; box-shadow: 0 12px 40px rgba(0,0,0,.25); overflow: hidden; }
+        .panel header { display: flex; align-items: center; gap: 12px; padding: 14px 18px; border-bottom: 1px solid #eaeef2; }
+        .panel header h2 { margin: 0; font-size: 16px; flex: 1; }
+        .tabs { display: flex; gap: 4px; }
+        .tab { all: unset; cursor: pointer; padding: 4px 10px; border-radius: 6px; color: #59636e; }
+        .tab.on { background: #ddf4ff; color: #0969da; font-weight: 600; }
+        .x { all: unset; cursor: pointer; font-size: 18px; line-height: 1; color: #59636e; padding: 0 4px; }
+        .total { padding: 10px 18px 0; color: #59636e; }
+        .rows { overflow: auto; padding: 8px 18px 12px; }
+        .row { display: grid; grid-template-columns: 150px 1fr 88px 92px; gap: 10px; align-items: center; padding: 5px 0; }
+        .row .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .row.current .name { font-weight: 600; }
+        .bar { height: 10px; background: #eef1f4; border-radius: 5px; overflow: hidden; }
+        .bar i { display: block; height: 100%; background: #2da44e; border-radius: 5px; }
+        .row.over .bar i { background: #cf222e; }
+        .dur { text-align: right; font-variant-numeric: tabular-nums; }
+        .limit { display: flex; align-items: center; gap: 4px; color: #59636e; font-size: 12px; }
+        .limit input { width: 48px; padding: 2px 4px; border: 1px solid #d1d9e0; border-radius: 4px; font: inherit; color: #1f2328; }
+        .empty { padding: 24px 0; text-align: center; color: #8c959f; }
+        .panel footer { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 12px 18px; border-top: 1px solid #eaeef2; color: #8c959f; font-size: 12px; }
     `;
 
     // =========================================================================
@@ -521,6 +570,119 @@
     };
 
     // =========================================================================
+    // 统计面板
+    // =========================================================================
+
+    const Panel = {
+        mask: null,
+        range: 'today',     // today | week
+
+        /** 指定日期范围内各站点合计：[{ domain, ms }]，按时长降序。 */
+        rank(days) {
+            const set = new Set(days);
+            const sum = new Map();
+            for (const { day, domain, ms } of Store.allTimes()) {
+                if (set.has(day)) sum.set(domain, (sum.get(domain) || 0) + ms);
+            }
+            // 本标签页还没落盘的那部分也算上，免得面板上的「今天」比实际少十几秒
+            for (const [day, ms] of Timer.pending) {
+                if (set.has(day)) sum.set(DOMAIN, (sum.get(DOMAIN) || 0) + ms);
+            }
+            return [...sum].map(([domain, ms]) => ({ domain, ms })).filter(r => r.ms > 0).sort((a, b) => b.ms - a.ms);
+        },
+
+        open() {
+            const root = UI.mount();
+            if (this.mask) return this.render();
+            this.mask = UI.el(`<div class="mask"><div class="panel" role="dialog" aria-label="使用时长统计">
+                <header><h2>使用时长</h2>
+                    <div class="tabs"><button type="button" class="tab" data-range="today">今天</button>
+                    <button type="button" class="tab" data-range="week">近 7 天</button></div>
+                    <button type="button" class="x" data-act="close" title="关闭">×</button></header>
+                <div class="total"></div><div class="rows"></div>
+                <footer><span>数据保存在本机，保留 30 天</span>
+                    <button type="button" class="btn" data-act="csv">导出 CSV</button></footer>
+                </div></div>`);
+            this.mask.addEventListener('click', e => {
+                const t = e.target;
+                if (t === this.mask || t.dataset.act === 'close') return this.close();
+                if (t.dataset.act === 'csv') return this.exportCsv();
+                if (t.dataset.range) {
+                    this.range = t.dataset.range;
+                    this.render();
+                }
+            });
+            this.mask.addEventListener('change', e => {
+                const input = e.target.closest('input[data-limit]');
+                if (!input) return;
+                const minutes = Math.max(0, Math.round(Number(input.value) || 0));
+                Store.setLimit(input.dataset.limit, minutes);
+                this.render();
+                Limit.check(Date.now());
+            });
+            this.onKey = e => { if (e.key === 'Escape') this.close(); };
+            window.addEventListener('keydown', this.onKey, true);
+            root.appendChild(this.mask);
+            this.render();
+        },
+
+        close() {
+            if (!this.mask) return;
+            this.mask.remove();
+            this.mask = null;
+            window.removeEventListener('keydown', this.onKey, true);
+        },
+
+        render() {
+            const days = recentDays(this.range === 'week' ? 7 : 1);
+            const rows = this.rank(days);
+            const limits = Store.getLimits();
+            const max = rows.length ? rows[0].ms : 1;
+            const total = rows.reduce((a, r) => a + r.ms, 0);
+            for (const tab of this.mask.querySelectorAll('.tab')) tab.classList.toggle('on', tab.dataset.range === this.range);
+            this.mask.querySelector('.total').textContent =
+                `${this.range === 'week' ? '近 7 天' : '今天'}合计 ${fmtDuration(total)}，${rows.length} 个站点`;
+            const list = this.mask.querySelector('.rows');
+            list.textContent = '';
+            if (!rows.length) {
+                list.appendChild(UI.el('<div class="empty">还没有记录</div>'));
+                return;
+            }
+            for (const { domain, ms } of rows) {
+                const limit = limits[domain] || 0;
+                const row = UI.el(`<div class="row"><span class="name"></span><div class="bar"><i></i></div>
+                    <span class="dur"></span><label class="limit">上限 <input type="number" min="0" step="5" placeholder="不限"> 分</label></div>`);
+                row.dataset.domain = domain;
+                row.classList.toggle('current', domain === DOMAIN);
+                // 只有「今天」视图里比较上限才有意义；7 天合计和每日上限不是一个量
+                row.classList.toggle('over', this.range === 'today' && limit > 0 && ms >= limit * 60000);
+                row.querySelector('.name').textContent = domain;
+                row.querySelector('.name').title = domain;
+                row.querySelector('.bar i').style.width = (ms / max * 100).toFixed(1) + '%';
+                row.querySelector('.dur').textContent = fmtDuration(ms);
+                const input = row.querySelector('input');
+                input.dataset.limit = domain;
+                input.value = limit || '';
+                list.appendChild(row);
+            }
+        },
+
+        /** 导出保留期内的全部记录。带 BOM：不带的话 Excel 按本地编码打开，中文表头乱码。 */
+        exportCsv() {
+            const rows = Store.allTimes().filter(r => r.ms > 0)
+                .sort((a, b) => (a.day === b.day ? b.ms - a.ms : a.day < b.day ? 1 : -1));
+            const lines = ['日期,站点,秒,分钟'];
+            for (const r of rows) lines.push(`${r.day},${r.domain},${Math.round(r.ms / 1000)},${(r.ms / 60000).toFixed(1)}`);
+            const blob = new Blob(['\ufeff' + lines.join('\r\n') + '\r\n'], { type: 'text/csv;charset=utf-8' });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = `site-timer-${dayKey(Date.now())}.csv`;
+            a.click();
+            setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+        },
+    };
+
+    // =========================================================================
     // 启动
     // =========================================================================
 
@@ -531,5 +693,6 @@
     Limit.init();
     Timer.start();
     Limit.check(Date.now());
+    GM_registerMenuCommand('打开统计面板', () => Panel.open());
     GM_registerMenuCommand(`给当前站点设上限（${DOMAIN}）`, () => Limit.prompt());
 })();

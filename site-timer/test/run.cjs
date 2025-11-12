@@ -474,6 +474,91 @@ async function main() {
         await page.context().close()
     })
 
+    console.log('统计面板')
+    /**
+     * 真实环境里 GM 存储是全局的，各站点的标签页写进同一份；harness 按源隔离，
+     * 所以别的站点的数据直接预置在 example.com 这个源下，验证的是「汇总所有站点」。
+     */
+    const MIN = 60000
+    const statsValues = {
+        [`t:${TODAY}:github.com`]: 90 * MIN,
+        [`t:${TODAY}:example.com`]: 30 * MIN,
+        [`t:${TODAY}:bilibili.com`]: 10 * MIN,
+        't:2026-10-23:bilibili.com': 200 * MIN, // 6 天前，还在 7 天里
+        't:2026-10-26:zhihu.com': 20 * MIN,
+        't:2026-10-22:old.com': 999 * MIN, // 7 天前，不在 7 天里
+        limits: { 'bilibili.com': 5 },
+    }
+    /** 面板里的行：[站点, 时长文字, 条形宽度, 上限输入框的值]。 */
+    function panelRows(page) {
+        return page.locator('site-timer-ui .row').evaluateAll(rows => rows.map(r => [
+            r.querySelector('.name').textContent,
+            r.querySelector('.dur').textContent,
+            r.querySelector('.bar i').style.width,
+            r.querySelector('input').value,
+        ]))
+    }
+    await t.test('今天排行：汇总所有站点，按时长降序，条形按最长的那个归一', async () => {
+        const page = await open(SITE, { values: statsValues })
+        await use(page, 30000) // 本页还没落盘的 30 秒也要算进去
+        await h.menu(page, '打开统计面板')
+        t.eq(await panelRows(page), [
+            ['github.com', '1 小时 30 分', '100%', ''],
+            ['example.com', '30 分', '33.9%', ''],
+            ['bilibili.com', '10 分', '11.1%', '5'],
+        ])
+        t.assert(await page.locator('site-timer-ui .row.current .name').innerText() === 'example.com', '当前站点高亮')
+        t.assert(await page.locator('site-timer-ui .row.over .name').innerText() === 'bilibili.com', '超限的标红')
+        t.assert((await page.locator('site-timer-ui .total').innerText()).includes('3 个站点'))
+        await page.context().close()
+    })
+    await t.test('近 7 天排行：含 6 天前，不含 7 天前', async () => {
+        const page = await open(SITE, { values: statsValues })
+        await h.menu(page, '打开统计面板')
+        await page.click('site-timer-ui [data-range=week]')
+        t.eq((await panelRows(page)).map(r => r.slice(0, 2)), [
+            ['bilibili.com', '3 小时 30 分'],
+            ['github.com', '1 小时 30 分'],
+            ['example.com', '30 分'],
+            ['zhihu.com', '20 分'],
+        ])
+        t.eq(await page.locator('site-timer-ui .row.over').count(), 0, '7 天合计不和每日上限比')
+        await page.keyboard.press('Escape')
+        t.eq(await page.locator('site-timer-ui .panel').count(), 0, 'Esc 关闭')
+        await page.context().close()
+    })
+    await t.test('面板里改上限：写进存储，超了当前站点立即遮罩', async () => {
+        const page = await open(SITE, { values: statsValues })
+        await h.menu(page, '打开统计面板')
+        await page.locator('site-timer-ui .row[data-domain="github.com"] input').fill('120')
+        await page.locator('site-timer-ui .row[data-domain="github.com"] input').press('Enter')
+        await page.locator('site-timer-ui .row[data-domain="bilibili.com"] input').fill('')
+        await page.locator('site-timer-ui .row[data-domain="bilibili.com"] input').dispatchEvent('change')
+        t.eq(await page.evaluate(() => JSON.parse(localStorage.getItem('__gm:limits'))), { 'github.com': 120 })
+        await page.locator('site-timer-ui .row[data-domain="example.com"] input').fill('20')
+        await page.locator('site-timer-ui .row[data-domain="example.com"] input').dispatchEvent('change')
+        await overlay(page).waitFor()
+        await page.context().close()
+    })
+    await t.test('导出 CSV：带 BOM，按日期倒序、同日按时长', async () => {
+        const page = await open(SITE, { values: statsValues })
+        await h.menu(page, '打开统计面板')
+        const [download] = await Promise.all([page.waitForEvent('download'), page.click('site-timer-ui [data-act=csv]')])
+        t.eq(download.suggestedFilename(), `site-timer-${TODAY}.csv`)
+        const text = fs.readFileSync(await download.path(), 'utf8')
+        t.eq(text.split('\r\n'), [
+            '\ufeff日期,站点,秒,分钟',
+            `${TODAY},github.com,5400,90.0`,
+            `${TODAY},example.com,1800,30.0`,
+            `${TODAY},bilibili.com,600,10.0`,
+            '2026-10-26,zhihu.com,1200,20.0',
+            '2026-10-23,bilibili.com,12000,200.0',
+            '2026-10-22,old.com,59940,999.0',
+            '',
+        ])
+        await page.context().close()
+    })
+
     await env.close()
     t.done()
 }
