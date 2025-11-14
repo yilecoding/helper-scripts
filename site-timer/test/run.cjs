@@ -623,6 +623,49 @@ async function main() {
         await context.close()
     })
 
+    console.log('边界情况')
+    await t.test('遮罩出现时焦点在「再给」按钮上，键盘就能操作（页面快捷键仍被吞掉）', async () => {
+        const page = await open(SITE, { values: { limits: { [DOMAIN]: 1 }, [`t:${TODAY}:${DOMAIN}`]: 2 * MIN } })
+        await overlay(page).waitFor()
+        await page.evaluate(() => { window.__keys = 0; document.addEventListener('keydown', () => window.__keys++) })
+        await page.keyboard.press('Enter')
+        t.eq(await overlay(page).count(), 0, 'Enter 触发「再给 5 分钟」')
+        t.eq(await page.evaluate(() => window.__keys), 0, '遮罩上的按键不漏给页面')
+        await page.keyboard.press('ArrowDown')
+        t.eq(await page.evaluate(() => window.__keys), 1, '收起后页面按键恢复')
+        await page.context().close()
+    })
+    await t.test('遮罩宿主被页面删掉（SPA 重写 DOM）：下一秒补回来', async () => {
+        const page = await open(SITE, { values: { limits: { [DOMAIN]: 1 }, [`t:${TODAY}:${DOMAIN}`]: 2 * MIN } })
+        await overlay(page).waitFor()
+        await page.evaluate(() => document.querySelector('site-timer-ui').remove())
+        await run(page, 1000)
+        t.eq(await overlay(page).count(), 1)
+        await page.context().close()
+    })
+    await t.test('遮罩挂着过了零点：新的一天自动收起、恢复计时', async () => {
+        const page = await open(SITE + 'video.html', {
+            time: new Date('2026-10-29T23:59:00+08:00').getTime(),
+            values: { limits: { [DOMAIN]: 1 }, [`t:${TODAY}:${DOMAIN}`]: 2 * MIN },
+        })
+        await overlay(page).waitFor()
+        await run(page, 61000)
+        t.eq(await overlay(page).count(), 0)
+        await play(page)
+        await run(page, 30000)
+        await pagehide(page)
+        near(await stored(page, '2026-10-30'), 30)
+        await page.context().close()
+    })
+    await t.test('导出 CSV 包含本页还没落盘的时长（和面板显示一致）', async () => {
+        const page = await open(SITE)
+        await use(page, 10000)
+        await h.menu(page, '打开统计面板')
+        const [download] = await Promise.all([page.waitForEvent('download'), page.click('site-timer-ui [data-act=csv]')])
+        t.eq(fs.readFileSync(await download.path(), 'utf8').split('\r\n')[1], `${TODAY},${DOMAIN},10,0.2`)
+        await page.context().close()
+    })
+
     await env.close()
     t.done()
 }

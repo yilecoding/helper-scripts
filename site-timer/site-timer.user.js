@@ -3,7 +3,7 @@
 // @name:zh-CN   网站使用时长统计与限制
 // @name:en      Site Timer — Track and Limit Time Spent on Websites
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.11.14.8
+// @version      2025.11.14.9
 // @description  统计每个网站「真正在用」的时间（标签页可见、窗口聚焦、最近有操作，播放中的视频也算），按主域名归并，同一站点开多个标签只算一份；可给站点设每日上限，快到时提醒、超时全屏遮罩；统计面板看今天 / 近 7 天排行，导出 CSV。
 // @description:zh-CN  统计每个网站「真正在用」的时间（标签页可见、窗口聚焦、最近有操作，播放中的视频也算），按主域名归并，同一站点开多个标签只算一份；可给站点设每日上限，快到时提醒、超时全屏遮罩；统计面板看今天 / 近 7 天排行，导出 CSV。
 // @description:en  Tracks the time you actually spend on each website (tab visible, window focused, recent input, or a video playing), grouped by registrable domain and counted once no matter how many tabs are open. Set a daily limit per site to get a heads-up near the end and a full-screen block when time is up. A stats panel ranks sites for today and the last 7 days and exports CSV.
@@ -454,13 +454,16 @@
             document.addEventListener('play', e => {
                 if (this.blocked && e.target instanceof HTMLMediaElement) e.target.pause();
             }, true);
-            // 遮罩期间吞掉页面的键盘快捷键（空格翻页、播放器快捷键）；遮罩自己的按钮照常
-            window.addEventListener('keydown', e => {
-                if (this.blocked && e.target !== UI.host) {
-                    e.preventDefault();
+            // 遮罩期间页面收不到任何按键（空格翻页、播放器快捷键）。在 window 捕获阶段截停传播，
+            // 页面的监听全都轮不到；遮罩按钮上的按键只停传播、不 preventDefault ——
+            // 按钮被 Enter / 空格激活是默认行为，不靠监听，照样生效
+            for (const type of ['keydown', 'keypress', 'keyup']) {
+                window.addEventListener(type, e => {
+                    if (!this.blocked) return;
                     e.stopImmediatePropagation();
-                }
-            }, true);
+                    if (e.target !== UI.host) e.preventDefault();
+                }, true);
+            }
         },
 
         /** 今天本站的有效上限（毫秒，含「再给」的）；没设上限返回 0。 */
@@ -522,6 +525,9 @@
             if (this.blocked) return;
 
             this.blocked = true;
+            // 焦点不挪进遮罩的话还停在页面里，下面的 keydown 拦截会把 Tab / Enter 一起吞掉，
+            // 键盘用户既操作不了页面也够不着遮罩上的按钮
+            (btn.disabled ? this.overlay.querySelector('[data-act=quiet]') : btn).focus({ preventScroll: true });
             if (this.toast) this.toast.remove();
             console.info(TAG, `已达上限，今日已用 ${usedMin} 分钟`);
             for (const m of document.querySelectorAll('video, audio')) if (!m.paused) m.pause();
@@ -673,6 +679,7 @@
 
         /** 导出保留期内的全部记录。带 BOM：不带的话 Excel 按本地编码打开，中文表头乱码。 */
         exportCsv() {
+            Timer.flush();  // 面板排行算了内存里没落盘的部分，导出也得算上，否则两边对不上
             const rows = Store.allTimes().filter(r => r.ms > 0)
                 .sort((a, b) => (a.day === b.day ? b.ms - a.ms : a.day < b.day ? 1 : -1));
             const lines = ['日期,站点,秒,分钟'];
