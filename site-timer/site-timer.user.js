@@ -3,7 +3,7 @@
 // @name:zh-CN   网站使用时长统计与限制
 // @name:en      Site Timer — Track and Limit Time Spent on Websites
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.11.14.9
+// @version      2025.11.14.10
 // @description  统计每个网站「真正在用」的时间（标签页可见、窗口聚焦、最近有操作，播放中的视频也算），按主域名归并，同一站点开多个标签只算一份；可给站点设每日上限，快到时提醒、超时全屏遮罩；统计面板看今天 / 近 7 天排行，导出 CSV。
 // @description:zh-CN  统计每个网站「真正在用」的时间（标签页可见、窗口聚焦、最近有操作，播放中的视频也算），按主域名归并，同一站点开多个标签只算一份；可给站点设每日上限，快到时提醒、超时全屏遮罩；统计面板看今天 / 近 7 天排行，导出 CSV。
 // @description:en  Tracks the time you actually spend on each website (tab visible, window focused, recent input, or a video playing), grouped by registrable domain and counted once no matter how many tabs are open. Set a daily limit per site to get a heads-up near the end and a full-screen block when time is up. A stats panel ranks sites for today and the last 7 days and exports CSV.
@@ -227,7 +227,8 @@
      * 两个标签页可能同时看到「没人持有」、同时写入，各自以为拿到了。所以规则是
      * 「两头都确认」：一段时间只有在开头和结尾读到的租约都是自己时才算。同时写入的两方，
      * 存储收敛后只剩一个 id，输的一方下一次 tick 就读到别人的 id，那一段不算。
-     * 代价是接手后第一秒要等确认（resume 时抢到的从抢到那一刻算起，不丢）。
+     * 刚抢到的那一段要等下一次 tick 读到的还是自己才记上，没确认住就整段不算 ——
+     * 宁可少算一秒，也不两边都算。
      *
      * 不在用（切走、失焦、空闲、卸载）就主动释放，别的标签页下一次 tick 就能接手，
      * 不用等 leaseTtlMs；只有崩溃这种来不及释放的情况才靠过期。
