@@ -559,6 +559,70 @@ async function main() {
         await page.context().close()
     })
 
+    console.log('清理与暂停')
+    /** 模拟 GM 存储里除了 harness 自己的标记以外的全部键。 */
+    function keys(page) {
+        return page.evaluate(() => Object.keys(localStorage).filter(k => k.startsWith('__gm:') && k !== '__gm:__seeded').map(k => k.slice(5)).sort())
+    }
+    await t.test('30 天清理：保留今天和前 29 天的时长与限制状态，删更早的和过期租约', async () => {
+        const page = await open(SITE, {
+            values: {
+                [`t:${TODAY}:${DOMAIN}`]: 1000,
+                't:2026-09-30:a.com': 1000, // 29 天前：保留
+                'f:2026-09-30:a.com': { extends: 1 },
+                't:2026-09-29:a.com': 1000, // 30 天前：删
+                'f:2026-09-29:a.com': { quiet: true },
+                't:2026-09-14:b.com': 1000,
+                't:2025-12-31:c.com': 1000,
+                'lease:dead.com': { id: 'x', ts: T0 - 2 * 86400000 },
+                limits: { 'a.com': 10 },
+            },
+        })
+        t.eq(await keys(page), [
+            'cleanup',
+            'f:2026-09-30:a.com',
+            'lease:example.com', // 本页刚拿的
+            'limits',
+            't:2026-09-30:a.com',
+            `t:${TODAY}:${DOMAIN}`,
+        ].sort())
+        t.assert(page.__logs.some(l => l.includes('清理了 5 条')), page.__logs.join('\n'))
+        await page.context().close()
+    })
+    await t.test('一天只清理一次；长开的标签页过了零点再清一次', async () => {
+        const page = await open(SITE, {
+            time: new Date('2026-10-29T23:59:50+08:00').getTime(),
+            values: { 't:2026-09-30:a.com': 1000 },
+        })
+        await page.evaluate(() => localStorage.setItem('__gm:t:2026-09-01:z.com', '1')) // 今天已清理过，不该再扫
+        await use(page, 5000)
+        t.assert((await keys(page)).includes('t:2026-09-01:z.com'), '同一天不重复清理')
+        await use(page, 10000)
+        const left = await keys(page)
+        t.assert(!left.includes('t:2026-09-30:a.com') && !left.includes('t:2026-09-01:z.com'), left.join(' '))
+        await page.context().close()
+    })
+    await t.test('暂停计时：全局生效（另一个标签页也停），菜单文字跟着变，恢复后接着算', async () => {
+        const context = await newContext()
+        const a = await open(SITE, { context })
+        const b = await open(SITE, { context })
+        await h.menu(a, '暂停计时')
+        t.assert((await h.gm(a)).menu.includes('恢复计时（当前已暂停）'), (await h.gm(a)).menu.join(' | '))
+        t.eq((await h.gm(a)).menu.length, 3, '整组重注册，不多不少')
+        await run(b, 1000)
+        t.assert((await h.gm(b)).menu.includes('恢复计时（当前已暂停）'), '另一个标签页下一秒同步菜单')
+        await use(a, 30000)
+        await use(b, 30000)
+        await pagehide(a)
+        await pagehide(b)
+        t.eq(await stored(a), 0, '暂停期间哪个标签页都不算')
+        await h.menu(b, '恢复计时')
+        await use(a, 30000)
+        await pagehide(a)
+        near(await stored(a), 30)
+        await context.close()
+    })
+
     await env.close()
     t.done()
 }

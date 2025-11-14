@@ -3,7 +3,7 @@
 // @name:zh-CN   网站使用时长统计与限制
 // @name:en      Site Timer — Track and Limit Time Spent on Websites
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.11.12.7
+// @version      2025.11.14.8
 // @description  统计每个网站「真正在用」的时间（标签页可见、窗口聚焦、最近有操作，播放中的视频也算），按主域名归并，同一站点开多个标签只算一份；可给站点设每日上限，快到时提醒、超时全屏遮罩；统计面板看今天 / 近 7 天排行，导出 CSV。
 // @description:zh-CN  统计每个网站「真正在用」的时间（标签页可见、窗口聚焦、最近有操作，播放中的视频也算），按主域名归并，同一站点开多个标签只算一份；可给站点设每日上限，快到时提醒、超时全屏遮罩；统计面板看今天 / 近 7 天排行，导出 CSV。
 // @description:en  Tracks the time you actually spend on each website (tab visible, window focused, recent input, or a video playing), grouped by registrable domain and counted once no matter how many tabs are open. Set a daily limit per site to get a heads-up near the end and a full-screen block when time is up. A stats panel ranks sites for today and the last 7 days and exports CSV.
@@ -16,6 +16,7 @@
 // @grant        GM_deleteValue
 // @grant        GM_listValues
 // @grant        GM_registerMenuCommand
+// @grant        GM_unregisterMenuCommand
 // @license      CC BY-NC-SA
 // @run-at       document-end
 // @homepageURL  https://github.com/yilecoding/helper-scripts
@@ -48,6 +49,7 @@
         extendMinutes: 5,       // 遮罩上「再给 N 分钟」
         maxExtends: 3,          // 每个站点每天最多再给几次
         toastMs: 10000,         // 提醒条显示多久
+        keepDays: 30,           // 保留最近这么多天（含今天）的记录
     };
 
     // =========================================================================
@@ -290,7 +292,7 @@
          * 已经在算的时候不能重置 lastTick，否则把上次 tick 到现在这段丢了。
          */
         resume() {
-            if (this.counting || Limit.blocked) return;
+            if (this.counting || Limit.blocked || Menu.paused) return;
             const now = Date.now();
             if (!Activity.isActive(now) || !Lease.acquire(now)) return;
             this.counting = true;
@@ -299,8 +301,10 @@
 
         tick() {
             const now = Date.now();
-            // 遮罩挡着的时候用不了这个站，不算
-            const counting = !Limit.blocked && Activity.isActive(now) && Lease.acquire(now);
+            Menu.sync();
+            Cleanup.run(now);
+            // 遮罩挡着的时候用不了这个站，不算；暂停是全局的，别的标签页里点的这里下一秒生效
+            const counting = !Limit.blocked && !Menu.paused && Activity.isActive(now) && Lease.acquire(now);
             if (counting && this.counting) this.add(this.lastTick, now);
             if (this.counting && !counting) {
                 // 刚停下：可能是不在用了，也可能是租约被别的标签页抢走 —— 都先把攒的写掉
@@ -683,16 +687,93 @@
     };
 
     // =========================================================================
+    // 清理
+    // =========================================================================
+
+    const Cleanup = {
+        doneFor: '',
+
+        /**
+         * 删掉 keepDays 天以前的时长和限制状态，以及一天没续过的租约（关过的站点都会留一个）。
+         * 每天只真正跑一次：多个标签页都会走到这里，用存储里的日期挡住，扫一遍全部键也不贵。
+         * 长开着不关的标签页过了零点也会跑（tick 里调）。
+         */
+        run(now) {
+            const today = dayKey(now);
+            if (this.doneFor === today) return;
+            this.doneFor = today;
+            if (GM_getValue('cleanup', '') === today) return;
+            GM_setValue('cleanup', today);
+            const oldest = recentDays(CONFIG.keepDays, now).pop();
+            let removed = 0;
+            for (const key of GM_listValues()) {
+                const m = /^[tf]:(\d{4}-\d{2}-\d{2}):/.exec(key);
+                const stale = m ? m[1] < oldest
+                    : key.startsWith('lease:') && now - (GM_getValue(key, {}).ts || 0) > 86400000;
+                if (stale) {
+                    GM_deleteValue(key);
+                    removed++;
+                }
+            }
+            if (removed) console.info(TAG, `清理了 ${removed} 条 ${oldest} 以前的记录`);
+        },
+    };
+
+    // =========================================================================
+    // 菜单
+    // =========================================================================
+
+    /**
+     * 「暂停计时」是全局开关（所有站点、所有标签页），存在 GM 里。菜单文字跟着状态变，
+     * 所以每次都整组注销重注册（只重注册一项的话它会跑到菜单末尾，顺序乱掉）；
+     * 别的标签页里切换的，这里 tick 时发现不一致再刷新。
+     */
+    const Menu = {
+        paused: false,
+        ids: [],
+
+        init() {
+            this.paused = GM_getValue('paused', false);
+            this.render();
+        },
+
+        render() {
+            for (const id of this.ids) GM_unregisterMenuCommand(id);
+            this.ids = [
+                GM_registerMenuCommand('打开统计面板', () => Panel.open()),
+                GM_registerMenuCommand(`给当前站点设上限（${DOMAIN}）`, () => Limit.prompt()),
+                GM_registerMenuCommand(this.paused ? '恢复计时（当前已暂停）' : '暂停计时', () => this.togglePause()),
+            ];
+        },
+
+        sync() {
+            const paused = GM_getValue('paused', false);
+            if (paused === this.paused) return;
+            this.paused = paused;
+            this.render();
+        },
+
+        togglePause() {
+            this.paused = !this.paused;
+            GM_setValue('paused', this.paused);
+            console.info(TAG, this.paused ? '已暂停计时' : '已恢复计时');
+            if (this.paused) Timer.stop();
+            else Timer.resume();
+            this.render();
+        },
+    };
+
+    // =========================================================================
     // 启动
     // =========================================================================
 
     const DOMAIN = mainDomain(location.hostname);
     if (!DOMAIN) return;
     console.info(TAG, '站点', DOMAIN);
+    Menu.init();
+    Cleanup.run(Date.now());
     Activity.init();
     Limit.init();
     Timer.start();
     Limit.check(Date.now());
-    GM_registerMenuCommand('打开统计面板', () => Panel.open());
-    GM_registerMenuCommand(`给当前站点设上限（${DOMAIN}）`, () => Limit.prompt());
 })();
