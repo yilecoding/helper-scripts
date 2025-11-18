@@ -79,7 +79,7 @@
 - 看不到 iframe 里（`@noframes`）和 Web Components shadow DOM 里的正文标题。
 - 虚拟滚动 / 懒渲染的正文：还没渲染出来的章节不在目录里，渲染出来后才会补进来。
 - 吸顶栏只扫 DOM 前三层；更深的 sticky 顶栏只有在当前已经吸住时才能被发现。
-- `<html>` 上有 `transform`/`filter`（某些暗色模式扩展会加）时，`position: fixed` 相对 `<html>` 定位，面板和进度条会跟着页面走。
+- `<html>` 上有 `transform`，或 `<body>` 上有 `transform`/`filter` 时，`position: fixed` 改为相对那个元素定位，面板和进度条会跟着页面走。`<html>` 上的 `filter`（`dark-mode` 那种整页反色）**不受影响**——规范对根元素豁免了 filter，实测滚动 2000px 后 fixed 元素的 top 不变；而 `<html>` 上的 `transform: translateZ(0)` 会让它跟着滚走。
 - 伪标题识别是启发式（整段只有一个 `<strong>`/`<b>`、不以句号类标点结尾、≤ 40 字、不在引用/列表/表格里），默认关；会有漏判和误判。
 - 目录项不能折叠子树；超长目录只能在列表里滚。
 - 路由切换时如果正文 DOM 完全不变、history 挂钩又没生效，就发现不了换页（实际很少见）。
