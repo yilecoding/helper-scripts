@@ -56,6 +56,27 @@ async function scrollWin(page, y, wait = 800) {
     if (wait) await page.waitForTimeout(wait)
 }
 
+/** 「第 n 段」相对视口（或其滚动容器可视区）的 top。 */
+function paraTop(page, n) {
+    return page.evaluate((n) => {
+        const el = Array.from(document.querySelectorAll('p')).find((p) => p.textContent.startsWith('第 ' + n + ' 段。'))
+        const sc = el.closest('.scroll')
+        return el.getBoundingClientRect().top - (sc ? sc.getBoundingClientRect().top : 0)
+    }, n)
+}
+
+/** 把「第 n 段」滚到距视口上沿 offset 像素处（window 或 .scroll 容器），等记录落盘。 */
+async function scrollParaTo(page, n, offset, wait = 800) {
+    await page.evaluate(({ n, offset }) => {
+        const el = Array.from(document.querySelectorAll('p')).find((p) => p.textContent.startsWith('第 ' + n + ' 段。'))
+        const sc = el.closest('.scroll')
+        const top = el.getBoundingClientRect().top - (sc ? sc.getBoundingClientRect().top : 0)
+        if (sc) sc.scrollTo({ top: sc.scrollTop + top - offset, behavior: 'instant' })
+        else window.scrollTo({ top: window.scrollY + top - offset, behavior: 'instant' })
+    }, { n, offset })
+    if (wait) await page.waitForTimeout(wait)
+}
+
 async function main() {
     const { browser, close } = await h.setup(FIXTURES)
 
@@ -93,6 +114,29 @@ async function main() {
             SITE + '/long.html?id=9&page=3',
             SITE + '/long.html?page=2',
         ])
+        await page.close()
+    })
+
+    await t.test('锚点：视口顶部的段落 —— 路径能找回同一个元素，指纹是开头文字，偏移是视口上沿在段落里的位置', async () => {
+        const page = await open(browser, '/long.html')
+        await scrollParaTo(page, 30, -20)
+        const rec = (await records(page))[SITE + '/long.html']
+        t.assert(rec && rec.a, '应有锚点：' + JSON.stringify(rec))
+        t.eq(rec.a.tag, 'p')
+        t.assert(rec.a.fp.startsWith('第 30 段。'), 'fp: ' + rec.a.fp)
+        t.eq(rec.a.off, 20)
+        t.assert(rec.a.path.startsWith('#post > '), '路径从最近的稳定 id 起算：' + rec.a.path)
+        const found = await page.evaluate((p) => document.querySelector(p).textContent.slice(0, 7), rec.a.path)
+        t.eq(found, '第 30 段。')
+        await page.close()
+    })
+
+    await t.test('锚点：跳过固定顶栏，取它下面露出来的第一段', async () => {
+        const page = await open(browser, '/fixed-header.html')
+        await scrollParaTo(page, 30, 100)
+        const rec = (await records(page))[SITE + '/fixed-header.html']
+        t.assert(rec.a.fp.startsWith('第 30 段。'), 'fp: ' + rec.a.fp)
+        t.eq(rec.a.off, -100)
         await page.close()
     })
 
