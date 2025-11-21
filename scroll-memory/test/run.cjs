@@ -20,13 +20,20 @@ const SITE_RE = /^https:\/\/novel\.example\.com\//
 
 const t = h.createRunner('scroll-memory')
 
+/** 恢复方式设成「直接跳」，测定位本身时不用点提示条。 */
+const JUMP = { values: { 'sm:settings': { mode: 'jump' } } }
+
 /**
  * 新开一个页面（独立 context，GM 存储互不影响），把假域名的请求映射到 fixtures。
  * 路径是 *.html 就取同名文件；其余（SPA 深链接）回落到 opts.fallback。
  */
 async function open(browser, url, opts = {}) {
     const page = await browser.newPage({ viewport: { width: 1280, height: 800 } })
-    page.on('console', (m) => { if (m.type() === 'error') console.log('      [page error]', m.text()) })
+    page.__logs = []
+    page.on('console', (m) => {
+        page.__logs.push(m.text())
+        if (m.type() === 'error') console.log('      [page error]', m.text())
+    })
     await page.route(SITE_RE, (route) => {
         const u = new URL(route.request().url())
         const name = u.pathname.endsWith('.html') ? path.basename(u.pathname) : opts.fallback
@@ -87,6 +94,15 @@ async function waitParaAt(page, n, offset, { timeout = 7000, tol = 2 } = {}) {
         await page.waitForTimeout(100)
     }
     throw new Error(`第 ${n} 段应在 ${offset}，实际 ${top}`)
+}
+
+/** 提示条：{ shown, text }。 */
+function promptState(page) {
+    return page.evaluate(() => {
+        const host = document.querySelector('scroll-memory-ui')
+        const box = host && host.shadowRoot.querySelector('.prompt')
+        return { shown: !!box && !box.hidden, text: box ? box.querySelector('.jump').textContent : '' }
+    })
 }
 
 async function main() {
@@ -153,7 +169,7 @@ async function main() {
     })
 
     await t.test('恢复：再次打开，等晚到的广告和公告插进来后，按锚点回到同一段（像素和路径都漂了）', async () => {
-        const page = await open(browser, '/long.html')
+        const page = await open(browser, '/long.html', JUMP)
         await scrollParaTo(page, 30, -20)
         const before = (await records(page))[SITE + '/long.html']
         await page.goto(SITE + '/long.html?drift=700')
@@ -164,7 +180,7 @@ async function main() {
     })
 
     await t.test('恢复：刷新时浏览器先按像素还原，内容漂移后脚本按锚点纠正', async () => {
-        const page = await open(browser, '/long.html?drift=700')
+        const page = await open(browser, '/long.html?drift=700', JUMP)
         await page.waitForTimeout(500)
         await scrollParaTo(page, 45, -35)
         await page.reload()
@@ -173,7 +189,7 @@ async function main() {
     })
 
     await t.test('恢复：字号变大，偏移按段落高度等比换算', async () => {
-        const page = await open(browser, '/long.html')
+        const page = await open(browser, '/long.html', JUMP)
         await scrollParaTo(page, 30, -40)
         const h0 = await page.evaluate(() => Array.from(document.querySelectorAll('p')).find((p) => p.textContent.startsWith('第 30 段。')).offsetHeight)
         await page.goto(SITE + '/long.html?font=27')
@@ -183,13 +199,84 @@ async function main() {
     })
 
     await t.test('恢复：改版后锚点全对不上，按进度百分比兜底', async () => {
-        const page = await open(browser, '/long.html')
+        const page = await open(browser, '/long.html', JUMP)
         await scrollWin(page, 4000)
         const rec = (await records(page))[SITE + '/long.html']
         await page.goto(SITE + '/long.html?rewrite=1')
         await page.waitForFunction(() => window.scrollY > 0, null, { timeout: 7000 })
         const p = await page.evaluate(() => window.scrollY / (document.documentElement.scrollHeight - innerHeight))
         t.assert(Math.abs(p - rec.p) < 0.002, `进度 ${p} 应接近 ${rec.p}`)
+        await page.close()
+    })
+
+    await t.test('提示：默认不直接跳，浮出「跳回上次位置（xx%）· 取消」，点了才跳', async () => {
+        const page = await open(browser, '/long.html')
+        await scrollParaTo(page, 40, -10)
+        const rec = (await records(page))[SITE + '/long.html']
+        await page.goto(SITE + '/long.html?drift=500')
+        await page.waitForFunction(() => {
+            const host = document.querySelector('scroll-memory-ui')
+            return host && !host.shadowRoot.querySelector('.prompt').hidden
+        }, null, { timeout: 7000 })
+        t.eq((await promptState(page)).text, '跳回上次位置（' + Math.round(rec.p * 100) + '%）')
+        t.eq(await page.evaluate(() => window.scrollY), 0, '点之前不动')
+        await page.locator('scroll-memory-ui .jump').click()
+        await waitParaAt(page, 40, -10)
+        t.eq((await promptState(page)).shown, false, '点完收起')
+        await page.close()
+    })
+
+    await t.test('提示：点「取消」收起，不跳', async () => {
+        const page = await open(browser, '/long.html')
+        await scrollParaTo(page, 40, -10)
+        await page.goto(SITE + '/long.html')
+        await page.locator('scroll-memory-ui .cancel').click({ timeout: 7000 })
+        t.eq((await promptState(page)).shown, false)
+        await page.waitForTimeout(300)
+        t.eq(await page.evaluate(() => window.scrollY), 0)
+        await page.close()
+    })
+
+    await t.test('用户在恢复前已经主动滚动：不提示、不跳', async () => {
+        for (const opts of [{}, JUMP]) {
+            const page = await open(browser, '/long.html', opts)
+            await scrollParaTo(page, 40, -10)
+            // 广告 1.5 秒后才到，等待期拉长；这期间用户滚了一下滚轮
+            await page.goto(SITE + '/long.html?drift=500&delay=1500')
+            await page.mouse.move(600, 400)
+            await page.mouse.wheel(0, 300)
+            await page.waitForTimeout(2800)
+            // 广告插在上方时 Chrome 的 scroll anchoring 会把 scrollY 加上去，所以看内容：没被拉到第 40 段
+            const top = await paraTop(page, 40)
+            t.assert(top > 2000, `没被拉回上次位置：第 40 段在 ${top}`)
+            t.assert(await page.evaluate(() => window.scrollY) > 0, '用户滚过')
+            t.eq((await promptState(page)).shown, false)
+            await page.close()
+        }
+    })
+
+    await t.test('带 #锚点 打开：用户要看那一节，不恢复', async () => {
+        const page = await open(browser, '/long.html', JUMP)
+        await scrollParaTo(page, 40, -10)
+        await page.goto(SITE + '/long.html#ch2')
+        await page.waitForTimeout(1200)
+        t.eq(Math.round(await page.evaluate(() => document.getElementById('ch2').getBoundingClientRect().top)), 0)
+        t.eq((await promptState(page)).shown, false)
+        await page.close()
+    })
+
+    await t.test('前进 / 后退：交给浏览器，脚本不提示', async () => {
+        const page = await open(browser, '/long.html')
+        await scrollParaTo(page, 40, -10)
+        await page.goto(SITE + '/short.html')
+        page.__logs.length = 0
+        await page.goBack()
+        await page.waitForTimeout(1500)
+        t.eq((await promptState(page)).shown, false)
+        // Playwright 的 Chromium 没命中 bfcache，脚本重跑了一遍，导航类型是 back_forward
+        t.assert(page.__logs.some((l) => l.includes('不恢复：前进/后退')), '应走「交给浏览器」分支：' + page.__logs.join(' | '))
+        // 浏览器自己按像素还原（bfcache 或 scrollRestoration=auto）
+        await waitParaAt(page, 40, -10, { timeout: 1000 })
         await page.close()
     })
 

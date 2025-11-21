@@ -24,6 +24,7 @@
         if (i % 10 === 1) {
             const h = document.createElement('h2')
             h.textContent = '第 ' + Math.ceil(i / 10) + ' 章'
+            h.id = 'ch' + Math.ceil(i / 10)
             body.appendChild(h)
         }
         const p = document.createElement('p')

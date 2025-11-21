@@ -3,7 +3,7 @@
 // @name:zh-CN   阅读位置记忆|长文/小说/文档关掉回来自动回到上次读到的地方
 // @name:en      Scroll Memory — come back to where you stopped reading
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.11.21.3
+// @version      2025.11.21.4
 // @description  长文章、小说、文档读到一半关掉，回来时自动回到上次的位置。
 // @description:zh-CN  长文章、小说、文档读到一半关掉，回来时自动回到上次的位置。
 // @description:en  Remembers how far you read on long articles, novels and docs, and takes you back there next time.
@@ -53,6 +53,15 @@
          */
         stableMs: 500,
         maxWaitMs: 5000,
+
+        /** 'prompt'：浮出「跳回上次位置 · 取消」；'jump'：直接跳。菜单里可切换，存在 sm:settings。 */
+        restoreMode: 'prompt',
+        promptMs: 12000,         // 提示条多久没人理就自己收起
+        /*
+         * 当前位置离目标不到这么多屏，就当作「浏览器已经按像素还原过了」，
+         * 不弹提示，直接按锚点悄悄校准（刷新时 Chrome 会先按 scrollY 还原，再被晚到的内容推开一点）。
+         */
+        nearScreens: 0.5,
     };
 
     // =========================================================================
@@ -60,7 +69,7 @@
     //
     // GM 存储按脚本全局共享（不是按站点），所以键里带完整的页面键：
     //   sm:p:<pageKey>   一个页面的阅读位置 Record
-    //   sm:settings      { disabled: { [origin]: 1 } }
+    //   sm:settings      { mode?: 'prompt' | 'jump', disabled: { [origin]: 1 } }
     // 一页一个键：每次滚动停下只写这一页，不用把所有页面整块读写一遍。
     // =========================================================================
 
@@ -73,7 +82,15 @@
         },
         set(key, rec) { GM_setValue(PREFIX + key, rec); },
         remove(key) { GM_deleteValue(PREFIX + key); },
+        settings() {
+            const v = GM_getValue('sm:settings', null);
+            const s = v && typeof v === 'object' ? v : {};
+            return { mode: s.mode === 'jump' || s.mode === 'prompt' ? s.mode : CONFIG.restoreMode, disabled: s.disabled || {} };
+        },
+        saveSettings(s) { GM_setValue('sm:settings', s); },
     };
+
+    let settings = Store.settings();
 
     // =========================================================================
     // 页面键
@@ -252,7 +269,7 @@
     // 记录
     // =========================================================================
 
-    /** 自己的 UI 宿主元素标签（后面的提示条 / 按钮挂在它的 shadow DOM 里）。 */
+    /** 自己的 UI 宿主元素标签（提示条 / 按钮挂在它的 shadow DOM 里）。 */
     const UI_TAG = 'scroll-memory-ui';
 
     let currentKey = pageKey();
@@ -300,6 +317,8 @@
 
     /** 'idle' | 'waiting'（等内容稳定，准备恢复） */
     let phase = 'idle';
+    /** 等待恢复期间用户自己动过（滚轮 / 触摸 / 翻页键 / 拖滚动条）：那就不打扰了。 */
+    let userMoved = false;
 
     function queryPath(path, root) {
         try {
@@ -375,24 +394,132 @@
         }, 100);
     }
 
+    function jumpTo(rec, why) {
+        const { top, via } = locate(rec, scroller);
+        scroller.setTop(top);
+        console.log(TAG, why, { via, top, percent: Math.round(rec.p * 100) });
+    }
+
+    /**
+     * 这次加载该不该由脚本来恢复。
+     * - 前进 / 后退（back_forward）：交给浏览器。同一会话里浏览器自己记着像素位置，bfcache 命中时
+     *   连脚本都不会重跑；没命中时浏览器也会按 history.scrollRestoration = 'auto' 还原。
+     *   再插一手就是两边抢着滚。
+     * - 带 #锚点 打开：用户要看的就是那一节。
+     * - 普通打开时页面已经不在顶部：脚本跑起来之前用户已经滚了。
+     * - 刷新（reload）照常恢复：浏览器按像素还原了也会被晚到的内容推开，下面按「离目标近不近」区分。
+     */
+    function skipReason() {
+        const nav = performance.getEntriesByType && performance.getEntriesByType('navigation')[0];
+        const type = nav ? nav.type : 'navigate';
+        if (type === 'back_forward') return '前进/后退，交给浏览器';
+        const hash = decodeURIComponent(location.hash.slice(1));
+        if (hash && (document.getElementById(hash) || document.getElementsByName(hash)[0])) return '带 #锚点 打开';
+        if (type === 'navigate' && scroller.top() > 0) return '用户已经滚动';
+        return '';
+    }
+
     function restore(key) {
         const rec = Store.get(key);
         if (!rec) return;
+        const skip = skipReason();
+        if (skip) return console.log(TAG, '不恢复：' + skip);
         phase = 'waiting';
+        userMoved = false;
         waitStable(scroller, () => {
             phase = 'idle';
             if (key !== currentKey) return;
-            const { top, via } = locate(rec, scroller);
-            scroller.setTop(top);
-            console.log(TAG, '已恢复到上次位置', { via, top, percent: Math.round(rec.p * 100) });
+            if (userMoved) return console.log(TAG, '不恢复：等待期间用户自己滚动了');
+            const { top } = locate(rec, scroller);
+            const cur = scroller.top();
+            if (cur > 0 && Math.abs(cur - top) < scroller.view() * CONFIG.nearScreens) return jumpTo(rec, '浏览器已大致还原，按锚点校准');
+            if (settings.mode === 'jump') return jumpTo(rec, '已恢复到上次位置');
+            UI.prompt(Math.round(rec.p * 100), () => {
+                if (key === currentKey) jumpTo(rec, '已跳回上次位置');
+            });
         });
     }
+
+    /** 用户主动滚动的信号。scroll 事件本身分不出是用户、浏览器还原还是内容撑开，所以看输入事件。 */
+    const SCROLL_KEYS = new Set(['PageDown', 'PageUp', 'ArrowDown', 'ArrowUp', 'Home', 'End', ' ', 'Spacebar']);
+
+    function onIntent(e) {
+        if (e.type === 'keydown') {
+            if (!SCROLL_KEYS.has(e.key)) return;
+            const t = e.target;
+            if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+        }
+        // 按在滚动条上：target 是滚动容器本身（window 的滚动条是 <html>）
+        if (e.type === 'mousedown' && e.target !== document.documentElement && e.target !== scroller.el) return;
+        userMoved = true;
+    }
+
+    // =========================================================================
+    // UI（shadow DOM，宿主挂在 <html> 下，页面样式进不来）
+    // =========================================================================
+
+    const CSS_TEXT = `
+        :host { all: initial; }
+        .prompt {
+            position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%);
+            display: flex; align-items: center; gap: 4px;
+            padding: 6px 8px; border-radius: 999px;
+            background: rgba(32, 33, 36, .92); color: #fff;
+            font: 14px/1.4 system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+            box-shadow: 0 4px 16px rgba(0, 0, 0, .25);
+        }
+        .prompt[hidden] { display: none; }
+        button {
+            all: unset; cursor: pointer; padding: 4px 10px; border-radius: 999px; color: inherit;
+        }
+        button:hover, button:focus-visible { background: rgba(255, 255, 255, .16); }
+        .jump { font-weight: 600; }
+        .sep { opacity: .5; }
+    `;
+
+    const UI = {
+        host: null,
+        root: null,
+        promptTimer: 0,
+        ensure() {
+            if (this.host && this.host.isConnected) return this.root;
+            const host = document.createElement(UI_TAG);
+            // 内联 !important：页面写 `* { display: none }` 一类的规则也盖不过
+            host.style.cssText = 'all: initial !important; display: block !important; position: fixed !important; '
+                + 'top: 0 !important; left: 0 !important; width: 0 !important; height: 0 !important; z-index: 2147483647 !important;';
+            const root = host.attachShadow({ mode: 'open' });
+            root.innerHTML = `<style>${CSS_TEXT}</style>
+                <div class="prompt" hidden role="status">
+                    <button class="jump" type="button"></button><span class="sep">·</span><button class="cancel" type="button">取消</button>
+                </div>`;
+            document.documentElement.appendChild(host);
+            this.host = host;
+            this.root = root;
+            return root;
+        },
+        prompt(percent, onJump) {
+            const root = this.ensure();
+            const box = root.querySelector('.prompt');
+            const jump = root.querySelector('.jump');
+            jump.textContent = '跳回上次位置（' + percent + '%）';
+            jump.onclick = () => { this.hidePrompt(); onJump(); };
+            root.querySelector('.cancel').onclick = () => this.hidePrompt();
+            box.hidden = false;
+            clearTimeout(this.promptTimer);
+            this.promptTimer = setTimeout(() => this.hidePrompt(), CONFIG.promptMs);
+        },
+        hidePrompt() {
+            clearTimeout(this.promptTimer);
+            if (this.root) this.root.querySelector('.prompt').hidden = true;
+        },
+    };
 
     function boot() {
         // 捕获阶段：内层容器的 scroll 不冒泡，但捕获能收到
         document.addEventListener('scroll', onScroll, { capture: true, passive: true });
         window.addEventListener('pagehide', flush);
         document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flush(); });
+        for (const type of ['wheel', 'touchmove', 'keydown', 'mousedown']) window.addEventListener(type, onIntent, { capture: true, passive: true });
         console.log(TAG, '已启动', currentKey);
         restore(currentKey);
     }
