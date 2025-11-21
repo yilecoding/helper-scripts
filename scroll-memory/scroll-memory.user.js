@@ -3,7 +3,7 @@
 // @name:zh-CN   阅读位置记忆|长文/小说/文档关掉回来自动回到上次读到的地方
 // @name:en      Scroll Memory — come back to where you stopped reading
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.11.19.2
+// @version      2025.11.21.3
 // @description  长文章、小说、文档读到一半关掉，回来时自动回到上次的位置。
 // @description:zh-CN  长文章、小说、文档读到一半关掉，回来时自动回到上次的位置。
 // @description:en  Remembers how far you read on long articles, novels and docs, and takes you back there next time.
@@ -46,6 +46,13 @@
         recordDebounceMs: 600,   // 滚动停止多久后记录
         minScreens: 2,           // 页面总长超过几屏才记录
         minScrolledScreens: 1,   // 滚过几屏才记录（只看了开头不值得记）
+
+        /*
+         * 恢复前等内容稳定：页面高度连续 stableMs 不变，或最多等 maxWaitMs。
+         * 太早跳，后面的图片 / 异步内容一撑开，位置就又不对了。
+         */
+        stableMs: 500,
+        maxWaitMs: 5000,
     };
 
     // =========================================================================
@@ -276,6 +283,8 @@
     }
 
     function onScroll() {
+        // 等待恢复期间的滚动是浏览器自己的恢复、页面加载撑开的，不是在读：不记，免得覆盖掉要恢复的那条
+        if (phase === 'waiting') return;
         clearTimeout(timer);
         timer = setTimeout(record, CONFIG.recordDebounceMs);
     }
@@ -285,12 +294,107 @@
         if (timer) record();
     }
 
+    // =========================================================================
+    // 恢复
+    // =========================================================================
+
+    /** 'idle' | 'waiting'（等内容稳定，准备恢复） */
+    let phase = 'idle';
+
+    function queryPath(path, root) {
+        try {
+            return path.startsWith(':scope') ? root.querySelector(path) : document.querySelector(path);
+        } catch (e) {
+            return null;
+        }
+    }
+
+    /** 路径对不上（前面插了段落、改版）时按指纹找：同标签、指纹相同，取序号离记录时最近的那个。 */
+    function findByFingerprint(a, root) {
+        let best = null;
+        let bestDist = Infinity;
+        const list = root.getElementsByTagName(a.tag);
+        for (let i = 0; i < list.length; i++) {
+            const dist = Math.abs(i - a.i);
+            if (dist >= bestDist) continue;
+            if (fingerprint(list[i]) === a.fp) {
+                best = list[i];
+                bestDist = dist;
+            }
+        }
+        return best;
+    }
+
+    /**
+     * 算出要滚到哪：路径命中且指纹一致 → 指纹搜索 → 进度百分比。
+     * 返回 { top, via }。
+     */
+    function locate(rec, sc) {
+        const a = rec.a;
+        const root = sc.root();
+        let el = null;
+        let via = 'percent';
+        if (a) {
+            el = queryPath(a.path, root);
+            if (el && a.fp && fingerprint(el) !== a.fp) el = null;
+            if (el) via = 'path';
+            else if (a.fp) {
+                el = findByFingerprint(a, root);
+                if (el) via = 'text';
+            }
+        }
+        let top;
+        if (el) {
+            const r = el.getBoundingClientRect();
+            // 视口上沿落在元素内部时按比例换算：字号变了、图片撑高了，读到的还是同一行附近
+            let off = a.off;
+            if (a.off >= 0 && a.off <= a.eh && a.eh > 0) off = (a.off / a.eh) * r.height;
+            top = sc.top() + r.top - sc.rect().top + off;
+        } else {
+            top = rec.p * sc.max();
+        }
+        return { top: Math.max(0, Math.min(sc.max(), Math.round(top))), via };
+    }
+
+    /** 页面高度连续 stableMs 不变（或等满 maxWaitMs）后回调。 */
+    function waitStable(sc, done) {
+        const start = Date.now();
+        let last = sc.height();
+        let changedAt = start;
+        const iv = setInterval(() => {
+            const now = Date.now();
+            const h = sc.height();
+            if (h !== last) {
+                last = h;
+                changedAt = now;
+            }
+            if (now - changedAt >= CONFIG.stableMs || now - start >= CONFIG.maxWaitMs) {
+                clearInterval(iv);
+                done();
+            }
+        }, 100);
+    }
+
+    function restore(key) {
+        const rec = Store.get(key);
+        if (!rec) return;
+        phase = 'waiting';
+        waitStable(scroller, () => {
+            phase = 'idle';
+            if (key !== currentKey) return;
+            const { top, via } = locate(rec, scroller);
+            scroller.setTop(top);
+            console.log(TAG, '已恢复到上次位置', { via, top, percent: Math.round(rec.p * 100) });
+        });
+    }
+
     function boot() {
         // 捕获阶段：内层容器的 scroll 不冒泡，但捕获能收到
         document.addEventListener('scroll', onScroll, { capture: true, passive: true });
         window.addEventListener('pagehide', flush);
         document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flush(); });
         console.log(TAG, '已启动', currentKey);
+        restore(currentKey);
     }
 
     try {

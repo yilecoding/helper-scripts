@@ -30,6 +30,26 @@
         p.textContent = '第 ' + i + ' 段。' + '这是正文内容，'.repeat(8 + (i * 7) % 23)
         body.appendChild(p)
     }
+
+    // 测试用的「回来时页面变了」：这些参数不在脚本的 query 白名单里，页面键不变
+    const q = new URLSearchParams(location.search)
+    // 字号变了：每段都变高，像素位置全漂
+    if (q.get('font')) document.body.style.fontSize = q.get('font') + 'px'
+    // 改版：段落文字全变了，路径和指纹都对不上，只剩百分比
+    if (q.get('rewrite')) body.querySelectorAll('p').forEach((p) => { p.textContent = '改版后：' + p.textContent })
+    // 晚到的广告 + 公告段落插在正文最前面：像素下移，p 的 nth-of-type 也全部错位
+    if (q.get('drift')) setTimeout(() => {
+        const ad = document.createElement('div')
+        ad.className = 'ad'
+        ad.style.height = q.get('drift') + 'px'
+        ad.textContent = '广告'
+        for (let k = 3; k >= 1; k--) {
+            const p = document.createElement('p')
+            p.textContent = '后来插入的公告 ' + k + '：' + '内容'.repeat(40)
+            body.prepend(p)
+        }
+        body.prepend(ad)
+    }, Number(q.get('delay') || 300))
 </script>
 </body>
 </html>

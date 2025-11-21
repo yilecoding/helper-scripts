@@ -77,6 +77,18 @@ async function scrollParaTo(page, n, offset, wait = 800) {
     if (wait) await page.waitForTimeout(wait)
 }
 
+/** 轮询直到「第 n 段」停在 offset 处（±tol），超时报出实际位置。 */
+async function waitParaAt(page, n, offset, { timeout = 7000, tol = 2 } = {}) {
+    const end = Date.now() + timeout
+    let top
+    while (Date.now() < end) {
+        top = await paraTop(page, n)
+        if (Math.abs(top - offset) <= tol) return
+        await page.waitForTimeout(100)
+    }
+    throw new Error(`第 ${n} 段应在 ${offset}，实际 ${top}`)
+}
+
 async function main() {
     const { browser, close } = await h.setup(FIXTURES)
 
@@ -137,6 +149,54 @@ async function main() {
         const rec = (await records(page))[SITE + '/fixed-header.html']
         t.assert(rec.a.fp.startsWith('第 30 段。'), 'fp: ' + rec.a.fp)
         t.eq(rec.a.off, -100)
+        await page.close()
+    })
+
+    await t.test('恢复：再次打开，等晚到的广告和公告插进来后，按锚点回到同一段（像素和路径都漂了）', async () => {
+        const page = await open(browser, '/long.html')
+        await scrollParaTo(page, 30, -20)
+        const before = (await records(page))[SITE + '/long.html']
+        await page.goto(SITE + '/long.html?drift=700')
+        await waitParaAt(page, 30, -20)
+        const y = await page.evaluate(() => window.scrollY)
+        t.assert(y - before.y > 700, `像素位置应随插入内容下移：之前 ${before.y}，现在 ${y}`)
+        await page.close()
+    })
+
+    await t.test('恢复：刷新时浏览器先按像素还原，内容漂移后脚本按锚点纠正', async () => {
+        const page = await open(browser, '/long.html?drift=700')
+        await page.waitForTimeout(500)
+        await scrollParaTo(page, 45, -35)
+        await page.reload()
+        await waitParaAt(page, 45, -35)
+        await page.close()
+    })
+
+    await t.test('恢复：字号变大，偏移按段落高度等比换算', async () => {
+        const page = await open(browser, '/long.html')
+        await scrollParaTo(page, 30, -40)
+        const h0 = await page.evaluate(() => Array.from(document.querySelectorAll('p')).find((p) => p.textContent.startsWith('第 30 段。')).offsetHeight)
+        await page.goto(SITE + '/long.html?font=27')
+        const h1 = await page.evaluate(() => Array.from(document.querySelectorAll('p')).find((p) => p.textContent.startsWith('第 30 段。')).offsetHeight)
+        await waitParaAt(page, 30, -Math.round(40 * h1 / h0), { tol: 3 })
+        await page.close()
+    })
+
+    await t.test('恢复：改版后锚点全对不上，按进度百分比兜底', async () => {
+        const page = await open(browser, '/long.html')
+        await scrollWin(page, 4000)
+        const rec = (await records(page))[SITE + '/long.html']
+        await page.goto(SITE + '/long.html?rewrite=1')
+        await page.waitForFunction(() => window.scrollY > 0, null, { timeout: 7000 })
+        const p = await page.evaluate(() => window.scrollY / (document.documentElement.scrollHeight - innerHeight))
+        t.assert(Math.abs(p - rec.p) < 0.002, `进度 ${p} 应接近 ${rec.p}`)
+        await page.close()
+    })
+
+    await t.test('没有记录的页面不动', async () => {
+        const page = await open(browser, '/long.html')
+        await page.waitForTimeout(1200)
+        t.eq(await page.evaluate(() => window.scrollY), 0)
         await page.close()
     })
 
