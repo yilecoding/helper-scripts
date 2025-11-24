@@ -67,6 +67,7 @@ async function scrollWin(page, y, wait = 800) {
 function paraTop(page, n) {
     return page.evaluate((n) => {
         const el = Array.from(document.querySelectorAll('p')).find((p) => p.textContent.startsWith('第 ' + n + ' 段。'))
+        if (!el) return null // 异步渲染的页面：还没画出来
         const sc = el.closest('.scroll')
         return el.getBoundingClientRect().top - (sc ? sc.getBoundingClientRect().top : 0)
     }, n)
@@ -90,7 +91,7 @@ async function waitParaAt(page, n, offset, { timeout = 7000, tol = 2 } = {}) {
     let top
     while (Date.now() < end) {
         top = await paraTop(page, n)
-        if (Math.abs(top - offset) <= tol) return
+        if (top !== null && Math.abs(top - offset) <= tol) return
         await page.waitForTimeout(100)
     }
     throw new Error(`第 ${n} 段应在 ${offset}，实际 ${top}`)
@@ -277,6 +278,36 @@ async function main() {
         t.assert(page.__logs.some((l) => l.includes('不恢复：前进/后退')), '应走「交给浏览器」分支：' + page.__logs.join(' | '))
         // 浏览器自己按像素还原（bfcache 或 scrollRestoration=auto）
         await waitParaAt(page, 40, -10, { timeout: 1000 })
+        await page.close()
+    })
+
+    await t.test('内层 div 滚动：记录容器路径，回来时等正文异步渲染完、广告插进来后恢复到同一段', async () => {
+        const page = await open(browser, '/inner.html', JUMP)
+        await page.waitForTimeout(400)
+        // 侧栏先滚一下：它也能滚，但太窄，不是正文
+        await page.evaluate(() => document.querySelector('.side').scrollTo({ top: 600, behavior: 'instant' }))
+        await page.waitForTimeout(800)
+        t.eq(await records(page), {}, '侧栏滚动不记录')
+        await scrollParaTo(page, 35, -25)
+        const rec = (await records(page))[SITE + '/inner.html']
+        t.assert(rec && rec.c, '应记下内层容器：' + JSON.stringify(rec))
+        t.eq(await page.evaluate((c) => document.body.querySelector(c).className, rec.c), 'scroll')
+        t.assert(rec.a.fp.startsWith('第 35 段。'), 'fp: ' + rec.a.fp)
+        t.eq(await page.evaluate(() => window.scrollY), 0, 'window 不滚')
+
+        await page.goto(SITE + '/inner.html?drift=600')
+        await waitParaAt(page, 35, -25)
+        t.assert(await page.evaluate(() => document.querySelector('.scroll').scrollTop) > rec.y + 600, '容器的像素位置跟着下移')
+        await page.close()
+    })
+
+    await t.test('内层 div 滚动：提示条模式下点「跳回」滚的也是容器', async () => {
+        const page = await open(browser, '/inner.html')
+        await page.waitForTimeout(400)
+        await scrollParaTo(page, 50, 0)
+        await page.goto(SITE + '/inner.html')
+        await page.locator('scroll-memory-ui .jump').click({ timeout: 7000 })
+        await waitParaAt(page, 50, 0)
         await page.close()
     })
 

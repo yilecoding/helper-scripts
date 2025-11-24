@@ -3,7 +3,7 @@
 // @name:zh-CN   阅读位置记忆|长文/小说/文档关掉回来自动回到上次读到的地方
 // @name:en      Scroll Memory — come back to where you stopped reading
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.11.21.4
+// @version      2025.11.24.5
 // @description  长文章、小说、文档读到一半关掉，回来时自动回到上次的位置。
 // @description:zh-CN  长文章、小说、文档读到一半关掉，回来时自动回到上次的位置。
 // @description:en  Remembers how far you read on long articles, novels and docs, and takes you back there next time.
@@ -111,7 +111,7 @@
     // =========================================================================
     // 滚动容器
     //
-    // 统一成同一套接口：top / setTop / view / height / max / viewTop（视口上沿在屏幕上的 y）/ root。
+    // 统一成同一套接口：top / setTop / view / height / max / rect（可视区在屏幕上的矩形）/ root。
     // el 为 null 表示 window（document.scrollingElement）。
     // =========================================================================
 
@@ -136,6 +136,48 @@
                 return { top: r.top + el.clientTop, left: r.left + el.clientLeft, width: el.clientWidth, height: el.clientHeight };
             },
         };
+    }
+
+    /** 能当「主滚动容器」的元素：够大（代码块、侧栏小菜单不算）、确实能滚。 */
+    function isMainScroller(el) {
+        if (!el || el.nodeType !== 1 || el === document.body || el === document.documentElement) return false;
+        if (el.clientHeight < window.innerHeight * 0.4 || el.clientWidth < window.innerWidth * 0.3) return false;
+        if (el.scrollHeight <= el.clientHeight + 1) return false;
+        return /(auto|scroll|overlay)/.test(getComputedStyle(el).overflowY);
+    }
+
+    function windowRange() {
+        const doc = document.scrollingElement || document.documentElement;
+        const hidden = (n) => !!n && getComputedStyle(n).overflowY === 'hidden';
+        // 后台 / 文档站常见写法：html, body { height: 100%; overflow: hidden }，正文在内层 div 里滚
+        if (hidden(document.documentElement) || hidden(document.body)) return 0;
+        return Math.max(0, doc.scrollHeight - doc.clientHeight);
+    }
+
+    /**
+     * 找主滚动容器：从视口中间几个点往上找第一个能滚的大元素，和 window 比谁的可滚距离长。
+     * 只是开局的猜测；之后用户真正滚了哪个容器，onScroll 会改过来。
+     */
+    function findScroller() {
+        let best = null;
+        let bestRange = windowRange();
+        const seen = new Set();
+        for (const [fx, fy] of [[0.5, 0.5], [0.5, 0.3], [0.5, 0.7], [0.3, 0.5], [0.7, 0.5]]) {
+            for (let n = document.elementFromPoint(window.innerWidth * fx, window.innerHeight * fy); n && n !== document.body; n = n.parentElement) {
+                if (seen.has(n)) break;
+                seen.add(n);
+                if (n.closest(UI_TAG)) break;
+                if (isMainScroller(n)) {
+                    const range = n.scrollHeight - n.clientHeight;
+                    if (range > bestRange) {
+                        best = n;
+                        bestRange = range;
+                    }
+                    break;
+                }
+            }
+        }
+        return makeScroller(best);
     }
 
     let scroller = makeScroller(null);
@@ -288,6 +330,8 @@
             p: +(max > 0 ? top / max : 0).toFixed(4),
             y: Math.round(top),
             h: height,
+            // 内层容器的路径；null = window
+            c: sc.el ? pathOf(sc.el, document.body) : null,
             a: captureAnchor(sc),
         };
     }
@@ -299,9 +343,26 @@
         if (rec) Store.set(currentKey, rec);
     }
 
-    function onScroll() {
+    /** 这次 scroll 是不是主滚动容器上的；顺带把「主容器」改成用户真正在滚的那个。 */
+    function adoptScroller(target) {
+        if (target === document || target === document.documentElement || target === document.body) {
+            if (scroller.el && windowRange() > scroller.max()) scroller = makeScroller(null);
+            return !scroller.el;
+        }
+        if (target === scroller.el) return true;
+        // 代码块、侧栏、下拉框里的滚动不算读到哪了
+        if (!isMainScroller(target)) return false;
+        if (scroller.el || target.scrollHeight - target.clientHeight > windowRange()) {
+            scroller = makeScroller(target);
+            return true;
+        }
+        return false;
+    }
+
+    function onScroll(e) {
         // 等待恢复期间的滚动是浏览器自己的恢复、页面加载撑开的，不是在读：不记，免得覆盖掉要恢复的那条
         if (phase === 'waiting') return;
+        if (!adoptScroller(e.target)) return;
         clearTimeout(timer);
         timer = setTimeout(record, CONFIG.recordDebounceMs);
     }
@@ -375,23 +436,38 @@
         return { top: Math.max(0, Math.min(sc.max(), Math.round(top))), via };
     }
 
-    /** 页面高度连续 stableMs 不变（或等满 maxWaitMs）后回调。 */
-    function waitStable(sc, done) {
+    /**
+     * 页面高度连续 stableMs 不变（或等满 maxWaitMs）后回调 done(scroller)。
+     * 滚动容器每次重新取：SPA 的正文容器可能还没渲染出来（取不到时算「还在变」），
+     * 等到了也可能是空的、要等接口回来才撑开。
+     */
+    function waitStable(getScroller, done) {
         const start = Date.now();
-        let last = sc.height();
+        let last = NaN;
         let changedAt = start;
         const iv = setInterval(() => {
             const now = Date.now();
-            const h = sc.height();
+            const sc = getScroller();
+            const h = sc ? sc.height() : NaN;
             if (h !== last) {
                 last = h;
                 changedAt = now;
             }
-            if (now - changedAt >= CONFIG.stableMs || now - start >= CONFIG.maxWaitMs) {
+            const stable = sc && now - changedAt >= CONFIG.stableMs;
+            if (stable || now - start >= CONFIG.maxWaitMs) {
                 clearInterval(iv);
-                done();
+                done(sc);
             }
         }, 100);
+    }
+
+    /** 记录里存的滚动容器；路径失效（容器外面多套了一层）就重新找。还没渲染出来返回 null。 */
+    function scrollerFor(rec) {
+        if (!rec.c) return makeScroller(null);
+        const el = queryPath(rec.c, document.body);
+        if (el && isMainScroller(el)) return makeScroller(el);
+        const found = findScroller();
+        return found.el ? found : null;
     }
 
     function jumpTo(rec, why) {
@@ -426,9 +502,11 @@
         if (skip) return console.log(TAG, '不恢复：' + skip);
         phase = 'waiting';
         userMoved = false;
-        waitStable(scroller, () => {
+        waitStable(() => scrollerFor(rec), (sc) => {
             phase = 'idle';
             if (key !== currentKey) return;
+            if (!sc) return console.log(TAG, '不恢复：找不到记录时的滚动容器', rec.c);
+            scroller = sc;
             if (userMoved) return console.log(TAG, '不恢复：等待期间用户自己滚动了');
             const { top } = locate(rec, scroller);
             const cur = scroller.top();
@@ -520,6 +598,7 @@
         window.addEventListener('pagehide', flush);
         document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flush(); });
         for (const type of ['wheel', 'touchmove', 'keydown', 'mousedown']) window.addEventListener(type, onIntent, { capture: true, passive: true });
+        scroller = findScroller();
         console.log(TAG, '已启动', currentKey);
         restore(currentKey);
     }
