@@ -311,6 +311,77 @@ async function main() {
         await page.close()
     })
 
+    /** SPA：点导航链接（pushState），等新页渲染出来。 */
+    async function spaGo(page, text) {
+        await page.locator('nav a', { hasText: text }).click()
+        await page.waitForFunction((t) => {
+            const h1 = document.querySelector('#app h1')
+            return h1 && h1.textContent === t.toUpperCase() + ' 篇'
+        }, text.replace(/ 篇$/, '').replace(' ', '-'))
+    }
+
+    /** 当前视口里「第 n 段」属于哪一篇。 */
+    function paraArticle(page, n) {
+        return page.evaluate((n) => {
+            const el = Array.from(document.querySelectorAll('p')).find((p) => p.textContent.startsWith('第 ' + n + ' 段。'))
+            return el && el.textContent.split('：')[0]
+        }, n)
+    }
+
+    await t.test('SPA：pushState 换页时存旧页（防抖还没到也存，且存的是换页前的锚点），回到旧页时恢复', async () => {
+        const page = await open(browser, '/spa/a', { ...JUMP, fallback: 'spa.html' })
+        await page.waitForSelector('#app p')
+        await scrollParaTo(page, 30, -10, 250) // 还在 600ms 防抖里
+        await spaGo(page, 'B 篇')
+        let recs = await records(page)
+        const a = recs[SITE + '/spa/a']
+        t.assert(a && a.a && a.a.fp.includes('A 篇'), '旧页 A 的锚点应在换页前拍好：' + JSON.stringify(a && a.a))
+        t.eq(await page.evaluate(() => window.scrollY), 0, '新页从顶部开始（没有 B 的记录）')
+
+        await scrollParaTo(page, 20, -10)
+        await spaGo(page, 'A 篇')
+        await waitParaAt(page, 30, -10)
+        t.eq(await paraArticle(page, 30), '第 30 段。A 篇')
+        recs = await records(page)
+        t.assert(recs[SITE + '/spa/b'], 'B 也记下了')
+
+        // 带跟踪参数的链接：页面键里没有 utm
+        await spaGo(page, 'C 篇')
+        await scrollParaTo(page, 25, 0)
+        t.assert((await records(page))[SITE + '/spa/c'], '页面键不带 utm：' + Object.keys(await records(page)))
+        t.eq(h.errors(page).map(String), [])
+        await page.close()
+    })
+
+    await t.test('SPA：popstate（后退）交给浏览器 / 路由，不恢复', async () => {
+        const page = await open(browser, '/spa/a', { ...JUMP, fallback: 'spa.html' })
+        await page.waitForSelector('#app p')
+        await scrollParaTo(page, 30, -10)
+        await spaGo(page, 'B 篇')
+        await scrollParaTo(page, 20, -10)
+        page.__logs.length = 0
+        await page.goBack()
+        await page.waitForTimeout(1200)
+        t.assert(page.__logs.some((l) => l.includes('不恢复：SPA 前进/后退')), page.__logs.join(' | '))
+        t.assert(await records(page).then((r) => r[SITE + '/spa/b']), '离开 B 时存了 B')
+        await page.close()
+    })
+
+    await t.test('SPA：hash 路由（#/xxx）参与页面键，点链接换页能恢复', async () => {
+        const page = await open(browser, '/spa/a', { ...JUMP, fallback: 'spa.html' })
+        await page.waitForSelector('#app p')
+        await page.locator('nav a', { hasText: 'hash A' }).click()
+        await page.waitForFunction(() => document.querySelector('#app h1') && document.querySelector('#app h1').textContent === 'HASH-A 篇')
+        await scrollParaTo(page, 40, -10)
+        await page.locator('nav a', { hasText: 'hash B' }).click()
+        await page.waitForFunction(() => document.querySelector('#app h1') && document.querySelector('#app h1').textContent === 'HASH-B 篇')
+        await page.evaluate(() => window.scrollTo(0, 0))
+        await page.locator('nav a', { hasText: 'hash A' }).click()
+        await waitParaAt(page, 40, -10)
+        t.assert((await records(page))[SITE + '/spa/a#/hash-a'], Object.keys(await records(page)).join(', '))
+        await page.close()
+    })
+
     await t.test('没有记录的页面不动', async () => {
         const page = await open(browser, '/long.html')
         await page.waitForTimeout(1200)

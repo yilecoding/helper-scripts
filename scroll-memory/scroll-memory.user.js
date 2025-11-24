@@ -3,7 +3,7 @@
 // @name:zh-CN   阅读位置记忆|长文/小说/文档关掉回来自动回到上次读到的地方
 // @name:en      Scroll Memory — come back to where you stopped reading
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.11.24.5
+// @version      2025.11.24.6
 // @description  长文章、小说、文档读到一半关掉，回来时自动回到上次的位置。
 // @description:zh-CN  长文章、小说、文档读到一半关掉，回来时自动回到上次的位置。
 // @description:en  Remembers how far you read on long articles, novels and docs, and takes you back there next time.
@@ -14,6 +14,7 @@
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_deleteValue
+// @grant        unsafeWindow
 // @license      CC BY-NC-SA
 // @run-at       document-end
 // @homepageURL  https://github.com/yilecoding/helper-scripts
@@ -105,7 +106,9 @@
         // 参数顺序不同（?page=2&id=1 / ?id=1&page=2）是同一页
         keep.sort((a, b) => (a[0] + '=' + a[1]).localeCompare(b[0] + '=' + b[1]));
         const query = keep.length ? '?' + new URLSearchParams(keep).toString() : '';
-        return url.origin + url.pathname + query;
+        // hash 路由（#/post/1、#!/post/1）是「哪一页」；普通的 #第三节 只是页内跳转，不算
+        const hash = /^#!?\//.test(url.hash) ? url.hash : '';
+        return url.origin + url.pathname + query + hash;
     }
 
     // =========================================================================
@@ -336,15 +339,28 @@
         };
     }
 
+    /*
+     * 滚动中每 150ms 拍一张快照（带当时的页面键）。SPA 换页时 DOM 可能已经换成新页，
+     * 那一刻再算锚点就算到新页上了 —— 所以换页时写的是换页前拍好的这张。
+     */
+    let pending = null;
+    let snapTimer = 0;
+
+    function write(p) {
+        if (p && p.rec) Store.set(p.key, p.rec);
+    }
+
     function record() {
         clearTimeout(timer);
         timer = 0;
-        const rec = snapshot();
-        if (rec) Store.set(currentKey, rec);
+        write({ key: currentKey, rec: snapshot() });
+        pending = null;
     }
 
     /** 这次 scroll 是不是主滚动容器上的；顺带把「主容器」改成用户真正在滚的那个。 */
     function adoptScroller(target) {
+        // SPA 换页把整个容器换掉了
+        if (scroller.el && !scroller.el.isConnected) scroller = findScroller();
         if (target === document || target === document.documentElement || target === document.body) {
             if (scroller.el && windowRange() > scroller.max()) scroller = makeScroller(null);
             return !scroller.el;
@@ -362,7 +378,15 @@
     function onScroll(e) {
         // 等待恢复期间的滚动是浏览器自己的恢复、页面加载撑开的，不是在读：不记，免得覆盖掉要恢复的那条
         if (phase === 'waiting') return;
+        // history 挂钩失效时（页面在隔离环境里改不动）的兜底：滚动时顺手比一下 URL
+        if (location.href !== lastHref) onRoute(false);
         if (!adoptScroller(e.target)) return;
+        if (!snapTimer) {
+            snapTimer = setTimeout(() => {
+                snapTimer = 0;
+                pending = { key: currentKey, rec: snapshot() };
+            }, 150);
+        }
         clearTimeout(timer);
         timer = setTimeout(record, CONFIG.recordDebounceMs);
     }
@@ -441,11 +465,14 @@
      * 滚动容器每次重新取：SPA 的正文容器可能还没渲染出来（取不到时算「还在变」），
      * 等到了也可能是空的、要等接口回来才撑开。
      */
+    let waitTimer = 0;
+
     function waitStable(getScroller, done) {
+        clearInterval(waitTimer);
         const start = Date.now();
         let last = NaN;
         let changedAt = start;
-        const iv = setInterval(() => {
+        const iv = waitTimer = setInterval(() => {
             const now = Date.now();
             const sc = getScroller();
             const h = sc ? sc.height() : NaN;
@@ -495,10 +522,11 @@
         return '';
     }
 
-    function restore(key) {
+    /** spa = true：SPA 换页（pushState），页面加载时的导航类型和 scrollTop 都不说明问题。 */
+    function restore(key, spa) {
         const rec = Store.get(key);
         if (!rec) return;
-        const skip = skipReason();
+        const skip = spa ? '' : skipReason();
         if (skip) return console.log(TAG, '不恢复：' + skip);
         phase = 'waiting';
         userMoved = false;
@@ -592,12 +620,81 @@
         },
     };
 
+    // =========================================================================
+    // SPA：URL 变了就先存旧页、再恢复新页
+    // =========================================================================
+
+    const ROUTE_EVENT = 'scroll-memory:route';
+    let lastHref = location.href;
+
+    /**
+     * fromHistory = true：popstate（前进 / 后退）。和整页的前进后退一样交给浏览器 / 路由自己还原，
+     * 很多路由（React Router 的 ScrollRestoration、Vue Router 的 savedPosition）本来就会做。
+     */
+    function onRoute(fromHistory) {
+        if (location.href === lastHref) return;
+        lastHref = location.href;
+        const key = pageKey();
+        if (key === currentKey) return; // 只是跟踪参数 / 页内锚点变了
+        // 旧页还没落盘的那次滚动：写换页前拍好的快照，不在新 DOM 上重算
+        clearTimeout(timer);
+        timer = 0;
+        clearTimeout(snapTimer);
+        snapTimer = 0;
+        if (pending && pending.key === currentKey) write(pending);
+        pending = null;
+        clearInterval(waitTimer);
+        phase = 'idle';
+        UI.hidePrompt();
+        currentKey = key;
+        if (fromHistory) return console.log(TAG, '不恢复：SPA 前进/后退，交给浏览器 / 路由', key);
+        restore(key, true);
+    }
+
+    /**
+     * 包一层 pushState / replaceState，调用后发一个 DOM 事件。
+     * 改的是页面的 history（unsafeWindow）：沙箱里的 window.history 和页面的不一定是同一个对象，
+     * 改了沙箱那份，页面路由调的照样是原版。事件走 DOM，不管脚本跑在哪个 world 都收得到。
+     */
+    function hookHistory() {
+        try {
+            const hist = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).history;
+            for (const name of ['pushState', 'replaceState']) {
+                const orig = hist[name];
+                if (typeof orig !== 'function' || orig.__scrollMemory) continue;
+                const wrapped = function (...args) {
+                    const ret = orig.apply(this, args);
+                    window.dispatchEvent(new Event(ROUTE_EVENT));
+                    return ret;
+                };
+                wrapped.__scrollMemory = true;
+                hist[name] = wrapped;
+            }
+        } catch (e) {
+            console.warn(TAG, 'history 挂钩失败，只靠滚动时比 URL 兜底', e);
+        }
+        /*
+         * popstate 不只在前进后退时触发：点 <a href="#/b"> 这种页内跳转也会触发。
+         * 有 Navigation API（Chromium）就看 navigationType 是不是 traverse；
+         * 没有就退回猜：popstate 当前进后退，只有 hashchange 的当新打开。
+         */
+        let navType = '';
+        try {
+            const nav = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).navigation;
+            if (nav) nav.addEventListener('navigate', (e) => { navType = e.navigationType; });
+        } catch (e) { /* 没有就算了 */ }
+        window.addEventListener(ROUTE_EVENT, () => onRoute(false));
+        window.addEventListener('popstate', () => onRoute(navType ? navType === 'traverse' : true));
+        window.addEventListener('hashchange', () => onRoute(navType ? navType === 'traverse' : false));
+    }
+
     function boot() {
         // 捕获阶段：内层容器的 scroll 不冒泡，但捕获能收到
         document.addEventListener('scroll', onScroll, { capture: true, passive: true });
         window.addEventListener('pagehide', flush);
         document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flush(); });
         for (const type of ['wheel', 'touchmove', 'keydown', 'mousedown']) window.addEventListener(type, onIntent, { capture: true, passive: true });
+        hookHistory();
         scroller = findScroller();
         console.log(TAG, '已启动', currentKey);
         restore(currentKey);

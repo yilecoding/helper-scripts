@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>SPA 小说站</title>
+<style>
+    body { margin: 0; font: 18px/1.8 sans-serif; }
+    nav { position: sticky; top: 0; background: #fff; border-bottom: 1px solid #ccc; padding: 8px; z-index: 1; }
+    nav a { margin-right: 12px; }
+    #app { max-width: 720px; margin: 0 auto; }
+</style>
+</head>
+<body>
+<nav>
+    <a href="/spa/a" data-to="/spa/a">A 篇</a>
+    <a href="/spa/b" data-to="/spa/b" data-render-first="1">B 篇</a>
+    <a href="/spa/c?utm_source=nav" data-to="/spa/c?utm_source=nav">C 篇</a>
+    <a href="#/hash-a" data-hash="#/hash-a">hash A</a>
+    <a href="#/hash-b" data-hash="#/hash-b">hash B</a>
+</nav>
+<main id="app"></main>
+<script>
+    // 极简路由：pushState 之后异步渲染（像拉完接口再画），换页时滚回顶部（多数路由的默认行为）
+    const app = document.getElementById('app')
+    function name() {
+        if (location.hash.startsWith('#/')) return location.hash.slice(2).toUpperCase()
+        return location.pathname.split('/').pop().toUpperCase()
+    }
+    function render() {
+        app.innerHTML = ''
+        setTimeout(() => {
+            const n = name()
+            let html = '<h1>' + n + ' 篇</h1>'
+            for (let i = 1; i <= 60; i++) html += '<p>第 ' + i + ' 段。' + n + ' 篇：' + '故事继续，'.repeat(10 + (i * 3) % 17) + '</p>'
+            app.innerHTML = html
+        }, 80)
+    }
+    document.querySelector('nav').addEventListener('click', (e) => {
+        const a = e.target.closest('a')
+        if (!a || !a.dataset.to) return
+        e.preventDefault()
+        // 有的路由先换视图、后改 URL：pushState 那一刻 DOM 已经是空的新页了
+        if (a.dataset.renderFirst) {
+            app.innerHTML = ''
+            window.scrollTo(0, 0)
+            history.pushState(null, '', a.dataset.to)
+        } else {
+            history.pushState(null, '', a.dataset.to)
+            window.scrollTo(0, 0)
+        }
+        render()
+    })
+    window.addEventListener('popstate', render)
+    render()
+</script>
+</body>
+</html>
