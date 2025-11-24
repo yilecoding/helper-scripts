@@ -3,7 +3,7 @@
 // @name:zh-CN   阅读位置记忆|长文/小说/文档关掉回来自动回到上次读到的地方
 // @name:en      Scroll Memory — come back to where you stopped reading
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.11.24.6
+// @version      2025.11.24.7
 // @description  长文章、小说、文档读到一半关掉，回来时自动回到上次的位置。
 // @description:zh-CN  长文章、小说、文档读到一半关掉，回来时自动回到上次的位置。
 // @description:en  Remembers how far you read on long articles, novels and docs, and takes you back there next time.
@@ -376,11 +376,14 @@
     }
 
     function onScroll(e) {
+        const main = adoptScroller(e.target);
+        // 进度在任何阶段都跟着滚动走
+        if (main) scheduleFab();
         // 等待恢复期间的滚动是浏览器自己的恢复、页面加载撑开的，不是在读：不记，免得覆盖掉要恢复的那条
         if (phase === 'waiting') return;
         // history 挂钩失效时（页面在隔离环境里改不动）的兜底：滚动时顺手比一下 URL
         if (location.href !== lastHref) onRoute(false);
-        if (!adoptScroller(e.target)) return;
+        if (!main) return;
         if (!snapTimer) {
             snapTimer = setTimeout(() => {
                 snapTimer = 0;
@@ -581,6 +584,21 @@
         button:hover, button:focus-visible { background: rgba(255, 255, 255, .16); }
         .jump { font-weight: 600; }
         .sep { opacity: .5; }
+
+        .fab {
+            position: fixed; right: 20px; bottom: 28px;
+            display: flex; flex-direction: column; align-items: center;
+            border-radius: 20px; overflow: hidden;
+            background: rgba(32, 33, 36, .78); color: #fff;
+            font: 12px/1 system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, .2);
+            opacity: 0; pointer-events: none; transform: translateY(8px);
+            transition: opacity .2s, transform .2s;
+        }
+        .fab.show { opacity: 1; pointer-events: auto; transform: none; }
+        .fab button { width: 40px; height: 34px; padding: 0; border-radius: 0; text-align: center; font-size: 16px; }
+        .fab .pct { padding: 2px 0 4px; font-variant-numeric: tabular-nums; opacity: .85; }
+        @media (prefers-reduced-motion: reduce) { .fab { transition: none; } }
     `;
 
     const UI = {
@@ -597,7 +615,15 @@
             root.innerHTML = `<style>${CSS_TEXT}</style>
                 <div class="prompt" hidden role="status">
                     <button class="jump" type="button"></button><span class="sep">·</span><button class="cancel" type="button">取消</button>
+                </div>
+                <div class="fab" aria-hidden="true">
+                    <button class="top" type="button" title="回到顶部" aria-label="回到顶部">↑</button>
+                    <span class="pct"></span>
+                    <button class="bottom" type="button" title="到底部" aria-label="到底部">↓</button>
                 </div>`;
+            // 按钮滚的是「当前」主容器：SPA 换页、换了容器之后也对
+            root.querySelector('.fab .top').onclick = () => smoothTo(0);
+            root.querySelector('.fab .bottom').onclick = () => smoothTo(scroller.max());
             document.documentElement.appendChild(host);
             this.host = host;
             this.root = root;
@@ -618,7 +644,32 @@
             clearTimeout(this.promptTimer);
             if (this.root) this.root.querySelector('.prompt').hidden = true;
         },
+        /** 回到顶部 / 底部按钮：滚过半屏才出现，中间显示阅读进度。 */
+        updateFab() {
+            const max = scroller.max();
+            const top = scroller.top();
+            const show = max > scroller.view() * 0.5 && top > scroller.view() * 0.5;
+            if (!show && !this.root) return; // 还没出现过就别为它建 DOM
+            const fab = this.ensure().querySelector('.fab');
+            fab.classList.toggle('show', show);
+            fab.setAttribute('aria-hidden', String(!show));
+            fab.querySelector('.pct').textContent = Math.round(max > 0 ? (top / max) * 100 : 0) + '%';
+        },
     };
+
+    function smoothTo(y) {
+        const el = scroller.el || window;
+        el.scrollTo({ top: y, behavior: 'smooth' });
+    }
+
+    let fabFrame = 0;
+    function scheduleFab() {
+        if (fabFrame) return;
+        fabFrame = requestAnimationFrame(() => {
+            fabFrame = 0;
+            UI.updateFab();
+        });
+    }
 
     // =========================================================================
     // SPA：URL 变了就先存旧页、再恢复新页

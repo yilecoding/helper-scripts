@@ -106,6 +106,26 @@ function promptState(page) {
     })
 }
 
+/** 回到顶部 / 底部按钮：{ shown, pct }（还没建 DOM 时 shown=false）。 */
+function fabState(page) {
+    return page.evaluate(() => {
+        const host = document.querySelector('scroll-memory-ui')
+        const fab = host && host.shadowRoot.querySelector('.fab')
+        if (!fab) return { shown: false, pct: null }
+        return { shown: fab.classList.contains('show') && getComputedStyle(fab).pointerEvents !== 'none', pct: fab.querySelector('.pct').textContent }
+    })
+}
+
+/** 等某个容器（默认 window）的 scrollTop 满足条件。 */
+async function waitScroll(page, pred, sel = null, timeout = 4000) {
+    await page.waitForFunction(({ pred, sel }) => {
+        const y = sel ? document.querySelector(sel).scrollTop : window.scrollY
+        const max = sel ? document.querySelector(sel).scrollHeight - document.querySelector(sel).clientHeight
+            : document.documentElement.scrollHeight - innerHeight
+        return new Function('y', 'max', 'return ' + pred)(y, max)
+    }, { pred, sel }, { timeout })
+}
+
 async function main() {
     const { browser, close } = await h.setup(FIXTURES)
 
@@ -379,6 +399,36 @@ async function main() {
         await page.locator('nav a', { hasText: 'hash A' }).click()
         await waitParaAt(page, 40, -10)
         t.assert((await records(page))[SITE + '/spa/a#/hash-a'], Object.keys(await records(page)).join(', '))
+        await page.close()
+    })
+
+    await t.test('回到顶部 / 底部按钮：滚动后才出现，显示进度，点了平滑滚到顶 / 底，回到顶部后隐藏', async () => {
+        const page = await open(browser, '/long.html')
+        await page.waitForTimeout(300)
+        t.eq((await fabState(page)).shown, false, '一开始不显示')
+        await scrollWin(page, 3000, 200)
+        const st = await fabState(page)
+        t.assert(st.shown, '滚动后出现')
+        const pct = await page.evaluate(() => Math.round(scrollY / (document.documentElement.scrollHeight - innerHeight) * 100) + '%')
+        t.eq(st.pct, pct)
+        await page.locator('scroll-memory-ui .fab .bottom').click()
+        await waitScroll(page, 'Math.abs(y - max) < 2')
+        await page.waitForTimeout(100)
+        t.eq((await fabState(page)).pct, '100%')
+        await page.locator('scroll-memory-ui .fab .top').click()
+        await waitScroll(page, 'y === 0')
+        await page.waitForTimeout(300)
+        t.eq((await fabState(page)).shown, false, '回到顶部后隐藏')
+        await page.close()
+    })
+
+    await t.test('回到顶部按钮：内层 div 滚动的页面滚的是那个 div', async () => {
+        const page = await open(browser, '/inner.html')
+        await page.waitForSelector('.scroll p')
+        await scrollParaTo(page, 40, 0, 200)
+        t.assert((await fabState(page)).shown)
+        await page.locator('scroll-memory-ui .fab .top').click()
+        await waitScroll(page, 'y === 0', '.scroll')
         await page.close()
     })
 
