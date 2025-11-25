@@ -3,7 +3,7 @@
 // @name:zh-CN   阅读位置记忆|长文/小说/文档关掉回来自动回到上次读到的地方
 // @name:en      Scroll Memory — come back to where you stopped reading
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.11.24.7
+// @version      2025.11.25.8
 // @description  长文章、小说、文档读到一半关掉，回来时自动回到上次的位置。
 // @description:zh-CN  长文章、小说、文档读到一半关掉，回来时自动回到上次的位置。
 // @description:en  Remembers how far you read on long articles, novels and docs, and takes you back there next time.
@@ -14,6 +14,9 @@
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_deleteValue
+// @grant        GM_listValues
+// @grant        GM_registerMenuCommand
+// @grant        GM_unregisterMenuCommand
 // @grant        unsafeWindow
 // @license      CC BY-NC-SA
 // @run-at       document-end
@@ -63,6 +66,10 @@
          * 不弹提示，直接按锚点悄悄校准（刷新时 Chrome 会先按 scrollY 还原，再被晚到的内容推开一点）。
          */
         nearScreens: 0.5,
+
+        doneProgress: 0.95,      // 读到这里算读完，删掉记录（下次从头开始）
+        ttlDays: 30,             // 记录最后一次访问后保留几天
+        maxEntries: 300,         // 总条数上限，超了先删最久没访问的
     };
 
     // =========================================================================
@@ -89,7 +96,28 @@
             return { mode: s.mode === 'jump' || s.mode === 'prompt' ? s.mode : CONFIG.restoreMode, disabled: s.disabled || {} };
         },
         saveSettings(s) { GM_setValue('sm:settings', s); },
+        keys() { return GM_listValues().filter((k) => k.startsWith(PREFIX)).map((k) => k.slice(PREFIX.length)); },
     };
+
+    /**
+     * 启动时扫一遍全部记录：过期的删掉，超出条数上限的从最久没访问的删起（LRU）。
+     * t 在记录和每次回访时更新，所以「最近用过」的不会被挤掉。
+     * 几百条记录的读取都在 Tampermonkey 的内存缓存里，开销可以忽略。
+     */
+    function sweep() {
+        const now = Date.now();
+        const ttl = CONFIG.ttlDays * 86400e3;
+        const alive = [];
+        for (const key of Store.keys()) {
+            const rec = Store.get(key);
+            if (!rec || typeof rec.t !== 'number' || now - rec.t > ttl) Store.remove(key);
+            // 正在打开的这页马上就要「用」了，按现在算 —— 否则它恰好最旧时会在恢复前被挤掉
+            else alive.push([key, key === currentKey ? now : rec.t]);
+        }
+        if (alive.length <= CONFIG.maxEntries) return;
+        alive.sort((a, b) => a[1] - b[1]);
+        for (const [key] of alive.slice(0, alive.length - CONFIG.maxEntries)) Store.remove(key);
+    }
 
     let settings = Store.settings();
 
@@ -326,8 +354,10 @@
         const height = sc.height();
         const top = sc.top();
         if (height <= view * CONFIG.minScreens) return null;
-        if (top <= view * CONFIG.minScrolledScreens) return null;
         const max = sc.max();
+        // 读到底了：这篇读完了，记录删掉（不存锚点，省一次探测）
+        if (max > 0 && top / max > CONFIG.doneProgress) return { done: true };
+        if (top <= view * CONFIG.minScrolledScreens) return null;
         return {
             t: Date.now(),
             p: +(max > 0 ? top / max : 0).toFixed(4),
@@ -347,7 +377,13 @@
     let snapTimer = 0;
 
     function write(p) {
-        if (p && p.rec) Store.set(p.key, p.rec);
+        if (!p || !p.rec) return;
+        if (p.rec.done) {
+            if (Store.get(p.key)) console.log(TAG, '读到底了，删除记录', p.key);
+            Store.remove(p.key);
+        } else {
+            Store.set(p.key, p.rec);
+        }
     }
 
     function record() {
@@ -376,6 +412,7 @@
     }
 
     function onScroll(e) {
+        if (!active) return;
         const main = adoptScroller(e.target);
         // 进度在任何阶段都跟着滚动走
         if (main) scheduleFab();
@@ -529,6 +566,8 @@
     function restore(key, spa) {
         const rec = Store.get(key);
         if (!rec) return;
+        // 回访也算「用过」：LRU 按这个时间挤，30 天过期也从这里重新算
+        Store.set(key, { ...rec, t: Date.now() });
         const skip = spa ? '' : skipReason();
         if (skip) return console.log(TAG, '不恢复：' + skip);
         phase = 'waiting';
@@ -644,6 +683,12 @@
             clearTimeout(this.promptTimer);
             if (this.root) this.root.querySelector('.prompt').hidden = true;
         },
+        destroy() {
+            clearTimeout(this.promptTimer);
+            if (this.host) this.host.remove();
+            this.host = null;
+            this.root = null;
+        },
         /** 回到顶部 / 底部按钮：滚过半屏才出现，中间显示阅读进度。 */
         updateFab() {
             const max = scroller.max();
@@ -688,16 +733,10 @@
         const key = pageKey();
         if (key === currentKey) return; // 只是跟踪参数 / 页内锚点变了
         // 旧页还没落盘的那次滚动：写换页前拍好的快照，不在新 DOM 上重算
-        clearTimeout(timer);
-        timer = 0;
-        clearTimeout(snapTimer);
-        snapTimer = 0;
-        if (pending && pending.key === currentKey) write(pending);
-        pending = null;
-        clearInterval(waitTimer);
-        phase = 'idle';
-        UI.hidePrompt();
+        if (pending && pending.key === currentKey && timer) write(pending);
+        reset();
         currentKey = key;
+        if (!active) return;
         if (fromHistory) return console.log(TAG, '不恢复：SPA 前进/后退，交给浏览器 / 路由', key);
         restore(key, true);
     }
@@ -739,13 +778,93 @@
         window.addEventListener('hashchange', () => onRoute(navType ? navType === 'traverse' : false));
     }
 
+    /** 丢掉进行中的记录 / 恢复（换页、停用时）。 */
+    function reset() {
+        clearTimeout(timer);
+        timer = 0;
+        clearTimeout(snapTimer);
+        snapTimer = 0;
+        pending = null;
+        clearInterval(waitTimer);
+        phase = 'idle';
+        UI.hidePrompt();
+    }
+
+    // =========================================================================
+    // 菜单
+    // =========================================================================
+
+    /** 本站开着时为 true。停用后监听器还挂着，但什么都不做。 */
+    let active = false;
+
+    function clearPage() {
+        reset();
+        Store.remove(currentKey);
+        console.log(TAG, '已清除本页记忆', currentKey);
+    }
+
+    function toggleSite() {
+        const origin = location.origin;
+        settings = Store.settings();
+        if (settings.disabled[origin]) {
+            delete settings.disabled[origin];
+            Store.saveSettings(settings);
+            active = true;
+            scroller = findScroller();
+            scheduleFab();
+            console.log(TAG, '已在本站启用');
+        } else {
+            settings.disabled[origin] = 1;
+            Store.saveSettings(settings);
+            active = false;
+            reset();
+            UI.destroy();
+            // 停用 = 不想让这个站留下阅读痕迹：本站已存的一并删掉
+            for (const key of Store.keys()) if (key.startsWith(origin + '/')) Store.remove(key);
+            console.log(TAG, '已在本站停用，并删除本站的记录');
+        }
+        Menu.refresh();
+    }
+
+    function toggleMode() {
+        settings = Store.settings();
+        settings.mode = settings.mode === 'jump' ? 'prompt' : 'jump';
+        Store.saveSettings(settings);
+        Menu.refresh();
+    }
+
+    function clearAll() {
+        if (!window.confirm('删除所有网站上记住的阅读位置？')) return;
+        reset();
+        for (const key of Store.keys()) Store.remove(key);
+        console.log(TAG, '已清除全部记忆');
+    }
+
+    /** 菜单项文字带状态（开关、恢复方式），状态变了整组重新注册。 */
+    const Menu = {
+        ids: [],
+        refresh() {
+            const items = [];
+            if (active) items.push(['清除本页记忆', clearPage]);
+            items.push([active ? '在本站停用' : '在本站启用', toggleSite]);
+            items.push(['恢复方式：' + (settings.mode === 'jump' ? '直接跳回（点击切换为先提示）' : '先提示（点击切换为直接跳回）'), toggleMode]);
+            items.push(['清除全部记忆', clearAll]);
+            for (const id of this.ids) GM_unregisterMenuCommand(id);
+            this.ids = items.map(([caption, fn]) => GM_registerMenuCommand(caption, fn));
+        },
+    };
+
     function boot() {
+        sweep();
+        active = !settings.disabled[location.origin];
+        Menu.refresh();
         // 捕获阶段：内层容器的 scroll 不冒泡，但捕获能收到
         document.addEventListener('scroll', onScroll, { capture: true, passive: true });
         window.addEventListener('pagehide', flush);
         document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flush(); });
         for (const type of ['wheel', 'touchmove', 'keydown', 'mousedown']) window.addEventListener(type, onIntent, { capture: true, passive: true });
         hookHistory();
+        if (!active) return console.log(TAG, '本站已停用');
         scroller = findScroller();
         console.log(TAG, '已启动', currentKey);
         restore(currentKey);

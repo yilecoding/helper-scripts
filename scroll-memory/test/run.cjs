@@ -432,6 +432,83 @@ async function main() {
         await page.close()
     })
 
+    await t.test('读到底（>95%）删除记录', async () => {
+        const page = await open(browser, '/long.html')
+        await scrollWin(page, 3000)
+        t.assert((await records(page))[SITE + '/long.html'], '读到一半有记录')
+        await scrollWin(page, 1e6)
+        t.eq(await records(page), {}, '读到底删掉')
+        await page.goto(SITE + '/long.html')
+        await page.waitForTimeout(1200)
+        t.eq((await promptState(page)).shown, false, '再打开不提示')
+        await page.close()
+    })
+
+    await t.test('清理：超过 30 天的删掉；总条数超过 300 从最久没访问的删起；回访刷新时间', async () => {
+        const DAY = 86400e3
+        const now = Date.now()
+        const rec = (t) => ({ t, p: 0.5, y: 3000, h: 9000, c: null, a: null })
+        const values = {
+            ['sm:p:' + SITE + '/expired']: rec(now - 31 * DAY),
+            // 29 天前看过、这次又打开：不过期，而且时间刷新
+            ['sm:p:' + SITE + '/long.html']: rec(now - 29 * DAY),
+        }
+        // 再塞 300 条，加上 long.html 一共 301 条没过期：最旧的 other/300 要被挤掉
+        for (let i = 1; i <= 300; i++) values['sm:p:https://other.example.com/' + i] = rec(now - i * 60e3)
+        const page = await open(browser, '/long.html', { values })
+        await page.waitForTimeout(300)
+        const recs = await records(page)
+        const keys = Object.keys(recs)
+        t.eq(keys.length, 300)
+        t.assert(!recs[SITE + '/expired'], '过期的删了')
+        t.assert(!recs['https://other.example.com/300'], '最久没访问的删了')
+        t.assert(recs['https://other.example.com/299'] && recs['https://other.example.com/1'], '其余保留')
+        t.assert(recs[SITE + '/long.html'] && now - recs[SITE + '/long.html'].t < 60e3, '回访的刷新了时间')
+        await page.close()
+    })
+
+    await t.test('菜单：清除本页记忆 / 本站停用（并删本站记录、不再记录、按钮消失）/ 启用 / 清除全部', async () => {
+        const other = { ['sm:p:https://other.example.com/x']: { t: Date.now(), p: 0.5, y: 1, h: 1, c: null, a: null } }
+        const page = await open(browser, '/long.html', { values: other })
+        page.on('dialog', (d) => d.accept())
+        await scrollWin(page, 3000)
+        t.assert((await records(page))[SITE + '/long.html'])
+        await h.menu(page, '清除本页记忆')
+        t.assert(!(await records(page))[SITE + '/long.html'], '本页清掉了')
+
+        await scrollWin(page, 3500)
+        await h.menu(page, '在本站停用')
+        t.eq(Object.keys(await records(page)), ['https://other.example.com/x'], '本站的删了，别站的不动')
+        t.eq((await fabState(page)).shown, false, '按钮消失')
+        await scrollWin(page, 2000)
+        t.eq(Object.keys(await records(page)), ['https://other.example.com/x'], '停用后不记录')
+        t.assert((await h.gm(page)).menu.includes('在本站启用'), (await h.gm(page)).menu.join(','))
+
+        await page.reload()
+        await page.waitForTimeout(300)
+        await scrollWin(page, 3000)
+        t.eq(Object.keys(await records(page)).length, 1, '刷新后仍是停用')
+        await h.menu(page, '在本站启用')
+        await scrollWin(page, 3200)
+        t.assert((await records(page))[SITE + '/long.html'], '启用后恢复记录')
+
+        await h.menu(page, '清除全部记忆')
+        t.eq(await records(page), {})
+        await page.close()
+    })
+
+    await t.test('菜单：切换恢复方式（提示 ↔ 直接跳），刷新后生效', async () => {
+        const page = await open(browser, '/long.html')
+        await scrollParaTo(page, 40, -10)
+        t.assert((await h.gm(page)).menu.some((m) => m.startsWith('恢复方式：先提示')))
+        await h.menu(page, '恢复方式')
+        t.assert((await h.gm(page)).menu.some((m) => m.startsWith('恢复方式：直接跳回')))
+        await page.goto(SITE + '/long.html')
+        await waitParaAt(page, 40, -10)
+        t.eq((await promptState(page)).shown, false)
+        await page.close()
+    })
+
     await t.test('没有记录的页面不动', async () => {
         const page = await open(browser, '/long.html')
         await page.waitForTimeout(1200)
