@@ -3,7 +3,7 @@
 // @name:zh-CN   阅读位置记忆|长文/小说/文档关掉回来自动回到上次读到的地方
 // @name:en      Scroll Memory — come back to where you stopped reading
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.11.26.9
+// @version      2025.11.26.10
 // @description  长文章、小说、文档读到一半关掉，回来时自动回到上次的位置。
 // @description:zh-CN  长文章、小说、文档读到一半关掉，回来时自动回到上次的位置。
 // @description:en  Remembers how far you read on long articles, novels and docs, and takes you back there next time.
@@ -66,6 +66,12 @@
          * 不弹提示，直接按锚点悄悄校准（刷新时 Chrome 会先按 scrollY 还原，再被晚到的内容推开一点）。
          */
         nearScreens: 0.5,
+        /*
+         * 跳回去之后的这段时间里继续盯着锚点：内容还在上方插（懒加载图片撑开、广告晚到）就跟着纠正。
+         * Chrome / Firefox 有 scroll anchoring 会自己补偿，Safari 和关掉了 overflow-anchor 的站没有。
+         * 用户一动（滚轮 / 触摸 / 按键）立即停手。
+         */
+        followMs: 3000,
 
         doneProgress: 0.95,      // 读到这里算读完，删掉记录（下次从头开始）
         ttlDays: 30,             // 记录最后一次访问后保留几天
@@ -544,10 +550,24 @@
         return found.el ? found : null;
     }
 
+    let followTimer = 0;
+
     function jumpTo(rec, why) {
         const { top, via } = locate(rec, scroller);
         scroller.setTop(top);
         console.log(TAG, why, { via, top, percent: Math.round(rec.p * 100) });
+        follow(rec);
+    }
+
+    function follow(rec) {
+        clearInterval(followTimer);
+        userMoved = false;
+        const start = Date.now();
+        followTimer = setInterval(() => {
+            if (userMoved || !active || Date.now() - start > CONFIG.followMs) return clearInterval(followTimer);
+            const { top } = locate(rec, scroller);
+            if (Math.abs(top - scroller.top()) > 2) scroller.setTop(top);
+        }, 150);
     }
 
     /**
@@ -810,6 +830,7 @@
         snapTimer = 0;
         pending = null;
         clearInterval(waitTimer);
+        clearInterval(followTimer);
         phase = 'idle';
         UI.hidePrompt();
     }

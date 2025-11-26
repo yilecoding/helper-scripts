@@ -34,6 +34,8 @@
 
     // 测试用的「回来时页面变了」：这些参数不在脚本的 query 白名单里，页面键不变
     const q = new URLSearchParams(location.search)
+    // 关掉浏览器的 scroll anchoring（Safari 没有这个机制；也有站点自己关掉）：上方插内容时视口不再自动跟着内容走
+    if (q.get('noanchor')) document.documentElement.style.overflowAnchor = document.body.style.overflowAnchor = 'none'
     // 字号变了：每段都变高，像素位置全漂
     if (q.get('font')) document.body.style.fontSize = q.get('font') + 'px'
     // 改版：段落文字全变了，路径和指纹都对不上，只剩百分比

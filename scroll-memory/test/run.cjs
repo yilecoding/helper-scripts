@@ -535,6 +535,33 @@ async function main() {
         await page.close()
     })
 
+    await t.test('恢复后内容还在往上方插（没有 scroll anchoring 的浏览器）：短时间内跟着锚点纠正', async () => {
+        const page = await open(browser, '/long.html', JUMP)
+        await scrollParaTo(page, 30, -20)
+        // 广告在恢复之后（1.5 秒）才插进来
+        await page.goto(SITE + '/long.html?noanchor=1&drift=600&delay=1500')
+        await waitParaAt(page, 30, -20)
+        await page.waitForFunction(() => document.querySelector('.ad'), null, { timeout: 4000 })
+        await page.waitForTimeout(400)
+        await waitParaAt(page, 30, -20, { timeout: 500 })
+        await page.close()
+    })
+
+    await t.test('恢复后用户自己滚了：不再纠正', async () => {
+        const page = await open(browser, '/long.html', JUMP)
+        await scrollParaTo(page, 30, -20)
+        await page.goto(SITE + '/long.html?noanchor=1&drift=600&delay=1500')
+        await waitParaAt(page, 30, -20)
+        await page.mouse.move(600, 400)
+        await page.mouse.wheel(0, 200)
+        await page.waitForTimeout(300)
+        const before = await page.evaluate(() => window.scrollY)
+        await page.waitForFunction(() => document.querySelector('.ad'), null, { timeout: 4000 })
+        await page.waitForTimeout(400)
+        t.eq(await page.evaluate(() => window.scrollY), before, '用户接管后不再动 scrollTop')
+        await page.close()
+    })
+
     await t.test('没有记录的页面不动', async () => {
         const page = await open(browser, '/long.html')
         await page.waitForTimeout(1200)
