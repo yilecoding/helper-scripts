@@ -509,6 +509,32 @@ async function main() {
         await page.close()
     })
 
+    await t.test('边界：html 不滚、body 自己是滚动容器 —— 也能记录和恢复', async () => {
+        const page = await open(browser, '/body-scroll.html', JUMP)
+        await page.evaluate(() => {
+            const el = Array.from(document.querySelectorAll('p')).find((p) => p.textContent.startsWith('第 30 段。'))
+            document.body.scrollTop += el.getBoundingClientRect().top + 15
+        })
+        await page.waitForTimeout(800)
+        const rec = (await records(page))[SITE + '/body-scroll.html']
+        t.assert(rec && rec.a && rec.a.fp.startsWith('第 30 段。'), JSON.stringify(rec))
+        await page.goto(SITE + '/body-scroll.html?drift=400')
+        await waitParaAt(page, 30, -15)
+        t.eq(await page.evaluate(() => window.scrollY), 0)
+        await page.close()
+    })
+
+    await t.test('边界：URL 带着解不开的 #%（坏的百分号编码）照样恢复，不抛错', async () => {
+        const page = await open(browser, '/long.html', JUMP)
+        await scrollParaTo(page, 30, -10)
+        await page.goto(SITE + '/short.html') // 同一文档里只改 hash 不会重新加载，先走开
+        await page.goto(SITE + '/long.html#100%')
+        await waitParaAt(page, 30, -10)
+        t.eq(h.errors(page).map(String), [])
+        t.assert(!page.__logs.some((l) => l.includes('启动失败')), page.__logs.join(' | '))
+        await page.close()
+    })
+
     await t.test('没有记录的页面不动', async () => {
         const page = await open(browser, '/long.html')
         await page.waitForTimeout(1200)

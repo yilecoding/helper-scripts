@@ -3,7 +3,7 @@
 // @name:zh-CN   阅读位置记忆|长文/小说/文档关掉回来自动回到上次读到的地方
 // @name:en      Scroll Memory — come back to where you stopped reading
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.11.25.8
+// @version      2025.11.26.9
 // @description  长文章、小说、文档读到一半关掉，回来时自动回到上次的位置。
 // @description:zh-CN  长文章、小说、文档读到一半关掉，回来时自动回到上次的位置。
 // @description:en  Remembers how far you read on long articles, novels and docs, and takes you back there next time.
@@ -171,7 +171,14 @@
 
     /** 能当「主滚动容器」的元素：够大（代码块、侧栏小菜单不算）、确实能滚。 */
     function isMainScroller(el) {
-        if (!el || el.nodeType !== 1 || el === document.body || el === document.documentElement) return false;
+        if (!el || el.nodeType !== 1 || el === document.documentElement) return false;
+        /*
+         * body 只有在 html 的 overflow 不是 visible 时才是自己的滚动容器；
+         * 否则 body 的 overflow 会「传播」给视口，滚的其实是 window。
+         * html { overflow: hidden } body { height: 100%; overflow: auto } 这种写法下 window.scrollY 永远是 0，
+         * 只认 window 就一条都记不下来。
+         */
+        if (el === document.body && getComputedStyle(document.documentElement).overflowY === 'visible') return false;
         if (el.clientHeight < window.innerHeight * 0.4 || el.clientWidth < window.innerWidth * 0.3) return false;
         if (el.scrollHeight <= el.clientHeight + 1) return false;
         return /(auto|scroll|overlay)/.test(getComputedStyle(el).overflowY);
@@ -194,7 +201,7 @@
         let bestRange = windowRange();
         const seen = new Set();
         for (const [fx, fy] of [[0.5, 0.5], [0.5, 0.3], [0.5, 0.7], [0.3, 0.5], [0.7, 0.5]]) {
-            for (let n = document.elementFromPoint(window.innerWidth * fx, window.innerHeight * fy); n && n !== document.body; n = n.parentElement) {
+            for (let n = document.elementFromPoint(window.innerWidth * fx, window.innerHeight * fy); n && n !== document.documentElement; n = n.parentElement) {
                 if (seen.has(n)) break;
                 seen.add(n);
                 if (n.closest(UI_TAG)) break;
@@ -364,7 +371,7 @@
             y: Math.round(top),
             h: height,
             // 内层容器的路径；null = window
-            c: sc.el ? pathOf(sc.el, document.body) : null,
+            c: sc.el ? (sc.el === document.body ? 'body' : pathOf(sc.el, document.body)) : null,
             a: captureAnchor(sc),
         };
     }
@@ -397,7 +404,7 @@
     function adoptScroller(target) {
         // SPA 换页把整个容器换掉了
         if (scroller.el && !scroller.el.isConnected) scroller = findScroller();
-        if (target === document || target === document.documentElement || target === document.body) {
+        if (target === document || target === document.documentElement || (target === document.body && !isMainScroller(target))) {
             if (scroller.el && windowRange() > scroller.max()) scroller = makeScroller(null);
             return !scroller.el;
         }
@@ -552,12 +559,29 @@
      * - 普通打开时页面已经不在顶部：脚本跑起来之前用户已经滚了。
      * - 刷新（reload）照常恢复：浏览器按像素还原了也会被晚到的内容推开，下面按「离目标近不近」区分。
      */
+    /**
+     * #后面指向的元素。先按原样找，再按解码后的找（中文锚点 #%E7%AC%AC...）。
+     * 解码要兜住：#100% 这种解不开的百分号会让 decodeURIComponent 抛 URIError，整个恢复跟着挂掉。
+     */
+    function hashTarget() {
+        const raw = location.hash.slice(1);
+        if (!raw) return null;
+        let decoded = raw;
+        try {
+            decoded = decodeURIComponent(raw);
+        } catch (e) { /* 用原样 */ }
+        for (const id of new Set([raw, decoded])) {
+            const el = document.getElementById(id) || document.getElementsByName(id)[0];
+            if (el) return el;
+        }
+        return null;
+    }
+
     function skipReason() {
         const nav = performance.getEntriesByType && performance.getEntriesByType('navigation')[0];
         const type = nav ? nav.type : 'navigate';
         if (type === 'back_forward') return '前进/后退，交给浏览器';
-        const hash = decodeURIComponent(location.hash.slice(1));
-        if (hash && (document.getElementById(hash) || document.getElementsByName(hash)[0])) return '带 #锚点 打开';
+        if (hashTarget()) return '带 #锚点 打开';
         if (type === 'navigate' && scroller.top() > 0) return '用户已经滚动';
         return '';
     }
