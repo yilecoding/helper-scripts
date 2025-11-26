@@ -3,7 +3,7 @@
 // @name:zh-CN   阅读位置记忆|长文/小说/文档关掉回来自动回到上次读到的地方
 // @name:en      Scroll Memory — come back to where you stopped reading
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.11.26.10
+// @version      2025.11.26.11
 // @description  长文章、小说、文档读到一半关掉，回来时自动回到上次的位置。
 // @description:zh-CN  长文章、小说、文档读到一半关掉，回来时自动回到上次的位置。
 // @description:en  Remembers how far you read on long articles, novels and docs, and takes you back there next time.
@@ -616,6 +616,27 @@
         if (skip) return console.log(TAG, '不恢复：' + skip);
         phase = 'waiting';
         userMoved = false;
+        whenVisible(() => {
+            if (key !== currentKey || phase !== 'waiting') return;
+            settle(key, rec);
+        });
+    }
+
+    /**
+     * 后台标签页（中键 / Ctrl+点击打开）里先别动：定时器被节流到 1 秒一次甚至更慢，
+     * 提示条还会在没人看见的时候到时收起。等切到前台再开始等内容稳定。
+     */
+    function whenVisible(fn) {
+        if (document.visibilityState !== 'hidden') return fn();
+        const on = () => {
+            if (document.visibilityState === 'hidden') return;
+            document.removeEventListener('visibilitychange', on);
+            fn();
+        };
+        document.addEventListener('visibilitychange', on);
+    }
+
+    function settle(key, rec) {
         waitStable(() => scrollerFor(rec), (sc) => {
             phase = 'idle';
             if (key !== currentKey) return;

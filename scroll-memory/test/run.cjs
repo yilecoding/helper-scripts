@@ -562,6 +562,28 @@ async function main() {
         await page.close()
     })
 
+    await t.test('后台标签页打开（中键 / Ctrl+点击）：切到前台才开始恢复，提示条不会在没人看见时到时收起', async () => {
+        const page = await open(browser, '/long.html')
+        await scrollParaTo(page, 40, -10)
+        // 模拟后台标签：visibilityState 先是 hidden，测试里调用 __show() 切到前台
+        await page.addInitScript(() => {
+            let vis = 'hidden'
+            Object.defineProperty(Document.prototype, 'visibilityState', { get: () => vis, configurable: true })
+            Object.defineProperty(Document.prototype, 'hidden', { get: () => vis === 'hidden', configurable: true })
+            window.__show = () => { vis = 'visible'; document.dispatchEvent(new Event('visibilitychange')) }
+        })
+        await page.clock.install()
+        await page.goto(SITE + '/long.html')
+        await page.clock.runFor(20000) // 在后台放了 20 秒（比提示条的 12 秒长）
+        t.eq((await promptState(page)).shown, false, '后台时不弹')
+        await page.evaluate(() => window.__show())
+        await page.clock.runFor(1500)
+        t.eq((await promptState(page)).shown, true, '切到前台后弹出')
+        await page.clock.runFor(13000)
+        t.eq((await promptState(page)).shown, false, '前台没人理 12 秒后收起')
+        await page.close()
+    })
+
     await t.test('没有记录的页面不动', async () => {
         const page = await open(browser, '/long.html')
         await page.waitForTimeout(1200)
