@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>body 自己滚动的长文章</title>
+<style>
+    /* 有的站这样写：html 不滚，body 设成 100% 高的滚动容器（window.scrollY 永远是 0） */
+    html { height: 100%; overflow: hidden; }
+    body { height: 100%; overflow-y: auto; margin: 0; font: 18px/1.8 sans-serif; }
+    header { height: 60px; background: #333; color: #fff; }
+    article { max-width: 720px; margin: 0 auto; padding: 0 16px; }
+    p { margin: 0 0 1em; }
+</style>
+</head>
+<body>
+<header>站点导航</header>
+<article id="post">
+    <h1>一篇很长的文章</h1>
+    <div class="body"></div>
+</article>
+<footer>页脚</footer>
+<script>
+    // 段落文字各不相同（锚点的文本指纹要能区分），长度也不同（高度不均匀）
+    const body = document.querySelector('#post .body')
+    for (let i = 1; i <= 80; i++) {
+        if (i % 10 === 1) {
+            const h = document.createElement('h2')
+            h.textContent = '第 ' + Math.ceil(i / 10) + ' 章'
+            h.id = 'ch' + Math.ceil(i / 10)
+            body.appendChild(h)
+        }
+        const p = document.createElement('p')
+        p.textContent = '第 ' + i + ' 段。' + '这是正文内容，'.repeat(8 + (i * 7) % 23)
+        body.appendChild(p)
+    }
+
+    // 测试用的「回来时页面变了」：这些参数不在脚本的 query 白名单里，页面键不变
+    const q = new URLSearchParams(location.search)
+    // 字号变了：每段都变高，像素位置全漂
+    if (q.get('font')) document.body.style.fontSize = q.get('font') + 'px'
+    // 改版：段落文字全变了，路径和指纹都对不上，只剩百分比
+    if (q.get('rewrite')) body.querySelectorAll('p').forEach((p) => { p.textContent = '改版后：' + p.textContent })
+    // 晚到的广告 + 公告段落插在正文最前面：像素下移，p 的 nth-of-type 也全部错位
+    if (q.get('drift')) setTimeout(() => {
+        const ad = document.createElement('div')
+        ad.className = 'ad'
+        ad.style.height = q.get('drift') + 'px'
+        ad.textContent = '广告'
+        for (let k = 3; k >= 1; k--) {
+            const p = document.createElement('p')
+            p.textContent = '后来插入的公告 ' + k + '：' + '内容'.repeat(40)
+            body.prepend(p)
+        }
+        body.prepend(ad)
+    }, Number(q.get('delay') || 300))
+</script>
+</body>
+</html>
