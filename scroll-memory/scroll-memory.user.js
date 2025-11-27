@@ -3,10 +3,10 @@
 // @name:zh-CN   阅读位置记忆|长文/小说/文档关掉回来自动回到上次读到的地方
 // @name:en      Scroll Memory — come back to where you stopped reading
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.11.27.12
-// @description  长文章、小说、文档读到一半关掉，回来时自动回到上次的位置。
-// @description:zh-CN  长文章、小说、文档读到一半关掉，回来时自动回到上次的位置。
-// @description:en  Remembers how far you read on long articles, novels and docs, and takes you back there next time.
+// @version      2025.11.27.13
+// @description  长文章、小说、文档读到一半关掉，回来时回到上次读到的地方。按「视口顶部的那一段」记位置，不怕图片懒加载、广告插入、字号变化带来的像素漂移；等页面稳定后提示「跳回上次位置」（或直接跳），用户先滚了就不打扰，前进后退交给浏览器。支持正文在内层 div 里滚动的站点和 SPA。右下角回到顶部 / 底部按钮带阅读进度。读完自动删除，30 天过期。
+// @description:zh-CN  长文章、小说、文档读到一半关掉，回来时回到上次读到的地方。按「视口顶部的那一段」记位置，不怕图片懒加载、广告插入、字号变化带来的像素漂移；等页面稳定后提示「跳回上次位置」（或直接跳），用户先滚了就不打扰，前进后退交给浏览器。支持正文在内层 div 里滚动的站点和 SPA。右下角回到顶部 / 底部按钮带阅读进度。读完自动删除，30 天过期。
+// @description:en  Remembers where you stopped reading on long articles, novels and docs, and takes you back next time. Positions are stored as the paragraph at the top of the viewport (not raw pixels), so lazy-loaded images, injected ads or a different font size don't throw it off. Waits for the page to settle, then offers "Jump back (xx%) · Cancel" or jumps directly; stays out of the way if you already scrolled, and leaves back/forward to the browser. Works with inner scroll containers and SPAs. Back-to-top / bottom buttons with reading progress. Finished pages are forgotten; records expire after 30 days.
 // @author       壹樂（V：ita1125）
 // @match        http://*/*
 // @match        https://*/*
