@@ -209,6 +209,17 @@ async function main() {
         await page.close()
     })
 
+    await t.test('恢复：刷新时（默认提示模式）浏览器已按像素还原过，就直接按锚点校准，不弹提示', async () => {
+        const page = await open(browser, '/long.html?drift=700')
+        await page.waitForTimeout(500)
+        await scrollParaTo(page, 45, -35)
+        await page.reload()
+        await waitParaAt(page, 45, -35)
+        await page.waitForTimeout(300)
+        t.eq((await promptState(page)).shown, false)
+        await page.close()
+    })
+
     await t.test('恢复：字号变大，偏移按段落高度等比换算', async () => {
         const page = await open(browser, '/long.html', JUMP)
         await scrollParaTo(page, 30, -40)

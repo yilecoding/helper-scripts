@@ -3,7 +3,7 @@
 // @name:zh-CN   阅读位置记忆|长文/小说/文档关掉回来自动回到上次读到的地方
 // @name:en      Scroll Memory — come back to where you stopped reading
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2025.11.26.11
+// @version      2025.11.27.12
 // @description  长文章、小说、文档读到一半关掉，回来时自动回到上次的位置。
 // @description:zh-CN  长文章、小说、文档读到一半关掉，回来时自动回到上次的位置。
 // @description:en  Remembers how far you read on long articles, novels and docs, and takes you back there next time.
@@ -62,8 +62,8 @@
         restoreMode: 'prompt',
         promptMs: 12000,         // 提示条多久没人理就自己收起
         /*
-         * 当前位置离目标不到这么多屏，就当作「浏览器已经按像素还原过了」，
-         * 不弹提示，直接按锚点悄悄校准（刷新时 Chrome 会先按 scrollY 还原，再被晚到的内容推开一点）。
+         * 页面已经不在顶部、且离目标不到这么多屏：当作「已经有人（浏览器 / SPA 路由）大致还原过了」，
+         * 不弹提示，直接按锚点悄悄校准。整页刷新不看距离，一律校准（见 settle）。
          */
         nearScreens: 0.5,
         /*
@@ -597,9 +597,13 @@
         return null;
     }
 
-    function skipReason() {
+    function navType() {
         const nav = performance.getEntriesByType && performance.getEntriesByType('navigation')[0];
-        const type = nav ? nav.type : 'navigate';
+        return nav ? nav.type : 'navigate';
+    }
+
+    function skipReason() {
+        const type = navType();
         if (type === 'back_forward') return '前进/后退，交给浏览器';
         if (hashTarget()) return '带 #锚点 打开';
         if (type === 'navigate' && scroller.top() > 0) return '用户已经滚动';
@@ -618,7 +622,7 @@
         userMoved = false;
         whenVisible(() => {
             if (key !== currentKey || phase !== 'waiting') return;
-            settle(key, rec);
+            settle(key, rec, !spa && navType() === 'reload');
         });
     }
 
@@ -636,7 +640,13 @@
         document.addEventListener('visibilitychange', on);
     }
 
-    function settle(key, rec) {
+    /**
+     * reloaded：整页刷新。浏览器（scrollRestoration = 'auto'）已经按像素还原过一次，用户的意图明确是「留在原处」，
+     * 不管被晚到的内容推开了多远都直接按锚点校准，不再问。
+     * 实测 Chromium：内容没加载完时 scrollHeight 不够，还原的 scrollY 会被夹小；之后上方插入内容，
+     * scroll anchoring 又把它往下推 —— 最后离目标六七百像素，按「离得近才校准」的规则会多弹一次提示。
+     */
+    function settle(key, rec, reloaded) {
         waitStable(() => scrollerFor(rec), (sc) => {
             phase = 'idle';
             if (key !== currentKey) return;
@@ -645,7 +655,7 @@
             if (userMoved) return console.log(TAG, '不恢复：等待期间用户自己滚动了');
             const { top } = locate(rec, scroller);
             const cur = scroller.top();
-            if (cur > 0 && Math.abs(cur - top) < scroller.view() * CONFIG.nearScreens) return jumpTo(rec, '浏览器已大致还原，按锚点校准');
+            if (cur > 0 && (reloaded || Math.abs(cur - top) < scroller.view() * CONFIG.nearScreens)) return jumpTo(rec, '浏览器已还原过，按锚点校准');
             if (settings.mode === 'jump') return jumpTo(rec, '已恢复到上次位置');
             UI.prompt(Math.round(rec.p * 100), () => {
                 if (key === currentKey) jumpTo(rec, '已跳回上次位置');
