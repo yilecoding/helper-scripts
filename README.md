@@ -32,6 +32,18 @@
 | [translate-selection](./translate-selection/translate-selection.user.js) | 划词翻译，中英自动互译，单词显示词典释义，Google 接口失败自动降级 MyMemory，可朗读 |
 | [article-toc](./article-toc/article-toc.user.js) | 给长文章生成浮动目录，滚动高亮当前章节，跳转扣除吸顶导航栏，可拖动折叠，支持 SPA |
 | [search-switcher](./search-switcher/search-switcher.user.js) | 搜索结果页带上同一关键词一键切换百度 / Google / Bing / GitHub / 知乎 / B 站等，可自定义引擎列表 |
+| [auto-pager](./auto-pager/auto-pager.user.js) | 自动翻页：识别「下一页」（rel=next / 文字 / 页码），滚到底拼接下一页内容，支持 GBK 页面，失败可重试 |
+| [github-enhancer](./github-enhancer/github-enhancer.user.js) | GitHub 增强：仓库大小与创建时间、单文件下载、目录 sparse-checkout 命令、复制 raw / 永久链接、相对时间旁显示绝对时间 |
+| [dark-mode](./dark-mode/dark-mode.user.js) | 通用暗色模式：document-start 注入不闪白，自动识别本来就是暗色的站点，按站点 / 跟随系统 / 定时切换 |
+| [page-monitor](./page-monitor/page-monitor.user.js) | 网页变化监控：点选页面上一块区域，定时检查，内容变化（关键词、价格阈值）时通知并显示逐词差异 |
+| [qr-code](./qr-code/qr-code.user.js) | 页面二维码：当前网址 / 选中文字 / 悬停链接生成二维码，编码器自实现（经 ZXing 解码与 ISO 18004 样例验证） |
+| [keyboard-nav](./keyboard-nav/keyboard-nav.user.js) | Vimium 风格键盘浏览：j/k/gg/G 滚动、f/F 链接提示（含 shadow DOM）、数字前缀、直通模式、站点黑名单 |
+| [element-hider](./element-hider/element-hider.user.js) | 网页元素屏蔽：点选隐藏广告和烦人元素，生成跳过随机类名的稳定选择器，按站点记住，可撤销、导入导出 |
+| [pangu-spacing](./pangu-spacing/pangu-spacing.user.js) | 中英文之间自动加空格（盘古之白），跨元素边界，不破坏 URL / 版本号 / C++ / 100%，只改文本节点 |
+| [scroll-memory](./scroll-memory/scroll-memory.user.js) | 阅读位置记忆：按锚点而不是像素记位置，懒加载插入内容后仍能回到原处；附回顶 / 回底按钮与进度 |
+| [overlay-killer](./overlay-killer/overlay-killer.user.js) | 弹窗遮罩清理：Cookie 同意弹窗优先点「拒绝」，隐藏登录 / 打开 App 遮罩并恢复滚动，展开「阅读全文」折叠 |
+| [site-timer](./site-timer/site-timer.user.js) | 网站使用时长：只算可见且在用的时间，多标签不重复计，可设每日上限，超时遮罩提醒，7 天排行 |
+| [image-search](./image-search/image-search.user.js) | 以图搜图：Alt+右键图片用 Google Lens / Bing / 百度 / SauceNAO 等反查，内网与 blob 图自动改走上传 |
 
 ## 测试
 
