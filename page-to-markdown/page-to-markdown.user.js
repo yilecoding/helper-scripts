@@ -12,7 +12,7 @@
 // @grant        GM_registerMenuCommand
 // @grant        GM_setClipboard
 // @grant        GM_download
-// @license      CC BY-NC-SA
+// @license      MIT
 // @run-at       document-idle
 // @noframes
 // @homepageURL  https://github.com/yilecoding/helper-scripts

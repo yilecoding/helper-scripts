@@ -78,7 +78,7 @@ async function serveWav(route) {
         const meta = h.parseMeta(fs.readFileSync(SCRIPT, 'utf8'))
         eq(meta.namespace, ['https://github.com/yilecoding/helper-scripts'])
         eq(meta.author, ['壹樂（V：ita1125）'])
-        eq(meta.license, ['CC BY-NC-SA'])
+        eq(meta.license, ['MIT'])
         assert(/^\d{4}\.\d{2}\.\d{2}\.\d+$/.test(meta.version[0]), 'version 格式：' + meta.version)
         assert(meta['name:en'] && meta['description:en'], '缺英文 name/description')
         const raw = 'https://raw.githubusercontent.com/yilecoding/helper-scripts/main/video-speed/video-speed.user.js'

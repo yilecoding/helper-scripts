@@ -40,7 +40,7 @@
 // @grant        GM_setValue
 // @grant        GM_deleteValue
 // @grant        GM_registerMenuCommand
-// @license      CC BY-NC-SA
+// @license      MIT
 // @run-at       document-end
 // @noframes
 // @homepageURL  https://github.com/yilecoding/helper-scripts

@@ -21,7 +21,7 @@
 // @grant        GM_deleteValue
 // @connect      lens.google.com
 // @connect      *
-// @license      CC BY-NC-SA
+// @license      MIT
 // @run-at       document-end
 // @noframes
 // @homepageURL  https://github.com/yilecoding/helper-scripts

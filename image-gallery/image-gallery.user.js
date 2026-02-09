@@ -13,7 +13,7 @@
 // @grant        GM_download
 // @grant        GM_xmlhttpRequest
 // @connect      *
-// @license      CC BY-NC-SA
+// @license      MIT
 // @run-at       document-idle
 // @noframes
 // @homepageURL  https://github.com/yilecoding/helper-scripts

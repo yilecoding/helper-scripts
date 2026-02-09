@@ -15,7 +15,7 @@
 // @grant        GM_listValues
 // @grant        GM_registerMenuCommand
 // @grant        GM_unregisterMenuCommand
-// @license      CC BY-NC-SA
+// @license      MIT
 // @run-at       document-end
 // @noframes
 // @homepageURL  https://github.com/yilecoding/helper-scripts

@@ -13,7 +13,7 @@
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_deleteValue
-// @license      CC BY-NC-SA
+// @license      MIT
 // @run-at       document-start
 // @homepageURL  https://github.com/yilecoding/helper-scripts
 // @supportURL   https://github.com/yilecoding/helper-scripts/issues

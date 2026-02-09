@@ -23,7 +23,7 @@
 // @grant        unsafeWindow
 // @connect      api.github.com
 // @connect      raw.githubusercontent.com
-// @license      CC BY-NC-SA
+// @license      MIT
 // @run-at       document-end
 // @homepageURL  https://github.com/yilecoding/helper-scripts
 // @supportURL   https://github.com/yilecoding/helper-scripts/issues
