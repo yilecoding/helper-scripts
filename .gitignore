@@ -1,0 +1,18 @@
+# 依赖（测试借用外部的 playwright，仓库不带 node_modules）
+node_modules/
+package-lock.json
+pnpm-lock.yaml
+
+# 测试和调试产物
+*.log
+test-results/
+playwright-report/
+screenshots/
+
+# 系统和编辑器
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+*.swp
