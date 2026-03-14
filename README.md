@@ -27,7 +27,9 @@
   - [导出与下载](#导出与下载)
   - [搜索与浏览效率](#搜索与浏览效率)
   - [实用工具](#实用工具)
+- [常见问题](#常见问题)
 - [开发与测试](#开发与测试)
+- [反馈与支持](#反馈与支持)
 - [许可证与声明](#许可证与声明)
 
 ## 快速开始
@@ -117,6 +119,22 @@
 | **网页变化监控**<br>`page-monitor` | 选中页面上一块区域（价格、库存、公告、成绩），定时检查，内容变化或达到价格阈值时通知你，并标出具体改了什么 | [安装](https://raw.githubusercontent.com/yilecoding/helper-scripts/main/page-monitor/page-monitor.user.js) · [笔记](./page-monitor/notes.md) |
 | **网站使用时长统计**<br>`site-timer` | 只统计真正在用的时间，多个标签页不重复计算；可给网站设每日上限，超时全屏提醒；看今天和近 7 天排行，导出 CSV | [安装](https://raw.githubusercontent.com/yilecoding/helper-scripts/main/site-timer/site-timer.user.js) · [笔记](./site-timer/notes.md) |
 
+## 常见问题
+
+**装了没反应？**
+先确认做了 [快速开始](#快速开始) 的第 2 步（Chrome / Edge 要打开「允许用户脚本」）。然后点浏览器工具栏的 Tampermonkey 图标，看脚本是不是已启用，再刷新网页。
+
+**怎么更新？**
+不用管。每个脚本都声明了更新地址，Tampermonkey 会定期自动检查。想马上更新，可以在 Tampermonkey 管理面板里点「检查更新」。
+
+**某个网站被脚本弄乱了？**
+大部分通用脚本在 Tampermonkey 菜单里都有「本站停用」，点一下即可，其他网站不受影响。也欢迎 [提 Issue](https://github.com/yilecoding/helper-scripts/issues) 告诉我是哪个网站。
+
+**脚本会收集我的数据吗？**
+不会。所有设置和记录都只存在你本机的 Tampermonkey 里，没有任何统计或上报。脚本发出的网络请求只有两类：
+- 发往你正在浏览的网站本身：自动翻页（加载下一页）、图片批量下载、网页变化监控、研修助手（平台自己的接口）。
+- 功能本身需要的服务：划词翻译（Google 翻译、MyMemory）、以图搜图（你选的搜图网站）、GitHub 增强（GitHub API）。
+
 ## 开发与测试
 
 每个脚本一个目录，目录名和脚本文件同名：
@@ -137,6 +155,12 @@ NODE_PATH=/path/to/node_modules node <script-name>/test/run.cjs
 ```
 
 测试环境和真实 Tampermonkey 的差异写在 [userscript-harness.cjs](./tools/userscript-harness.cjs) 开头的注释里。
+
+## 反馈与支持
+
+- 遇到问题或有新需求：[提交 Issue](https://github.com/yilecoding/helper-scripts/issues)
+- 作者：壹樂（微信 ita1125）
+- 觉得好用的话，点个 ⭐ Star 支持一下，Watch 仓库可以第一时间收到更新。
 
 ## 许可证与声明
 
