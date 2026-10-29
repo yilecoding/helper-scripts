@@ -19,6 +19,11 @@ class FakePan {
         this._mkdirs(this.disk, '/存档')    // 测试默认的目标文件夹
         this.calls = []
         this.failures = []                  // [{ path, errno, msg, times }]
+        this.limit = opts.limit || 500      // 单次转存上限（非会员）
+        this.lag = opts.lag || 0            // 转存后目标列表还要回这么多次旧内容（模拟到账延迟）
+        this.drop = 0                       // 下一次转存「返回成功但实际没存」的文件个数
+        this.transferred = []               // 每次转存的文件名
+        this._stale = null                  // 延迟期间返回的旧列表
     }
 
     /** 分享页里的 window.yunData。 */
@@ -98,8 +103,31 @@ class FakePan {
             }
             case '/api/list': {
                 if (!this.disk.has(q.dir)) return { body: this._json({ errno: -9, show_msg: '' }) }
-                const rows = [...this.disk.get(q.dir)].sort((a, b) => a.server_filename.localeCompare(b.server_filename))
+                let all = this.disk.get(q.dir)
+                if (this._stale && this._stale.dir === q.dir && this._stale.left > 0) {
+                    all = this._stale.rows
+                    if (Number(q.page || 1) === 1) this._stale.left--
+                }
+                const rows = [...all].sort((a, b) => a.server_filename.localeCompare(b.server_filename))
                 return { body: this._json({ errno: 0, list: this._page(rows, q.page, q.num) }) }
+            }
+            case '/share/transfer': {
+                if (method !== 'POST') return { body: this._json({ errno: -1, show_msg: '要 POST' }) }
+                if (q.shareid !== this.shareid || q.from !== this.uk || !q.bdstoken) return { body: this._json({ errno: 2, show_msg: '参数错误' }) }
+                const body = Object.fromEntries(new URLSearchParams(form))
+                const ids = body.fsidlist.slice(1, -1).split(',')
+                if (ids.length > this.limit) return { body: this._json({ errno: 12, show_msg: '转存文件数超过上限' }) }
+                const byId = new Map([...this.share.values()].flat().map((e) => [e.fs_id, e]))
+                const files = ids.map((id) => byId.get(id))
+                if (files.some((x) => !x)) return { body: this._json({ errno: 12, show_msg: '文件不存在（fs_id 对不上）' }) }
+                const dir = body.path
+                if (!this.disk.has(dir)) return { body: this._json({ errno: -9, show_msg: '' }) }
+                if (this.lag) this._stale = { dir, rows: [...this.disk.get(dir)], left: this.lag }
+                const kept = files.slice(0, files.length - this.drop)
+                this.drop = 0
+                for (const e of kept) this.disk.get(dir).push(this._entry(dir, e.server_filename, e.size, false))
+                this.transferred.push(files.map((e) => e.server_filename))
+                return { body: this._json({ errno: 0, extra: { list: [] } }) }
             }
         }
         return { status: 404, body: this._json({ errno: -1, show_msg: 'fake-pan: 未实现 ' + url.pathname }) }

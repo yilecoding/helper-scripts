@@ -41,6 +41,8 @@ async function open(url, opts = {}) {
         const r = await pan.handle(req.method(), u, req.postData() || '')
         route.fulfill({ status: r.status || 200, contentType: 'application/json; charset=utf-8', body: r.body })
     })
+    // 转存后的等待（每 3 秒查一次）用假时钟快进，测试不真等
+    if (opts.clock) await page.clock.install()
     await h.install(page, SCRIPT, opts)
     await page.goto(url)
     return page
@@ -63,6 +65,17 @@ async function scan(page, source, target = '/存档') {
 }
 
 const calls = (page, p) => page.pan.calls.filter((c) => c.path === p)
+
+/** 扫描按钮恢复可用 = 当前操作结束。 */
+const idle = (page) => page.evaluate(() => !document.querySelector('#baidu-share-dedupe').shadowRoot.querySelector('[data-act=scan]').disabled)
+
+/** 点开始转存，假时钟一秒一秒往前拨，直到结束。 */
+async function run(page) {
+    await panel(page, '[data-act=run]').click()
+    for (let i = 0; i < 2000 && !(await idle(page)); i++) await page.clock.runFor(1000)
+    t.assert(await idle(page), '转存没有结束')
+    return status(page)
+}
 
 /** 统计格四个数字。 */
 const stats = (page) => Promise.all(['n-source', 'n-existing', 'n-missing', 'n-batches'].map((r) => panel(page, `[data-ref=${r}]`).textContent()))
@@ -224,6 +237,65 @@ async function main() {
         const page = await open(SHARE_URL, { pan })
         t.assert((await scan(page, '/照片', '')).includes('请填写保存到我的网盘的哪个文件夹'), await status(page))
         t.eq(calls(page, '/share/list').length, 0)
+        await page.close()
+    })
+
+    console.log('分批转存')
+    await t.test('1203 个分 3 批（500 / 500 / 203），每批到齐再下一批', async () => {
+        const pan = new FakePan().addShare('/照片', FakePan.files(1203))
+        const page = await open(SHARE_URL, { pan, clock: true })
+        t.assert(await panel(page, '[data-act=run]').isDisabled(), '没扫描前不能转存')
+        await scan(page, '/照片')
+        t.assert(await panel(page, '[data-act=run]').isEnabled(), '扫描后可以转存')
+        t.eq(await run(page), '完成：分享的 1203 个文件都已在 /存档')
+        t.eq(pan.transferred.map((x) => x.length), [500, 500, 203])
+        t.eq(pan.disk.get('/存档').length, 1203)
+        t.eq(await stats(page), ['1203', '1203', '0', '0'])
+        t.eq(await panel(page, '[data-ref=progress-pct]').textContent(), '100%')
+        t.assert(await panel(page, '[data-act=run]').isDisabled(), '做完后转存按钮变灰')
+        const tr = calls(page, '/share/transfer')[0]
+        t.eq([tr.method, tr.query.shareid, tr.query.from, tr.query.bdstoken, tr.form.path], ['POST', pan.shareid, pan.uk, 'tok123', '/存档'])
+        t.eq(h.errors(page).length, 0)
+        await page.close()
+    })
+    await t.test('fs_id 原样转发（超过 2^53 也不丢精度）', async () => {
+        const pan = new FakePan().addShare('/照片', FakePan.files(2))
+        const page = await open(SHARE_URL, { pan, clock: true })
+        await scan(page, '/照片')
+        await run(page)
+        const want = '[' + pan.share.get('/照片').map((e) => e.fs_id).sort().join(',') + ']'
+        const got = calls(page, '/share/transfer')[0].form.fsidlist
+        t.eq('[' + got.slice(1, -1).split(',').sort().join(',') + ']', want)
+        t.assert(BigInt(got.slice(1, -1).split(',')[0]) > BigInt(Number.MAX_SAFE_INTEGER), 'fs_id 确实超过安全整数')
+        await page.close()
+    })
+    await t.test('转存后文件晚到：多查几次等到齐', async () => {
+        const pan = new FakePan({ lag: 3 }).addShare('/照片', FakePan.files(600))
+        const page = await open(SHARE_URL, { pan, clock: true })
+        await scan(page, '/照片')
+        t.eq(await run(page), '完成：分享的 600 个文件都已在 /存档')
+        t.eq(pan.transferred.map((x) => x.length), [500, 100])
+        await page.close()
+    })
+    await t.test('返回成功但没到齐：等约 1 分钟后停下；重新扫描只补缺的', async () => {
+        const pan = new FakePan().addShare('/照片', FakePan.files(10))
+        pan.drop = 2
+        const page = await open(SHARE_URL, { pan, clock: true })
+        await scan(page, '/照片')
+        const msg = await run(page)
+        t.assert(msg.includes('第 1 批接口返回成功，但等了约 60 秒目标文件夹里还没到齐'), msg)
+        t.eq(await scan(page), '核对完成：待转存 2 个，分 1 批')
+        t.eq(await run(page), '完成：分享的 10 个文件都已在 /存档')
+        t.eq(pan.transferred.map((x) => x.length), [10, 2])
+        await page.close()
+    })
+    await t.test('转存接口报错：停下并显示原因', async () => {
+        const pan = new FakePan().addShare('/照片', FakePan.files(3)).fail('/share/transfer', 12, '转存失败示例')
+        const page = await open(SHARE_URL, { pan, clock: true })
+        await scan(page, '/照片')
+        const msg = await run(page)
+        t.assert(msg.includes('转存失败示例（errno 12）'), msg)
+        t.assert(await panel(page, '[data-act=run]').isEnabled(), '还有待转存，可以再点')
         await page.close()
     })
 

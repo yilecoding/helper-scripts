@@ -3,7 +3,7 @@
 // @name:zh-CN   百度网盘分享批量转存｜非会员自动分批、按文件名和大小去重、可续跑
 // @name:en      Baidu Netdisk Share Batch Saver — Auto-batched, Deduplicated, Resumable
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2026.10.29.3
+// @version      2026.10.29.4
 // @description  在百度网盘分享页把整个文件夹转存到自己的网盘：自动拆成每批 500 个（非会员单次上限），先和目标文件夹按文件名 + 大小核对，已有的跳过；每批转存后核对到齐再继续，中途停了重新扫描就能续跑。
 // @description:zh-CN  在百度网盘分享页把整个文件夹转存到自己的网盘：自动拆成每批 500 个（非会员单次上限），先和目标文件夹按文件名 + 大小核对，已有的跳过；每批转存后核对到齐再继续，中途停了重新扫描就能续跑。
 // @description:en  Saves a whole folder from a Baidu Netdisk share link into your own netdisk: splits it into batches of 500 (the per-transfer limit for non-members), compares against the target folder by file name and size so existing files are skipped, verifies each batch before the next, and resumes after a rescan if stopped.
@@ -38,6 +38,8 @@
         batchSize: 500,         // 每批转存多少个：非会员单次转存上限是 500
         sharePageSize: 100,     // 分享目录每页条数（网页版分享页就是 100）
         diskPageSize: 1000,     // 自己网盘目录每页条数（接口上限 1000）
+        verifyDelayMs: 3000,    // 转存成功后隔这么久查一次目标文件夹，看这批到齐没有
+        verifyTries: 20,        // 最多查这么多次（约 1 分钟）还没到齐就停下
         maxPages: 1000,         // 翻这么多页还没完就当接口异常，停下来别死循环
     };
 
@@ -162,7 +164,7 @@
      * 一页一页读到底。一页不满就是最后一页。
      * 翻页时出现重复的 fs_id 说明分页错位了（接口缓存、排序不稳定），继续读可能漏文件，直接停。
      */
-    async function readAll(label, fetchPage, pageSize) {
+    async function readAll(label, fetchPage, pageSize, quiet) {
         const files = [];
         const ids = new Set();
         for (let page = 1; page <= CONFIG.maxPages; page++) {
@@ -176,7 +178,7 @@
                 ids.add(file.id);
                 files.push(file);
             }
-            Panel.say(label + '：已读取 ' + files.length + ' 项', 'busy');
+            if (!quiet) Panel.say(label + '：已读取 ' + files.length + ' 项', 'busy');
             if (rows.length < pageSize) return files;
         }
         throw new Error(label + '超过 ' + CONFIG.maxPages + ' 页，已停止');
@@ -197,11 +199,11 @@
         }), CONFIG.sharePageSize);
     }
 
-    /** 自己网盘里的一个文件夹。 */
-    function readDiskDir(dir) {
+    /** 自己网盘里的一个文件夹。quiet：转存后反复核对时不刷状态行。 */
+    function readDiskDir(dir, quiet) {
         return readAll('目标文件夹', (page) => request('/api/list', {
             clienttype: 0, web: 1, dir, order: 'name', desc: 0, num: CONFIG.diskPageSize, page,
-        }), CONFIG.diskPageSize);
+        }), CONFIG.diskPageSize, quiet);
     }
 
     // =========================================================================
@@ -234,6 +236,22 @@
         }
         return { missing, existing };
     }
+
+    // =========================================================================
+    // 转存
+    // =========================================================================
+
+    /** 把一批文件（来自分享）转存到目标文件夹。fsidlist 里的 id 是原样的字符串，不经过 Number。 */
+    function transfer(info, files, targetDir) {
+        return request('/share/transfer', {
+            ...WEB_PARAMS, shareid: info.shareid, from: info.uk, bdstoken: info.token,
+        }, {
+            fsidlist: '[' + files.map((file) => file.id).join(',') + ']',
+            path: targetDir,
+        });
+    }
+
+    const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
     // =========================================================================
     // 面板
@@ -308,6 +326,10 @@
         .stat span { font-size: 11px; color: var(--sub); }
         .stat.todo b { color: var(--blue); }
         .stat.done b { color: var(--ok); }
+        .progress { margin: 0 0 10px; }
+        .bar { height: 6px; border-radius: 99px; background: var(--line); overflow: hidden; }
+        .bar i { display: block; height: 100%; width: 0; border-radius: inherit; background: linear-gradient(90deg, #06a7ff, #3b7cff); transition: width .4s ease; }
+        .progress small { display: flex; justify-content: space-between; margin-top: 4px; color: var(--sub); font-size: 11.5px; font-variant-numeric: tabular-nums; }
         .actions { display: flex; gap: 8px; margin-top: 12px; }
         .actions .btn { flex: 1; }
         details.logbox { margin-top: 12px; }
@@ -348,9 +370,14 @@
                             <div class="stat todo"><b data-ref="n-missing">–</b><span>待转存</span></div>
                             <div class="stat"><b data-ref="n-batches">–</b><span>批次</span></div>
                         </div>
+                        <div class="progress" data-ref="progress" hidden>
+                            <div class="bar"><i data-ref="bar"></i></div>
+                            <small><span data-ref="progress-text"></span><span data-ref="progress-pct"></span></small>
+                        </div>
                         <div class="status" data-ref="status">准备就绪</div>
                         <div class="actions">
-                            <button class="btn primary" data-act="scan">扫描核对</button>
+                            <button class="btn" data-act="scan">扫描核对</button>
+                            <button class="btn primary" data-act="run" disabled>开始转存</button>
                         </div>
                         <details class="logbox"><summary>运行日志</summary><pre class="log" data-ref="log"></pre></details>
                     </div>
@@ -359,6 +386,7 @@
             this.$('[data-act=fold]').addEventListener('click', () => this.fold());
             this.$('[data-act=close]').addEventListener('click', () => this.toggle());
             this.$('[data-act=scan]').addEventListener('click', () => Job.action(() => Job.scan()));
+            this.$('[data-act=run]').addEventListener('click', () => Job.action(() => Job.run()));
         },
 
         $(selector) {
@@ -379,6 +407,15 @@
         },
 
         /** 统计格。传 null 清空成「–」。 */
+        /** 进度条：目标里已有 done 个（共 total 个）。 */
+        progress(done, total) {
+            this.$('[data-ref=progress]').hidden = false;
+            const pct = total ? Math.floor(done / total * 100) : 0;
+            this.$('[data-ref=bar]').style.width = pct + '%';
+            this.$('[data-ref=progress-text]').textContent = '已在目标文件夹 ' + done + ' / ' + total;
+            this.$('[data-ref=progress-pct]').textContent = pct + '%';
+        },
+
         stats(n) {
             const set = (ref, v) => { this.$('[data-ref=' + ref + ']').textContent = v == null ? '–' : String(v); };
             set('n-source', n && n.source);
@@ -415,6 +452,7 @@
             if (this.running) return;
             this.running = true;
             Panel.$('[data-act=scan]').disabled = true;
+            Panel.$('[data-act=run]').disabled = true;
             try {
                 await fn();
             } catch (error) {
@@ -423,6 +461,7 @@
             } finally {
                 this.running = false;
                 Panel.$('[data-act=scan]').disabled = false;
+                Panel.$('[data-act=run]').disabled = !(this.plan && this.plan.missing > 0);
             }
         },
 
@@ -441,11 +480,49 @@
             if (!source.length) throw new Error('分享文件夹 ' + sourceDir + ' 是空的，请核对路径');
             const target = await readDiskDir(targetDir);
             const diff = compare(source, target);
-            this.plan = { info, sourceDir, targetDir, source };
+            this.plan = { info, sourceDir, targetDir, source, missing: diff.missing.length };
             Panel.stats({ source: source.length, existing: diff.existing, missing: diff.missing.length });
+            Panel.progress(diff.existing, source.length);
             Panel.say(diff.missing.length
                 ? '核对完成：待转存 ' + diff.missing.length + ' 个，分 ' + Math.ceil(diff.missing.length / CONFIG.batchSize) + ' 批'
                 : '核对完成：分享的 ' + source.length + ' 个文件都已在目标文件夹里', 'ok');
+        },
+
+        /**
+         * 一批一批转存。每批之前重新读一遍目标文件夹再核对 —— 只信目标里实际有什么，
+         * 不信「上一批返回成功」：转存接口偶尔返回成功但文件晚到或没到。
+         * 每批转存后等到这批文件都出现在目标里再进下一批，到不齐就停，重新扫描即可续跑。
+         */
+        async run() {
+            const plan = this.plan;
+            if (!plan) throw new Error('请先扫描核对');
+            const total = plan.source.length;
+            for (let batch = 1; ; batch++) {
+                const diff = compare(plan.source, await readDiskDir(plan.targetDir));
+                plan.missing = diff.missing.length;
+                Panel.stats({ source: total, existing: diff.existing, missing: diff.missing.length });
+                Panel.progress(diff.existing, total);
+                if (!diff.missing.length) {
+                    Panel.say('完成：分享的 ' + total + ' 个文件都已在 ' + plan.targetDir, 'ok');
+                    return;
+                }
+                const files = diff.missing.slice(0, CONFIG.batchSize);
+                Panel.say('第 ' + batch + ' 批：转存 ' + files.length + ' 个（还差 ' + diff.missing.length + ' 个）', 'busy');
+                await transfer(plan.info, files, plan.targetDir);
+                await this.verify(files, plan.targetDir, batch);
+                Panel.say('第 ' + batch + ' 批已到齐', 'busy');
+            }
+        },
+
+        /** 隔一会儿查一次目标文件夹，直到这批文件都在（名字和大小都对得上）。 */
+        async verify(files, targetDir, batch) {
+            for (let i = 0; i < CONFIG.verifyTries; i++) {
+                await pause(CONFIG.verifyDelayMs);
+                const byName = new Map((await readDiskDir(targetDir, true)).map((file) => [file.name, file]));
+                if (files.every((file) => byName.has(file.name) && byName.get(file.name).size === file.size)) return;
+            }
+            throw new Error('第 ' + batch + ' 批接口返回成功，但等了约 ' + Math.round(CONFIG.verifyTries * CONFIG.verifyDelayMs / 1000)
+                + ' 秒目标文件夹里还没到齐。稍后重新扫描核对即可续跑，已到的会跳过');
         },
     };
 
