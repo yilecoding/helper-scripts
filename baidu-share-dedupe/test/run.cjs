@@ -88,6 +88,9 @@ async function run(page, onTick) {
     return status(page)
 }
 
+/** 步骤条每一步的状态：on / done / 空。 */
+const steps = (page) => panel(page, '.steps li').evaluateAll((lis) => lis.map((li) => li.classList.contains('on') ? 'on' : li.classList.contains('done') ? 'done' : ''))
+
 /** 统计格四个数字。 */
 const stats = (page) => Promise.all(['n-source', 'n-existing', 'n-missing', 'n-batches'].map((r) => panel(page, `[data-ref=${r}]`).textContent()))
 
@@ -300,6 +303,25 @@ async function main() {
         const tr = calls(page, '/share/transfer')[0]
         t.eq([tr.method, tr.query.shareid, tr.query.from, tr.query.bdstoken, tr.form.path], ['POST', pan.shareid, pan.uk, 'tok123', '/存档'])
         t.eq(h.errors(page).length, 0)
+        await page.close()
+    })
+    await t.test('步骤条和「第几批 / 共几批」跟着走', async () => {
+        const pan = new FakePan().addShare('/照片', FakePan.files(1203))
+        const page = await open(SHARE_URL, { pan, clock: true })
+        t.eq(await steps(page), ['on', '', ''])
+        await scan(page, '/照片')
+        t.eq(await steps(page), ['done', 'done', 'on'])
+        const seen = new Set()
+        await run(page, async () => {
+            const text = await panel(page, '[data-ref=progress-text]').textContent()
+            const m = /^第 \d \/ \d 批/.exec(text)
+            if (m) seen.add(m[0])
+        })
+        t.eq([...seen], ['第 1 / 3 批', '第 2 / 3 批', '第 3 / 3 批'])
+        t.eq(await steps(page), ['done', 'done', 'done'])
+        t.eq(await panel(page, '[data-ref=progress-text]').textContent(), '已在目标文件夹 1203 / 1203')
+        await panel(page, '[data-ref=target]').fill('/别处')
+        t.eq(await steps(page), ['on', '', ''])
         await page.close()
     })
     await t.test('fs_id 原样转发（超过 2^53 也不丢精度）', async () => {

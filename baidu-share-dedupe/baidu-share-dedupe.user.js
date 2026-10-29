@@ -3,7 +3,7 @@
 // @name:zh-CN   百度网盘分享批量转存｜非会员自动分批、按文件名和大小去重、可续跑
 // @name:en      Baidu Netdisk Share Batch Saver — Auto-batched, Deduplicated, Resumable
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2026.10.29.9
+// @version      2026.10.29.10
 // @description  在百度网盘分享页把整个文件夹转存到自己的网盘：自动拆成每批 500 个（非会员单次上限），先和目标文件夹按文件名 + 大小核对，已有的跳过；每批转存后核对到齐再继续，中途停了重新扫描就能续跑。
 // @description:zh-CN  在百度网盘分享页把整个文件夹转存到自己的网盘：自动拆成每批 500 个（非会员单次上限），先和目标文件夹按文件名 + 大小核对，已有的跳过；每批转存后核对到齐再继续，中途停了重新扫描就能续跑。
 // @description:en  Saves a whole folder from a Baidu Netdisk share link into your own netdisk: splits it into batches of 500 (the per-transfer limit for non-members), compares against the target folder by file name and size so existing files are skipped, verifies each batch before the next, and resumes after a rescan if stopped.
@@ -401,6 +401,20 @@
         .status[data-tone=bad] { background: #fef3f2; color: #b42318; }
         .status[data-tone=bad]::before { background: var(--bad); }
         @keyframes pulse { 0%, 100% { opacity: 1 } 50% { opacity: .3 } }
+        .steps { display: flex; gap: 6px; margin: 0 0 14px; padding: 0; list-style: none; }
+        .steps li {
+            flex: 1; display: flex; align-items: center; gap: 6px; padding: 6px 8px; border-radius: 9px;
+            background: var(--bg); color: var(--sub); font-size: 12px; white-space: nowrap;
+        }
+        .steps li i {
+            flex: none; width: 18px; height: 18px; border-radius: 50%; display: grid; place-items: center;
+            background: #dfe5ec; color: #fff; font: 600 11px/1 system-ui, sans-serif;
+        }
+        .steps li.on { background: var(--blue-l); color: var(--blue-d); font-weight: 600; }
+        .steps li.on i { background: var(--blue); }
+        .steps li.done { color: var(--ink); }
+        .steps li.done i { background: var(--ok); font-size: 0; }
+        .steps li.done i::after { content: "✓"; font-size: 11px; }
         .field { display: block; margin-bottom: 10px; }
         .field > span { display: block; margin-bottom: 4px; color: var(--sub); font-size: 12px; }
         .row { display: flex; gap: 6px; }
@@ -489,6 +503,7 @@
                         <button class="icon" data-act="close" title="隐藏（菜单里可再打开）">✕</button>
                     </header>
                     <div class="body">
+                        <ol class="steps"><li class="on"><i>1</i>选文件夹</li><li><i>2</i>扫描核对</li><li><i>3</i>分批转存</li></ol>
                         <div class="field"><span>分享里的文件夹</span>
                             <div class="row"><input data-ref="source" placeholder="/ 表示分享的最外层"><button class="btn sm" data-pick="source">浏览</button></div>
                             <div class="picker" data-picker="source" hidden></div>
@@ -559,14 +574,22 @@
             this.host.hidden = !this.host.hidden;
         },
 
-        /** 统计格。传 null 清空成「–」。 */
-        /** 进度条：目标里已有 done 个（共 total 个）。 */
-        progress(done, total) {
+        /** 进度条：目标里已有 done 个（共 total 个）。batch 是转存中的「第几批 / 共几批」。 */
+        progress(done, total, batch) {
             this.$('[data-ref=progress]').hidden = false;
             const pct = total ? Math.floor(done / total * 100) : 0;
             this.$('[data-ref=bar]').style.width = pct + '%';
-            this.$('[data-ref=progress-text]').textContent = '已在目标文件夹 ' + done + ' / ' + total;
+            this.$('[data-ref=progress-text]').textContent = (batch ? '第 ' + batch[0] + ' / ' + batch[1] + ' 批 · ' : '')
+                + '已在目标文件夹 ' + done + ' / ' + total;
             this.$('[data-ref=progress-pct]').textContent = pct + '%';
+        },
+
+        /** 步骤条：第 n 步进行中，之前的打勾；all 为真时三步都打勾。 */
+        stage(n, all) {
+            this.root.querySelectorAll('.steps li').forEach((li, i) => {
+                li.classList.toggle('done', all || i + 1 < n);
+                li.classList.toggle('on', !all && i + 1 === n);
+            });
         },
 
         /** 操作中：扫描 / 转存变灰，停止按钮出现；结束后按 canRun 决定转存按钮。 */
@@ -585,6 +608,7 @@
             if (on) Picker.close();
         },
 
+        /** 统计格。传 null 清空成「–」。 */
         stats(n) {
             const set = (ref, v) => { this.$('[data-ref=' + ref + ']').textContent = v == null ? '–' : String(v); };
             set('n-source', n && n.source);
@@ -766,6 +790,7 @@
             if (!this.plan || this.running) return;
             this.plan = null;
             Panel.stats(null);
+            Panel.stage(1);
             Panel.$('[data-act=run]').disabled = true;
             Panel.say('文件夹改了，请重新扫描核对');
         },
@@ -776,6 +801,7 @@
         async scan() {
             this.plan = null;
             Panel.stats(null);
+            Panel.stage(2);
             const sourceDir = cleanPath(Panel.$('[data-ref=source]').value);
             const targetDir = cleanPath(Panel.$('[data-ref=target]').value);
             if (targetDir === '/') throw new Error('请填写保存到我的网盘的哪个文件夹（不能直接存到根目录）');
@@ -795,6 +821,7 @@
             Defaults.rememberTarget(targetDir);
             Panel.stats({ source: source.length, existing: diff.existing, missing: diff.missing.length });
             Panel.progress(diff.existing, source.length);
+            Panel.stage(3, !diff.missing.length);
             const skipped = dirs.length ? '；跳过 ' + dirs.length + ' 个子文件夹（' + nameList(dirs) + '），需要的话选进去单独转' : '';
             Panel.say((diff.missing.length
                 ? '核对完成：待转存 ' + diff.missing.length + ' 个，分 ' + Math.ceil(diff.missing.length / CONFIG.batchSize) + ' 批'
@@ -810,16 +837,20 @@
             const plan = this.plan;
             if (!plan) throw new Error('请先扫描核对');
             const total = plan.source.length;
+            const batches = Math.ceil(plan.missing / CONFIG.batchSize);
             for (let batch = 1; ; batch++) {
                 this.checkStop();
                 const diff = compare(plan.source, await readDiskDir(plan.targetDir));
                 plan.missing = diff.missing.length;
                 Panel.stats({ source: total, existing: diff.existing, missing: diff.missing.length });
-                Panel.progress(diff.existing, total);
                 if (!diff.missing.length) {
+                    Panel.progress(diff.existing, total);
+                    Panel.stage(3, true);
                     Panel.say('完成：分享的 ' + total + ' 个文件都已在 ' + plan.targetDir, 'ok');
                     return;
                 }
+                // 中途有文件晚到 / 被删，批数可能比开始时算的多
+                Panel.progress(diff.existing, total, [batch, Math.max(batches, batch)]);
                 this.checkStop();
                 const files = diff.missing.slice(0, CONFIG.batchSize);
                 Panel.say('第 ' + batch + ' 批：转存 ' + files.length + ' 个（还差 ' + diff.missing.length + ' 个）', 'busy');
