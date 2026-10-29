@@ -15,6 +15,8 @@ class FakePan {
         this.uk = opts.uk || '1100223344'
         this.bdstoken = opts.bdstoken === undefined ? 'tok123' : opts.bdstoken
         this.share = new Map([['/', []]])   // 分享方：目录 → [条目]
+        this.disk = new Map([['/', []]])    // 自己的网盘：目录 → [条目]
+        this._mkdirs(this.disk, '/存档')    // 测试默认的目标文件夹
         this.calls = []
         this.failures = []                  // [{ path, errno, msg, times }]
     }
@@ -30,6 +32,13 @@ class FakePan {
     addShare(dir, files) {
         this._mkdirs(this.share, dir)
         for (const [name, size] of files) this.share.get(dir).push(this._entry(dir, name, size, false))
+        return this
+    }
+
+    /** 在自己网盘里放文件，用法同 addShare。 */
+    addDisk(dir, files) {
+        this._mkdirs(this.disk, dir)
+        for (const [name, size] of files) this.disk.get(dir).push(this._entry(dir, name, size, false))
         return this
     }
 
@@ -85,6 +94,11 @@ class FakePan {
                 const dir = q.root === '1' ? '/' : q.dir
                 if (!this.share.has(dir)) return { body: this._json({ errno: -9, show_msg: '' }) }
                 const rows = [...this.share.get(dir)].sort((a, b) => a.server_filename.localeCompare(b.server_filename))
+                return { body: this._json({ errno: 0, list: this._page(rows, q.page, q.num) }) }
+            }
+            case '/api/list': {
+                if (!this.disk.has(q.dir)) return { body: this._json({ errno: -9, show_msg: '' }) }
+                const rows = [...this.disk.get(q.dir)].sort((a, b) => a.server_filename.localeCompare(b.server_filename))
                 return { body: this._json({ errno: 0, list: this._page(rows, q.page, q.num) }) }
             }
         }

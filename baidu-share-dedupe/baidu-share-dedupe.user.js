@@ -3,7 +3,7 @@
 // @name:zh-CN   百度网盘分享批量转存｜非会员自动分批、按文件名和大小去重、可续跑
 // @name:en      Baidu Netdisk Share Batch Saver — Auto-batched, Deduplicated, Resumable
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2026.10.29.2
+// @version      2026.10.29.3
 // @description  在百度网盘分享页把整个文件夹转存到自己的网盘：自动拆成每批 500 个（非会员单次上限），先和目标文件夹按文件名 + 大小核对，已有的跳过；每批转存后核对到齐再继续，中途停了重新扫描就能续跑。
 // @description:zh-CN  在百度网盘分享页把整个文件夹转存到自己的网盘：自动拆成每批 500 个（非会员单次上限），先和目标文件夹按文件名 + 大小核对，已有的跳过；每批转存后核对到齐再继续，中途停了重新扫描就能续跑。
 // @description:en  Saves a whole folder from a Baidu Netdisk share link into your own netdisk: splits it into batches of 500 (the per-transfer limit for non-members), compares against the target folder by file name and size so existing files are skipped, verifies each batch before the next, and resumes after a rescan if stopped.
@@ -35,7 +35,9 @@
     // =========================================================================
 
     const CONFIG = {
+        batchSize: 500,         // 每批转存多少个：非会员单次转存上限是 500
         sharePageSize: 100,     // 分享目录每页条数（网页版分享页就是 100）
+        diskPageSize: 1000,     // 自己网盘目录每页条数（接口上限 1000）
         maxPages: 1000,         // 翻这么多页还没完就当接口异常，停下来别死循环
     };
 
@@ -195,6 +197,44 @@
         }), CONFIG.sharePageSize);
     }
 
+    /** 自己网盘里的一个文件夹。 */
+    function readDiskDir(dir) {
+        return readAll('目标文件夹', (page) => request('/api/list', {
+            clienttype: 0, web: 1, dir, order: 'name', desc: 0, num: CONFIG.diskPageSize, page,
+        }), CONFIG.diskPageSize);
+    }
+
+    // =========================================================================
+    // 核对
+    // =========================================================================
+
+    /**
+     * 按文件名 + 大小核对来源和目标：
+     *   目标里没有同名的      → 待转存
+     *   同名且大小相同        → 已存在，跳过
+     *   同名但大小不同 / 是文件夹 → 停下来。转存过去百度会自动改名（xxx(1).jpg），
+     *                             悄悄多出一份比漏掉更难发现，交给人判断。
+     * 来源自己有重名也停：按名字核对时分不清是哪一个。
+     */
+    function compare(source, target) {
+        const byName = new Map(target.map((file) => [file.name, file]));
+        const seen = new Set();
+        const missing = [];
+        let existing = 0;
+        for (const file of source) {
+            if (file.isdir) throw new Error('分享文件夹里有子文件夹「' + file.name + '」，目前只处理当前文件夹里的文件');
+            if (seen.has(file.name)) throw new Error('分享文件夹里有重名文件：' + file.name);
+            seen.add(file.name);
+            const found = byName.get(file.name);
+            if (!found) missing.push(file);
+            else if (found.isdir || found.size !== file.size) {
+                throw new Error('目标里已有同名' + (found.isdir ? '文件夹' : '但大小不同的文件') + '：' + file.name
+                    + (found.isdir ? '' : '（分享 ' + file.size + ' 字节，目标 ' + found.size + ' 字节）') + '。为避免重复或覆盖已停止');
+            } else existing++;
+        }
+        return { missing, existing };
+    }
+
     // =========================================================================
     // 面板
     // =========================================================================
@@ -262,6 +302,12 @@
         .btn.primary:hover { background: var(--blue-d); }
         .btn.danger { color: var(--bad); }
         .btn[disabled] { opacity: .45; cursor: not-allowed; pointer-events: none; }
+        .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin: 2px 0 10px; }
+        .stat { padding: 8px 6px 7px; border-radius: 10px; background: var(--bg); text-align: center; }
+        .stat b { display: block; font-size: 17px; line-height: 1.2; font-variant-numeric: tabular-nums; }
+        .stat span { font-size: 11px; color: var(--sub); }
+        .stat.todo b { color: var(--blue); }
+        .stat.done b { color: var(--ok); }
         .actions { display: flex; gap: 8px; margin-top: 12px; }
         .actions .btn { flex: 1; }
         details.logbox { margin-top: 12px; }
@@ -293,9 +339,18 @@
                         <label class="field"><span>分享里的文件夹</span>
                             <div class="row"><input data-ref="source" placeholder="/ 表示分享的最外层"></div>
                         </label>
+                        <label class="field"><span>保存到我的网盘</span>
+                            <div class="row"><input data-ref="target" placeholder="例如 /我的资源/照片"></div>
+                        </label>
+                        <div class="stats">
+                            <div class="stat"><b data-ref="n-source">–</b><span>分享文件</span></div>
+                            <div class="stat done"><b data-ref="n-existing">–</b><span>已存在</span></div>
+                            <div class="stat todo"><b data-ref="n-missing">–</b><span>待转存</span></div>
+                            <div class="stat"><b data-ref="n-batches">–</b><span>批次</span></div>
+                        </div>
                         <div class="status" data-ref="status">准备就绪</div>
                         <div class="actions">
-                            <button class="btn primary" data-act="scan">扫描</button>
+                            <button class="btn primary" data-act="scan">扫描核对</button>
                         </div>
                         <details class="logbox"><summary>运行日志</summary><pre class="log" data-ref="log"></pre></details>
                     </div>
@@ -321,6 +376,15 @@
 
         toggle() {
             this.host.hidden = !this.host.hidden;
+        },
+
+        /** 统计格。传 null 清空成「–」。 */
+        stats(n) {
+            const set = (ref, v) => { this.$('[data-ref=' + ref + ']').textContent = v == null ? '–' : String(v); };
+            set('n-source', n && n.source);
+            set('n-existing', n && n.existing);
+            set('n-missing', n && n.missing);
+            set('n-batches', n && Math.ceil(n.missing / CONFIG.batchSize));
         },
 
         /**
@@ -362,13 +426,26 @@
             }
         },
 
+        /** 扫描结果：{ info, sourceDir, targetDir, source }，转存时用。 */
+        plan: null,
+
         async scan() {
+            this.plan = null;
+            Panel.stats(null);
             const sourceDir = cleanPath(Panel.$('[data-ref=source]').value);
+            const targetDir = cleanPath(Panel.$('[data-ref=target]').value);
+            if (targetDir === '/') throw new Error('请填写保存到我的网盘的哪个文件夹（不能直接存到根目录）');
             Panel.say('正在读取分享信息…', 'busy');
             const info = await shareInfo();
             const source = await readShareDir(info, sourceDir);
             if (!source.length) throw new Error('分享文件夹 ' + sourceDir + ' 是空的，请核对路径');
-            Panel.say('分享文件夹 ' + sourceDir + '：共 ' + source.length + ' 项', 'ok');
+            const target = await readDiskDir(targetDir);
+            const diff = compare(source, target);
+            this.plan = { info, sourceDir, targetDir, source };
+            Panel.stats({ source: source.length, existing: diff.existing, missing: diff.missing.length });
+            Panel.say(diff.missing.length
+                ? '核对完成：待转存 ' + diff.missing.length + ' 个，分 ' + Math.ceil(diff.missing.length / CONFIG.batchSize) + ' 批'
+                : '核对完成：分享的 ' + source.length + ' 个文件都已在目标文件夹里', 'ok');
         },
     };
 

@@ -50,9 +50,10 @@ async function open(url, opts = {}) {
 const panel = (page, sel) => page.locator('#baidu-share-dedupe').locator(sel)
 const status = (page) => panel(page, '[data-ref=status]').textContent()
 
-/** 填来源后点扫描，等按钮恢复（扫描结束，成功或失败）。 */
-async function scan(page, source) {
+/** 填来源、目标后点扫描核对，等按钮恢复（扫描结束，成功或失败）。目标默认 /存档。 */
+async function scan(page, source, target = '/存档') {
     if (source !== undefined) await panel(page, '[data-ref=source]').fill(source)
+    if (target !== undefined) await panel(page, '[data-ref=target]').fill(target)
     await panel(page, '[data-act=scan]').click()
     await page.waitForFunction(() => {
         const b = document.querySelector('#baidu-share-dedupe').shadowRoot.querySelector('[data-act=scan]')
@@ -62,6 +63,9 @@ async function scan(page, source) {
 }
 
 const calls = (page, p) => page.pan.calls.filter((c) => c.path === p)
+
+/** 统计格四个数字。 */
+const stats = (page) => Promise.all(['n-source', 'n-existing', 'n-missing', 'n-batches'].map((r) => panel(page, `[data-ref=${r}]`).textContent()))
 
 async function main() {
     env = await h.setup(FIXTURES)
@@ -128,7 +132,7 @@ async function main() {
     await t.test('分页读到底：250 个文件分 3 页', async () => {
         const pan = new FakePan().addShare('/照片', FakePan.files(250))
         const page = await open(SHARE_URL, { pan })
-        t.eq(await scan(page, '/照片'), '分享文件夹 /照片：共 250 项')
+        t.eq(await scan(page, '/照片'), '核对完成：待转存 250 个，分 1 批')
         const lists = calls(page, '/share/list')
         t.eq(lists.map((c) => c.query.page), ['1', '2', '3'])
         t.eq(lists[0].query.shorturl, SURL)
@@ -141,7 +145,9 @@ async function main() {
     await t.test('/ 和空白用 root=1 列分享最外层', async () => {
         const pan = new FakePan().addShare('/照片', FakePan.files(3)).addShare('/视频', FakePan.files(1))
         const page = await open(SHARE_URL, { pan })
-        t.eq(await scan(page, '  '), '分享文件夹 /：共 2 项')
+        await panel(page, '[data-ref=source]').fill('  ')
+        await scan(page)
+        t.eq(calls(page, '/share/list').length, 1)
         const q = calls(page, '/share/list')[0].query
         t.eq([q.root, q.dir], ['1', undefined])
         await page.close()
@@ -149,7 +155,8 @@ async function main() {
     await t.test('路径前后多余的斜杠会被去掉', async () => {
         const pan = new FakePan().addShare('/a/b', FakePan.files(2))
         const page = await open(SHARE_URL, { pan })
-        t.eq(await scan(page, ' a/b/ '), '分享文件夹 /a/b：共 2 项')
+        await scan(page, ' a/b/ ')
+        t.eq(calls(page, '/share/list')[0].query.dir, '/a/b')
         await page.close()
     })
     await t.test('提取码 Cookie（BDCLND）作为 sekey 带上', async () => {
@@ -163,8 +170,60 @@ async function main() {
     await t.test('页面上没有 bdstoken 时问一次接口', async () => {
         const pan = new FakePan({ bdstoken: '' }).addShare('/照片', FakePan.files(1))
         const page = await open(SHARE_URL, { pan })
-        t.eq(await scan(page, '/照片'), '分享文件夹 /照片：共 1 项')
+        t.eq(await scan(page, '/照片'), '核对完成：待转存 1 个，分 1 批')
         t.eq(calls(page, '/api/gettemplatevariable').length, 1)
+        await page.close()
+    })
+
+    console.log('核对')
+    await t.test('按文件名 + 大小核对：已存在的跳过，统计和批次', async () => {
+        const pan = new FakePan()
+            .addShare('/照片', FakePan.files(1203))
+            .addDisk('/存档', FakePan.files(1203).slice(0, 200))
+            .addDisk('/存档', [['别的文件.txt', 5]])
+        const page = await open(SHARE_URL, { pan })
+        t.eq(await scan(page, '/照片'), '核对完成：待转存 1003 个，分 3 批')
+        t.eq(await stats(page), ['1203', '200', '1003', '3'])
+        await page.close()
+    })
+    await t.test('目标文件夹超过 1000 个时翻页读全', async () => {
+        const pan = new FakePan().addShare('/照片', FakePan.files(1100)).addDisk('/存档', FakePan.files(1050))
+        const page = await open(SHARE_URL, { pan })
+        t.eq(await scan(page, '/照片'), '核对完成：待转存 50 个，分 1 批')
+        const lists = calls(page, '/api/list')
+        t.eq(lists.map((c) => [c.query.dir, c.query.page, c.query.num]), [['/存档', '1', '1000'], ['/存档', '2', '1000']])
+        await page.close()
+    })
+    await t.test('全部已存在', async () => {
+        const pan = new FakePan().addShare('/照片', FakePan.files(3)).addDisk('/存档', FakePan.files(3))
+        const page = await open(SHARE_URL, { pan })
+        t.eq(await scan(page, '/照片'), '核对完成：分享的 3 个文件都已在目标文件夹里')
+        t.eq(await stats(page), ['3', '3', '0', '0'])
+        await page.close()
+    })
+    await t.test('同名但大小不同：停下，不转存', async () => {
+        const pan = new FakePan().addShare('/照片', FakePan.files(3)).addDisk('/存档', [['IMG-0002.jpg', 1]])
+        const page = await open(SHARE_URL, { pan })
+        const msg = await scan(page, '/照片')
+        t.assert(msg.includes('同名但大小不同的文件：IMG-0002.jpg（分享 1001 字节，目标 1 字节）'), msg)
+        t.eq(await stats(page), ['–', '–', '–', '–'])
+        await page.close()
+    })
+    await t.test('目标里有同名文件夹 / 分享里有重名文件：停下', async () => {
+        const pan = new FakePan().addShare('/照片', FakePan.files(2)).addDisk('/存档/IMG-0001.jpg', [])
+        const page = await open(SHARE_URL, { pan })
+        t.assert((await scan(page, '/照片')).includes('同名文件夹：IMG-0001.jpg'), await status(page))
+        const pan2 = new FakePan().addShare('/照片', [['a.jpg', 1], ['a.jpg', 1]])
+        const p2 = await open(SHARE_URL, { pan: pan2 })
+        t.assert((await scan(p2, '/照片')).includes('重名文件：a.jpg'), await status(p2))
+        await page.close()
+        await p2.close()
+    })
+    await t.test('目标没填 / 填了根目录：提示先填', async () => {
+        const pan = new FakePan().addShare('/照片', FakePan.files(1))
+        const page = await open(SHARE_URL, { pan })
+        t.assert((await scan(page, '/照片', '')).includes('请填写保存到我的网盘的哪个文件夹'), await status(page))
+        t.eq(calls(page, '/share/list').length, 0)
         await page.close()
     })
 
