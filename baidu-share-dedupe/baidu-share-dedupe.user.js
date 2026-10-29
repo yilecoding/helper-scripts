@@ -3,7 +3,7 @@
 // @name:zh-CN   百度网盘分享批量转存｜非会员自动分批、按文件名和大小去重、可续跑
 // @name:en      Baidu Netdisk Share Batch Saver — Auto-batched, Deduplicated, Resumable
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2026.10.29.5
+// @version      2026.10.29.6
 // @description  在百度网盘分享页把整个文件夹转存到自己的网盘：自动拆成每批 500 个（非会员单次上限），先和目标文件夹按文件名 + 大小核对，已有的跳过；每批转存后核对到齐再继续，中途停了重新扫描就能续跑。
 // @description:zh-CN  在百度网盘分享页把整个文件夹转存到自己的网盘：自动拆成每批 500 个（非会员单次上限），先和目标文件夹按文件名 + 大小核对，已有的跳过；每批转存后核对到齐再继续，中途停了重新扫描就能续跑。
 // @description:en  Saves a whole folder from a Baidu Netdisk share link into your own netdisk: splits it into batches of 500 (the per-transfer limit for non-members), compares against the target folder by file name and size so existing files are skipped, verifies each batch before the next, and resumes after a rescan if stopped.
@@ -132,8 +132,15 @@
         return null;
     }
 
-    /** { shareid, uk, token }。bdstoken 页面上没有时问一次接口。 */
+    let cachedInfo = null;
+
+    /** { shareid, uk, token }。bdstoken 页面上没有时问一次接口。成功后记住，选文件夹和扫描共用。 */
     async function shareInfo() {
+        if (!cachedInfo) cachedInfo = await readShareInfo();
+        return cachedInfo;
+    }
+
+    async function readShareInfo() {
         const shareid = pageVar('shareid') ?? pageVar('share_id');
         const uk = pageVar('share_uk') ?? pageVar('shareUk') ?? pageVar('uk');
         if (!shareid || !uk) throw new Error('页面上没找到分享信息。如果还没输提取码，先输提取码进入分享页；已经进入的话刷新一下再试');
@@ -157,6 +164,7 @@
             name: row.server_filename || row.filename || '',
             size: Number(row.size ?? row.file_size ?? -1),
             isdir: Number(row.isdir || 0) === 1,
+            path: row.path || '',
         };
     }
 
@@ -190,13 +198,13 @@
     }
 
     /** 分享里的一个文件夹。'/' 是分享的最外层，要用 root=1 列。 */
-    function readShareDir(info, dir) {
+    function readShareDir(info, dir, quiet) {
         const sekey = cookie('BDCLND') || pageVar('sekey') || '';
         const where = dir === '/' ? { root: 1 } : { dir };
         return readAll('分享文件夹', (page) => request('/share/list', {
             ...WEB_PARAMS, shareid: info.shareid, uk: info.uk, shorturl: SURL, sekey, ...where,
             page, num: CONFIG.sharePageSize, order: 'name', desc: 0,
-        }), CONFIG.sharePageSize);
+        }), CONFIG.sharePageSize, quiet);
     }
 
     /** 自己网盘里的一个文件夹。quiet：转存后反复核对时不刷状态行。 */
@@ -331,6 +339,32 @@
         .bar { height: 6px; border-radius: 99px; background: var(--line); overflow: hidden; }
         .bar i { display: block; height: 100%; width: 0; border-radius: inherit; background: linear-gradient(90deg, #06a7ff, #3b7cff); transition: width .4s ease; }
         .progress small { display: flex; justify-content: space-between; margin-top: 4px; color: var(--sub); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+        .btn.sm { height: 32px; padding: 0 11px; font-size: 12.5px; }
+        .picker {
+            margin-top: 6px; border: 1px solid var(--line); border-radius: 10px; overflow: hidden;
+            box-shadow: 0 4px 14px rgba(15,35,70,.08);
+        }
+        .crumbs {
+            display: flex; align-items: center; gap: 2px; flex-wrap: wrap; padding: 7px 8px; background: var(--bg);
+            border-bottom: 1px solid var(--line); font-size: 12px;
+        }
+        .crumbs button { all: unset; cursor: pointer; padding: 1px 5px; border-radius: 5px; color: var(--blue-d); }
+        .crumbs button:hover { background: var(--blue-l); }
+        .crumbs .here { color: var(--ink); font-weight: 600; cursor: default; background: none !important; }
+        .crumbs i { color: #b6c0cc; font-style: normal; }
+        .crumbs .x { margin-left: auto; color: var(--sub); }
+        .folders { max-height: 188px; overflow: auto; padding: 4px; }
+        .folders button {
+            all: unset; box-sizing: border-box; display: flex; align-items: center; gap: 8px; width: 100%;
+            padding: 6px 8px; border-radius: 7px; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
+        .folders button:hover { background: var(--blue-l); }
+        .folders button::before { content: "📁"; flex: none; }
+        .folders .up::before { content: "↩"; color: var(--sub); }
+        .folders .hint { padding: 10px 8px; color: var(--sub); font-size: 12px; }
+        .folders .hint.bad { color: var(--bad); }
+        .pick-foot { display: flex; align-items: center; gap: 8px; padding: 8px; border-top: 1px solid var(--line); }
+        .pick-foot span { flex: 1; min-width: 0; color: var(--sub); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .actions { display: flex; gap: 8px; margin-top: 12px; }
         .actions .btn { flex: 1; }
         details.logbox { margin-top: 12px; }
@@ -359,12 +393,14 @@
                         <button class="icon" data-act="close" title="隐藏（菜单里可再打开）">✕</button>
                     </header>
                     <div class="body">
-                        <label class="field"><span>分享里的文件夹</span>
-                            <div class="row"><input data-ref="source" placeholder="/ 表示分享的最外层"></div>
-                        </label>
-                        <label class="field"><span>保存到我的网盘</span>
-                            <div class="row"><input data-ref="target" placeholder="例如 /我的资源/照片"></div>
-                        </label>
+                        <div class="field"><span>分享里的文件夹</span>
+                            <div class="row"><input data-ref="source" placeholder="/ 表示分享的最外层"><button class="btn sm" data-pick="source">浏览</button></div>
+                            <div class="picker" data-picker="source" hidden></div>
+                        </div>
+                        <div class="field"><span>保存到我的网盘</span>
+                            <div class="row"><input data-ref="target" placeholder="例如 /我的资源/照片"><button class="btn sm" data-pick="target">浏览</button></div>
+                            <div class="picker" data-picker="target" hidden></div>
+                        </div>
                         <div class="stats">
                             <div class="stat"><b data-ref="n-source">–</b><span>分享文件</span></div>
                             <div class="stat done"><b data-ref="n-existing">–</b><span>已存在</span></div>
@@ -393,11 +429,18 @@
             // 扫描之后改了文件夹，之前的核对结果就不算数了
             for (const ref of ['source', 'target']) {
                 this.$('[data-ref=' + ref + ']').addEventListener('input', () => Job.invalidate());
+                this.$('[data-pick=' + ref + ']').addEventListener('click', () => Picker.open(ref));
             }
         },
 
         $(selector) {
             return this.root.querySelector(selector);
+        },
+
+        el(html) {
+            const t = document.createElement('template');
+            t.innerHTML = html.trim();
+            return t.content.firstElementChild;
         },
 
         fold() {
@@ -431,7 +474,11 @@
             const stop = this.$('[data-act=stop]');
             stop.hidden = !on;
             stop.disabled = false;
-            for (const ref of ['source', 'target']) this.$('[data-ref=' + ref + ']').disabled = on;
+            for (const ref of ['source', 'target']) {
+                this.$('[data-ref=' + ref + ']').disabled = on;
+                this.$('[data-pick=' + ref + ']').disabled = on;
+            }
+            if (on) Picker.close();
         },
 
         stats(n) {
@@ -461,6 +508,114 @@
     // =========================================================================
     // 扫描
     // =========================================================================
+
+    // =========================================================================
+    // 选文件夹
+    // =========================================================================
+
+    /**
+     * 两个选择器：分享里的（source）和自己网盘的（target）。
+     *
+     * 「上一级」靠面包屑栈而不是从路径往上截：分享的最外层条目，路径是分享者网盘里的完整路径
+     * （比如 /资料/2024/照片），往上截出来的 /资料/2024 不在分享范围里，列不出来。
+     */
+    const Picker = {
+        kind: null,
+        trail: [],      // [{ dir, label }]，第一项是根
+
+        el() {
+            return Panel.$('[data-picker=' + this.kind + ']');
+        },
+
+        open(kind) {
+            if (this.kind === kind && !this.el().hidden) return this.close();
+            this.close();
+            this.kind = kind;
+            this.trail = [{ dir: '/', label: kind === 'source' ? '分享' : '我的网盘' }];
+            this.el().hidden = false;
+            this.show();
+        },
+
+        close() {
+            if (this.kind) this.el().hidden = true;
+            this.kind = null;
+        },
+
+        enter(dir, label) {
+            this.trail.push({ dir, label });
+            this.show();
+        },
+
+        back(index) {
+            this.trail = this.trail.slice(0, index + 1);
+            this.show();
+        },
+
+        /** 当前文件夹里的子文件夹。 */
+        async folders(dir) {
+            const rows = this.kind === 'source'
+                ? await readShareDir(await shareInfo(), dir, true)
+                : await readDiskDir(dir, true);
+            return rows.filter((row) => row.isdir)
+                .map((row) => ({ name: row.name, dir: row.path || (dir === '/' ? '' : dir) + '/' + row.name }));
+        },
+
+        async show() {
+            const kind = this.kind;
+            const trail = this.trail.slice();
+            const here = trail[trail.length - 1];
+            const box = this.el();
+            box.replaceChildren(Panel.el(`<div class="crumbs"></div>`), Panel.el(`<div class="folders"><div class="hint">正在读取…</div></div>`),
+                Panel.el(`<div class="pick-foot"><span></span><button class="btn primary sm">选用这个文件夹</button></div>`));
+            const crumbs = box.querySelector('.crumbs');
+            trail.forEach((step, i) => {
+                if (i) crumbs.append(Panel.el('<i>/</i>'));
+                const b = Panel.el(i === trail.length - 1 ? '<button class="here"></button>' : '<button></button>');
+                b.textContent = step.label;
+                b.addEventListener('click', () => { if (i < trail.length - 1) this.back(i); });
+                crumbs.append(b);
+            });
+            const x = Panel.el('<button class="x" title="关闭">✕</button>');
+            x.addEventListener('click', () => this.close());
+            crumbs.append(x);
+            box.querySelector('.pick-foot span').textContent = here.dir;
+            box.querySelector('.pick-foot button').addEventListener('click', () => this.choose(here.dir));
+
+            const list = box.querySelector('.folders');
+            let folders;
+            try {
+                folders = await this.folders(here.dir);
+            } catch (error) {
+                if (this.kind !== kind || this.trail[this.trail.length - 1] !== here) return;
+                list.replaceChildren(Panel.el('<div class="hint bad"></div>'));
+                list.firstChild.textContent = '读取失败：' + error.message;
+                return;
+            }
+            // 读的时候用户已经点去别处了
+            if (this.kind !== kind || this.trail[this.trail.length - 1] !== here) return;
+            list.replaceChildren();
+            if (trail.length > 1) {
+                const up = Panel.el('<button class="up">上一级</button>');
+                up.addEventListener('click', () => this.back(trail.length - 2));
+                list.append(up);
+            }
+            for (const f of folders) {
+                const b = Panel.el('<button></button>');
+                b.textContent = f.name;
+                b.title = f.dir;
+                b.addEventListener('click', () => this.enter(f.dir, f.name));
+                list.append(b);
+            }
+            if (!folders.length) list.append(Panel.el('<div class="hint">这里没有子文件夹</div>'));
+        },
+
+        choose(dir) {
+            const input = Panel.$('[data-ref=' + this.kind + ']');
+            input.value = dir;
+            input.dispatchEvent(new Event('input'));
+            this.close();
+        },
+    };
 
     /** 用户点了停止。和出错分开：不算失败，不标红。 */
     class Stopped extends Error {}
