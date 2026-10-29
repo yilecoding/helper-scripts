@@ -343,6 +343,22 @@ async function main() {
         await page.close()
     })
 
+    await t.test('列表有缓存时也能核对到新文件（每次请求带不同的 _t）', async () => {
+        const pan = new FakePan({ cache: true }).addShare('/照片', FakePan.files(700))
+        const page = await open(SHARE_URL, { pan, clock: true })
+        await scan(page, '/照片')
+        t.eq(await run(page), '完成：分享的 700 个文件都已在 /存档')
+        const ts = calls(page, '/api/list').map((c) => c.query._t)
+        t.eq(new Set(ts).size, ts.length)
+        await page.close()
+    })
+    await t.test('目标文件夹不存在：提示先新建', async () => {
+        const pan = new FakePan().addShare('/照片', FakePan.files(1))
+        const page = await open(SHARE_URL, { pan })
+        t.eq(await scan(page, '/照片', '/没有这个'), '停止：我的网盘里没有文件夹 /没有这个，请先在网盘里新建，或点「浏览」选一个已有的')
+        await page.close()
+    })
+
     console.log('停止与续跑')
     await t.test('转存中点停止：这一批做完后停下，不标红；重新扫描续跑', async () => {
         const pan = new FakePan().addShare('/照片', FakePan.files(1203))

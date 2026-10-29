@@ -3,7 +3,7 @@
 // @name:zh-CN   百度网盘分享批量转存｜非会员自动分批、按文件名和大小去重、可续跑
 // @name:en      Baidu Netdisk Share Batch Saver — Auto-batched, Deduplicated, Resumable
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2026.10.29.8
+// @version      2026.10.29.9
 // @description  在百度网盘分享页把整个文件夹转存到自己的网盘：自动拆成每批 500 个（非会员单次上限），先和目标文件夹按文件名 + 大小核对，已有的跳过；每批转存后核对到齐再继续，中途停了重新扫描就能续跑。
 // @description:zh-CN  在百度网盘分享页把整个文件夹转存到自己的网盘：自动拆成每批 500 个（非会员单次上限），先和目标文件夹按文件名 + 大小核对，已有的跳过；每批转存后核对到齐再继续，中途停了重新扫描就能续跑。
 // @description:en  Saves a whole folder from a Baidu Netdisk share link into your own netdisk: splits it into batches of 500 (the per-transfer limit for non-members), compares against the target folder by file name and size so existing files are skipped, verifies each batch before the next, and resumes after a rescan if stopped.
@@ -209,12 +209,24 @@
         }), CONFIG.sharePageSize, quiet);
     }
 
-    /** 自己网盘里的一个文件夹。quiet：转存后反复核对时不刷状态行。 */
-    function readDiskDir(dir, quiet) {
-        return readAll('目标文件夹', (page) => request('/api/list', {
-            clienttype: 0, web: 1, dir, order: 'name', desc: 0, num: CONFIG.diskPageSize, page,
-        }), CONFIG.diskPageSize, quiet);
+    /**
+     * 自己网盘里的一个文件夹。quiet：转存后反复核对时不刷状态行。
+     * 每次请求带一个不重复的 _t：转存后同样的 URL 可能一直拿到缓存的旧列表，
+     * 核对就永远等不到新文件。
+     */
+    async function readDiskDir(dir, quiet) {
+        try {
+            return await readAll('目标文件夹', (page) => request('/api/list', {
+                clienttype: 0, web: 1, dir, order: 'name', desc: 0, num: CONFIG.diskPageSize, page,
+                _t: Date.now() + '-' + (++listSeq),
+            }), CONFIG.diskPageSize, quiet);
+        } catch (error) {
+            if (error.errno === -9) throw new Error('我的网盘里没有文件夹 ' + dir + '，请先在网盘里新建，或点「浏览」选一个已有的');
+            throw error;
+        }
     }
+
+    let listSeq = 0;
 
     // =========================================================================
     // 核对

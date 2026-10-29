@@ -24,6 +24,7 @@ class FakePan {
         this.drop = 0                       // 下一次转存「返回成功但实际没存」的文件个数
         this.transferred = []               // 每次转存的文件名
         this._stale = null                  // 延迟期间返回的旧列表
+        this.cache = opts.cache ? new Map() : null   // 模拟列表缓存：同样的 query 回同样的结果
     }
 
     /** 分享页里的 window.yunData。 */
@@ -102,6 +103,15 @@ class FakePan {
                 return { body: this._json({ errno: 0, list: this._page(rows, q.page, q.num) }) }
             }
             case '/api/list': {
+                if (this.cache) {
+                    const key = url.search
+                    if (!this.cache.has(key)) this.cache.set(key, await this.handle(method, new URL(url.href.replace('/api/list', '/api/list-nocache')), form))
+                    return this.cache.get(key)
+                }
+                return this.handle(method, new URL(url.href.replace('/api/list', '/api/list-nocache')), form)
+            }
+            case '/api/list-nocache': {
+                this.calls.pop()
                 if (!this.disk.has(q.dir)) return { body: this._json({ errno: -9, show_msg: '' }) }
                 let all = this.disk.get(q.dir)
                 if (this._stale && this._stale.dir === q.dir && this._stale.left > 0) {
