@@ -2,20 +2,20 @@
 
 # helper-scripts
 
-**23 个实用油猴脚本：自动刷课连播、阅读增强、去广告弹窗、解除复制限制、一键导出……装上就能用。**
+**24 个实用油猴脚本：自动刷课连播、阅读增强、去广告弹窗、解除复制限制、一键导出……装上就能用。**
 
 [![GitHub stars](https://img.shields.io/github/stars/yilecoding/helper-scripts?style=social)](https://github.com/yilecoding/helper-scripts/stargazers)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
-![Scripts](https://img.shields.io/badge/scripts-23-brightgreen.svg)
+![Scripts](https://img.shields.io/badge/scripts-24-brightgreen.svg)
 ![Tampermonkey](https://img.shields.io/badge/Tampermonkey-ready-00485B.svg)
 
 </div>
 
-> A collection of 23 Tampermonkey userscripts, mostly for Chinese websites: an auto-play helper for the 2026 SmartEdu teacher training (the most popular one), plus general tools for reading, de-cluttering, copying, exporting and browsing. Click **安装** in any table below to install.
+> A collection of 24 Tampermonkey userscripts, mostly for Chinese websites: an auto-play helper for the 2026 SmartEdu teacher training (the most popular one), plus general tools for reading, de-cluttering, copying, exporting, browsing and saving Baidu Netdisk shares in bulk. Click **安装** in any table below to install.
 
 - **装上就能用**：点表格里的「安装」，Tampermonkey 会自动弹出安装页，之后自动更新。
 - **不乱改网页**：通用脚本大多能在菜单里按站点停用，不打扰本来正常的网站。
-- **每个都有测试**：22 个通用脚本都带离线自动化测试；每个目录下的 `notes.md` 写了实现思路、踩过的坑和已知限制。
+- **每个都有测试**：23 个通用脚本都带离线自动化测试；每个目录下的 `notes.md` 写了实现思路、踩过的坑和已知限制。
 
 ## 目录
 
@@ -117,6 +117,7 @@
 | **通用视频倍速**<br>`video-speed` | 任意网站的视频都能用快捷键调速：`Z` 减速、`X` 加速、`R` 恢复 1 倍、`G` 切到常用倍速、`Q`/`E` 快退快进；按站点记住倍速，网站把倍速重置时自动恢复 | [安装](https://raw.githubusercontent.com/yilecoding/helper-scripts/main/video-speed/video-speed.user.js) · [笔记](./video-speed/notes.md) |
 | **表单草稿自动保存**<br>`form-saver` | 评论、工单、帖子写到一半误关页面，回来一键恢复；不保存密码、卡号、验证码；草稿 7 天后自动清除 | [安装](https://raw.githubusercontent.com/yilecoding/helper-scripts/main/form-saver/form-saver.user.js) · [笔记](./form-saver/notes.md) |
 | **网页变化监控**<br>`page-monitor` | 选中页面上一块区域（价格、库存、公告、成绩），定时检查，内容变化或达到价格阈值时通知你，并标出具体改了什么 | [安装](https://raw.githubusercontent.com/yilecoding/helper-scripts/main/page-monitor/page-monitor.user.js) · [笔记](./page-monitor/notes.md) |
+| **百度网盘分享批量转存**<br>`baidu-share-dedupe` | 在分享页把整个文件夹转存到自己的网盘：非会员自动拆成每批 500 个，先和目标文件夹按文件名 + 大小核对，已有的跳过；每批确认到齐再继续，中途停了重新扫描就能续跑 | [安装](https://raw.githubusercontent.com/yilecoding/helper-scripts/main/baidu-share-dedupe/baidu-share-dedupe.user.js) · [笔记](./baidu-share-dedupe/notes.md) |
 | **网站使用时长统计**<br>`site-timer` | 只统计真正在用的时间，多个标签页不重复计算；可给网站设每日上限，超时全屏提醒；看今天和近 7 天排行，导出 CSV | [安装](https://raw.githubusercontent.com/yilecoding/helper-scripts/main/site-timer/site-timer.user.js) · [笔记](./site-timer/notes.md) |
 
 ## 常见问题
@@ -132,7 +133,7 @@
 
 **脚本会收集我的数据吗？**
 不会。所有设置和记录都只存在你本机的 Tampermonkey 里，没有任何统计或上报。脚本发出的网络请求只有两类：
-- 发往你正在浏览的网站本身：自动翻页（加载下一页）、图片批量下载、网页变化监控、研修助手（平台自己的接口）。
+- 发往你正在浏览的网站本身：自动翻页（加载下一页）、图片批量下载、网页变化监控、研修助手（平台自己的接口）、百度网盘分享批量转存（百度网盘自己的接口）。
 - 功能本身需要的服务：划词翻译（Google 翻译、MyMemory）、以图搜图（你选的搜图网站）、GitHub 增强（GitHub API）。
 
 ## 开发与测试
