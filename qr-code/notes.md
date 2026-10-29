@@ -106,7 +106,7 @@ NODE_PATH=/path/to/node_modules node qr-code/test/run.cjs
   附录 E 的对齐图形坐标；版本自动选择（刚好放满 / 多一个字节）；4 条罚分规则的单元测试；自动掩码 = 罚分最低。
 - **真实解码**：矩阵画到 canvas，交给 ZXing（html5-qrcode 打包的那份）解码，比对原文 —— 纯数字、字母数字、URL、
   中文（加 / 不加 ECI）、emoji、空串、版本 40 满载，以及 8 种掩码 × 4 个纠错等级。
-  仓库不带解码器，按 `QR_DECODER` 环境变量 → `require.resolve('html5-qrcode/…')` → 测试里写死的候选路径 找；
+  仓库不带解码器，按 `QR_DECODER` 环境变量 → `require.resolve('html5-qrcode/…')` 找；
   都找不到就跳过这一组（打印提示），其余照跑，UI 用例退化成核对画布尺寸。
   ZXing-js 对个别矩阵在某些像素尺寸下找不到定位图形（32 个里 3 个在 4px/模块时解不出、2px 能解；
   同一矩阵和 node-qrcode 的输出逐位相同），所以解不出时换 2px、3px 重画再解。

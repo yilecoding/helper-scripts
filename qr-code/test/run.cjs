@@ -7,7 +7,7 @@
  *
  * 真实解码：生成的矩阵画到 canvas 上，交给 ZXing（html5-qrcode 打包的那份）解码，比对原文。
  * 仓库不带解码器，按顺序找：环境变量 QR_DECODER（html5-qrcode.min.js 的路径）
- * → require.resolve('html5-qrcode/html5-qrcode.min.js') → 下面 DECODER_CANDIDATES。
+ * → require.resolve('html5-qrcode/html5-qrcode.min.js')。
  * 都找不到时跳过解码用例并打印一行提示（码字级的标准样例照样跑）。
  *
  * 页面都用 page.route 挂在假域名 https://example.com 下，不访问外网。
@@ -23,15 +23,11 @@ const SCRIPT = path.join(__dirname, '..', 'qr-code.user.js')
 const FIXTURES = path.join(__dirname, 'fixtures')
 const SITE = 'https://example.com'
 
-const DECODER_CANDIDATES = [
-    '/home/yujie_ao/code/avcp/frontend/node_modules/.pnpm/html5-qrcode@2.3.8/node_modules/html5-qrcode/html5-qrcode.min.js',
-]
-
 function findDecoder() {
     // QR_DECODER 设成不存在的路径 = 强制不用解码器（用来验证没有解码器时这套测试照样能跑）
     if (process.env.QR_DECODER) return fs.existsSync(process.env.QR_DECODER) ? process.env.QR_DECODER : null
     try { return require.resolve('html5-qrcode/html5-qrcode.min.js') } catch (e) { /* 没装 */ }
-    return DECODER_CANDIDATES.find((p) => fs.existsSync(p)) || null
+    return null
 }
 
 const t = h.createRunner('qr-code')

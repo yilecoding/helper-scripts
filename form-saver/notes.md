@@ -105,8 +105,6 @@ React 的 checkbox `onChange` 挂在 click 上，只发 change 它收不到。
 
 ```bash
 NODE_PATH=<装了 playwright 的 node_modules> node form-saver/test/run.cjs
-# 例如本机：
-NODE_PATH=/home/yujie_ao/code/fastapi-react-admin/node_modules/.pnpm/playwright@1.62.1/node_modules node form-saver/test/run.cjs
 ```
 
 用 `tools/userscript-harness.cjs` 在 Playwright 里加载脚本、模拟 `GM_*`（存储在同源 localStorage，刷新能读回）。
