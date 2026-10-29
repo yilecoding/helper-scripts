@@ -3,7 +3,7 @@
 // @name:zh-CN   百度网盘分享批量转存｜非会员自动分批、按文件名和大小去重、可续跑
 // @name:en      Baidu Netdisk Share Batch Saver — Auto-batched, Deduplicated, Resumable
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2026.10.29.7
+// @version      2026.10.29.8
 // @description  在百度网盘分享页把整个文件夹转存到自己的网盘：自动拆成每批 500 个（非会员单次上限），先和目标文件夹按文件名 + 大小核对，已有的跳过；每批转存后核对到齐再继续，中途停了重新扫描就能续跑。
 // @description:zh-CN  在百度网盘分享页把整个文件夹转存到自己的网盘：自动拆成每批 500 个（非会员单次上限），先和目标文件夹按文件名 + 大小核对，已有的跳过；每批转存后核对到齐再继续，中途停了重新扫描就能续跑。
 // @description:en  Saves a whole folder from a Baidu Netdisk share link into your own netdisk: splits it into batches of 500 (the per-transfer limit for non-members), compares against the target folder by file name and size so existing files are skipped, verifies each batch before the next, and resumes after a rescan if stopped.
@@ -221,7 +221,7 @@
     // =========================================================================
 
     /**
-     * 按文件名 + 大小核对来源和目标：
+     * 按文件名 + 大小核对来源和目标（来源里的子文件夹不在这里，见 splitDirs）：
      *   目标里没有同名的      → 待转存
      *   同名且大小相同        → 已存在，跳过
      *   同名但大小不同 / 是文件夹 → 停下来。转存过去百度会自动改名（xxx(1).jpg），
@@ -234,7 +234,6 @@
         const missing = [];
         let existing = 0;
         for (const file of source) {
-            if (file.isdir) throw new Error('分享文件夹里有子文件夹「' + file.name + '」，目前只处理当前文件夹里的文件');
             if (seen.has(file.name)) throw new Error('分享文件夹里有重名文件：' + file.name);
             seen.add(file.name);
             const found = byName.get(file.name);
@@ -245,6 +244,19 @@
             } else existing++;
         }
         return { missing, existing };
+    }
+
+    /**
+     * 来源里的子文件夹不转：整个文件夹转过去没法按文件去重，也绕不开 500 个的上限
+     * （文件夹里的文件也算数）。列出名字，需要的话选进去单独转。
+     */
+    function splitDirs(rows) {
+        return { files: rows.filter((row) => !row.isdir), dirs: rows.filter((row) => row.isdir).map((row) => row.name) };
+    }
+
+    /** 名字列表太长时只列前几个。 */
+    function nameList(names, max = 3) {
+        return names.slice(0, max).join('、') + (names.length > max ? ' 等 ' + names.length + ' 个' : '');
     }
 
     // =========================================================================
@@ -372,6 +384,8 @@
         .status[data-tone=busy]::before { background: var(--blue); animation: pulse 1.2s ease-in-out infinite; }
         .status[data-tone=ok] { background: #ecfdf3; }
         .status[data-tone=ok]::before { background: var(--ok); }
+        .status[data-tone=warn] { background: #fffaeb; color: #93370d; }
+        .status[data-tone=warn]::before { background: var(--warn); }
         .status[data-tone=bad] { background: #fef3f2; color: #b42318; }
         .status[data-tone=bad]::before { background: var(--bad); }
         @keyframes pulse { 0%, 100% { opacity: 1 } 50% { opacity: .3 } }
@@ -433,6 +447,10 @@
         .pick-foot span { flex: 1; min-width: 0; color: var(--sub); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .actions { display: flex; gap: 8px; margin-top: 12px; }
         .actions .btn { flex: 1; }
+        details.more { margin: -2px 0 10px; }
+        details.more summary { cursor: pointer; color: var(--sub); font-size: 12px; user-select: none; }
+        details.more .field { margin: 8px 0 0; }
+        details.more small { display: block; margin-top: 4px; color: var(--sub); font-size: 11.5px; }
         details.logbox { margin-top: 12px; }
         details.logbox summary { cursor: pointer; color: var(--sub); font-size: 12px; user-select: none; }
         .log {
@@ -467,6 +485,12 @@
                             <div class="row"><input data-ref="target" placeholder="例如 /我的资源/照片"><button class="btn sm" data-pick="target">浏览</button></div>
                             <div class="picker" data-picker="target" hidden></div>
                         </div>
+                        <details class="more"><summary>更多选项</summary>
+                            <div class="field"><span>分享里至少应有多少个文件（可不填）</span>
+                                <div class="row"><input data-ref="min" type="number" min="1" placeholder="例如 1500"></div>
+                                <small>分享页偶尔只列出一部分文件。知道总数的话填上，读到的少于这个数就不转存。</small>
+                            </div>
+                        </details>
                         <div class="stats">
                             <div class="stat"><b data-ref="n-source">–</b><span>分享文件</span></div>
                             <div class="stat done"><b data-ref="n-existing">–</b><span>已存在</span></div>
@@ -497,6 +521,7 @@
                 this.$('[data-ref=' + ref + ']').addEventListener('input', () => Job.invalidate());
                 this.$('[data-pick=' + ref + ']').addEventListener('click', () => Picker.open(ref));
             }
+            this.$('[data-ref=min]').addEventListener('input', () => Job.invalidate());
         },
 
         $(selector) {
@@ -540,6 +565,7 @@
             const stop = this.$('[data-act=stop]');
             stop.hidden = !on;
             stop.disabled = false;
+            this.$('[data-ref=min]').disabled = on;
             for (const ref of ['source', 'target']) {
                 this.$('[data-ref=' + ref + ']').disabled = on;
                 this.$('[data-pick=' + ref + ']').disabled = on;
@@ -743,17 +769,24 @@
             if (targetDir === '/') throw new Error('请填写保存到我的网盘的哪个文件夹（不能直接存到根目录）');
             Panel.say('正在读取分享信息…', 'busy');
             const info = await shareInfo();
-            const source = await readShareDir(info, sourceDir);
-            if (!source.length) throw new Error('分享文件夹 ' + sourceDir + ' 是空的，请核对路径');
+            const minRaw = Panel.$('[data-ref=min]').value.trim();
+            const min = minRaw ? Number(minRaw) : 0;
+            if (minRaw && !(Number.isInteger(min) && min > 0)) throw new Error('「至少应有多少个文件」要填正整数，或者留空');
+            const rows = await readShareDir(info, sourceDir);
+            if (!rows.length) throw new Error('分享文件夹 ' + sourceDir + ' 是空的，请核对路径');
+            const { files: source, dirs } = splitDirs(rows);
+            if (!source.length) throw new Error('分享文件夹 ' + sourceDir + ' 里只有子文件夹（' + nameList(dirs) + '），请点「浏览」选进具体的子文件夹');
+            if (source.length < min) throw new Error('分享文件夹里只读到 ' + source.length + ' 个文件，少于你填的 ' + min + ' 个。请核对文件夹，或稍后重试；暂不转存');
             const target = await readDiskDir(targetDir);
             const diff = compare(source, target);
             this.plan = { info, sourceDir, targetDir, source, missing: diff.missing.length };
             Defaults.rememberTarget(targetDir);
             Panel.stats({ source: source.length, existing: diff.existing, missing: diff.missing.length });
             Panel.progress(diff.existing, source.length);
-            Panel.say(diff.missing.length
+            const skipped = dirs.length ? '；跳过 ' + dirs.length + ' 个子文件夹（' + nameList(dirs) + '），需要的话选进去单独转' : '';
+            Panel.say((diff.missing.length
                 ? '核对完成：待转存 ' + diff.missing.length + ' 个，分 ' + Math.ceil(diff.missing.length / CONFIG.batchSize) + ' 批'
-                : '核对完成：分享的 ' + source.length + ' 个文件都已在目标文件夹里', 'ok');
+                : '核对完成：分享的 ' + source.length + ' 个文件都已在目标文件夹里') + skipped, dirs.length ? 'warn' : 'ok');
         },
 
         /**
