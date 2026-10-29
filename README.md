@@ -159,7 +159,6 @@ NODE_PATH=/path/to/node_modules node <script-name>/test/run.cjs
 ## 反馈与支持
 
 - 遇到问题或有新需求：[提交 Issue](https://github.com/yilecoding/helper-scripts/issues)
-- 作者：壹樂（微信 ita1125）
 - 觉得好用的话，点个 ⭐ Star 支持一下，Watch 仓库可以第一时间收到更新。
 
 ## 许可证与声明
