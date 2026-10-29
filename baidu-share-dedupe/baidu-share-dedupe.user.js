@@ -3,7 +3,7 @@
 // @name:zh-CN   百度网盘分享批量转存｜非会员自动分批、按文件名和大小去重、可续跑
 // @name:en      Baidu Netdisk Share Batch Saver — Auto-batched, Deduplicated, Resumable
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2026.10.29.1
+// @version      2026.10.29.2
 // @description  在百度网盘分享页把整个文件夹转存到自己的网盘：自动拆成每批 500 个（非会员单次上限），先和目标文件夹按文件名 + 大小核对，已有的跳过；每批转存后核对到齐再继续，中途停了重新扫描就能续跑。
 // @description:zh-CN  在百度网盘分享页把整个文件夹转存到自己的网盘：自动拆成每批 500 个（非会员单次上限），先和目标文件夹按文件名 + 大小核对，已有的跳过；每批转存后核对到齐再继续，中途停了重新扫描就能续跑。
 // @description:en  Saves a whole folder from a Baidu Netdisk share link into your own netdisk: splits it into batches of 500 (the per-transfer limit for non-members), compares against the target folder by file name and size so existing files are skipped, verifies each batch before the next, and resumes after a rescan if stopped.
@@ -31,6 +31,18 @@
     const TAG = '[分享转存]';
 
     // =========================================================================
+    // 配置
+    // =========================================================================
+
+    const CONFIG = {
+        sharePageSize: 100,     // 分享目录每页条数（网页版分享页就是 100）
+        maxPages: 1000,         // 翻这么多页还没完就当接口异常，停下来别死循环
+    };
+
+    /** 网页版固定带的几个公共参数。 */
+    const WEB_PARAMS = { app_id: 250528, channel: 'chunlei', clienttype: 0, web: 1 };
+
+    // =========================================================================
     // 分享链接
     // =========================================================================
 
@@ -45,6 +57,142 @@
         if (m) return m[1];
         if (/^\/share\/(init|link)\b/.test(loc.pathname)) return new URL(loc.href).searchParams.get('surl') || '';
         return '';
+    }
+
+    // =========================================================================
+    // 接口
+    // =========================================================================
+
+    /**
+     * fs_id 是 19 位左右的整数，超过 Number.MAX_SAFE_INTEGER，JSON.parse 会把末几位变成 0，
+     * 转存时就会指向别的文件（或报文件不存在）。解析前先把它变成字符串。
+     */
+    function parseJSON(raw) {
+        return JSON.parse(raw.replace(/("fs_id"\s*:\s*)(\d+)/g, '$1"$2"'));
+    }
+
+    /** 常见 errno 的人话说明；其余照接口的 show_msg 显示。 */
+    const ERRNO_HINT = {
+        '-6': '未登录或登录已失效，请先在这个浏览器登录百度网盘',
+        '-9': '文件夹不存在',
+    };
+
+    /** 同源请求（带登录 Cookie）。errno 非 0 抛错，错误信息带上接口名方便排查。 */
+    async function request(endpoint, query, form) {
+        const url = new URL(endpoint, location.origin);
+        for (const [key, value] of Object.entries(query || {})) {
+            if (value !== undefined && value !== null && value !== '') url.searchParams.set(key, String(value));
+        }
+        const response = await fetch(url, {
+            method: form ? 'POST' : 'GET',
+            credentials: 'include',
+            headers: form ? { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' } : {},
+            body: form ? new URLSearchParams(form) : undefined,
+        });
+        if (!response.ok) throw new Error(endpoint + '：HTTP ' + response.status);
+        let data;
+        try {
+            data = parseJSON(await response.text());
+        } catch (e) {
+            throw new Error(endpoint + '：返回的不是 JSON，可能要先过验证码或重新登录');
+        }
+        const errno = Number(data.errno ?? data.errNo ?? 0);
+        if (errno !== 0) {
+            const err = new Error(endpoint + '：' + (ERRNO_HINT[errno] || data.show_msg || data.errmsg || data.error_msg || '出错了') + '（errno ' + errno + '）');
+            err.errno = errno;
+            throw err;
+        }
+        return data;
+    }
+
+    function cookie(name) {
+        const item = document.cookie.split('; ').find((x) => x.startsWith(name + '='));
+        return item ? decodeURIComponent(item.slice(name.length + 1)) : '';
+    }
+
+    /**
+     * 分享页把 shareid / 分享者 uk / bdstoken 放在全局变量里：老版是 window.yunData，
+     * 新版是 window.locals（有的是普通对象，有的带 get()）。都试一遍。
+     */
+    function pageVar(key) {
+        const w = unsafeWindow;
+        if (w.yunData && w.yunData[key] != null) return w.yunData[key];
+        const locals = w.locals;
+        if (locals) {
+            if (typeof locals.get === 'function') {
+                const v = locals.get(key);
+                if (v != null) return v;
+            }
+            if (locals[key] != null) return locals[key];
+        }
+        return null;
+    }
+
+    /** { shareid, uk, token }。bdstoken 页面上没有时问一次接口。 */
+    async function shareInfo() {
+        const shareid = pageVar('shareid') ?? pageVar('share_id');
+        const uk = pageVar('share_uk') ?? pageVar('shareUk') ?? pageVar('uk');
+        if (!shareid || !uk) throw new Error('页面上没找到分享信息。如果还没输提取码，先输提取码进入分享页；已经进入的话刷新一下再试');
+        let token = pageVar('bdstoken') || '';
+        if (!token) {
+            const data = await request('/api/gettemplatevariable', { clienttype: 0, app_id: 250528, fields: '["bdstoken"]' });
+            token = (data.result && data.result.bdstoken) || data.bdstoken || '';
+        }
+        if (!token) throw new Error('没取到 bdstoken，请确认这个浏览器已经登录百度网盘');
+        return { shareid: String(shareid), uk: String(uk), token };
+    }
+
+    // =========================================================================
+    // 读目录
+    // =========================================================================
+
+    /** 接口里的一行 → { id, name, size, isdir }。 */
+    function normalize(row) {
+        return {
+            id: String(row.fs_id ?? row.fsid ?? ''),
+            name: row.server_filename || row.filename || '',
+            size: Number(row.size ?? row.file_size ?? -1),
+            isdir: Number(row.isdir || 0) === 1,
+        };
+    }
+
+    /**
+     * 一页一页读到底。一页不满就是最后一页。
+     * 翻页时出现重复的 fs_id 说明分页错位了（接口缓存、排序不稳定），继续读可能漏文件，直接停。
+     */
+    async function readAll(label, fetchPage, pageSize) {
+        const files = [];
+        const ids = new Set();
+        for (let page = 1; page <= CONFIG.maxPages; page++) {
+            const data = await fetchPage(page);
+            const rows = data.list || data.records || [];
+            if (!Array.isArray(rows)) throw new Error(label + '第 ' + page + ' 页没有文件列表');
+            for (const row of rows) {
+                const file = normalize(row);
+                if (!file.id || !file.name) throw new Error(label + '第 ' + page + ' 页有文件信息不完整');
+                if (ids.has(file.id)) throw new Error(label + '翻页时出现重复文件，为防漏文件已停止，请稍后重试');
+                ids.add(file.id);
+                files.push(file);
+            }
+            Panel.say(label + '：已读取 ' + files.length + ' 项', 'busy');
+            if (rows.length < pageSize) return files;
+        }
+        throw new Error(label + '超过 ' + CONFIG.maxPages + ' 页，已停止');
+    }
+
+    /** '/a/b/' → '/a/b'，'' → '/'。 */
+    function cleanPath(value) {
+        return '/' + String(value || '').trim().replace(/^\/+|\/+$/g, '');
+    }
+
+    /** 分享里的一个文件夹。'/' 是分享的最外层，要用 root=1 列。 */
+    function readShareDir(info, dir) {
+        const sekey = cookie('BDCLND') || pageVar('sekey') || '';
+        const where = dir === '/' ? { root: 1 } : { dir };
+        return readAll('分享文件夹', (page) => request('/share/list', {
+            ...WEB_PARAMS, shareid: info.shareid, uk: info.uk, shorturl: SURL, sekey, ...where,
+            page, num: CONFIG.sharePageSize, order: 'name', desc: 0,
+        }), CONFIG.sharePageSize);
     }
 
     // =========================================================================
@@ -95,6 +243,27 @@
         .status[data-tone=bad] { background: #fef3f2; color: #b42318; }
         .status[data-tone=bad]::before { background: var(--bad); }
         @keyframes pulse { 0%, 100% { opacity: 1 } 50% { opacity: .3 } }
+        .field { display: block; margin-bottom: 10px; }
+        .field > span { display: block; margin-bottom: 4px; color: var(--sub); font-size: 12px; }
+        .row { display: flex; gap: 6px; }
+        input {
+            flex: 1; min-width: 0; height: 32px; padding: 0 10px; font: inherit; color: var(--ink);
+            border: 1px solid var(--line); border-radius: 8px; background: #fff; outline: none; transition: border-color .15s, box-shadow .15s;
+        }
+        input:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(6,167,255,.15); }
+        .btn {
+            all: unset; box-sizing: border-box; height: 32px; padding: 0 14px; border-radius: 8px; cursor: pointer;
+            display: inline-flex; align-items: center; justify-content: center; gap: 4px; white-space: nowrap;
+            font-size: 13px; font-weight: 500; border: 1px solid var(--line); background: #fff; color: var(--ink);
+            transition: background .15s, border-color .15s, opacity .15s;
+        }
+        .btn:hover { background: var(--bg); }
+        .btn.primary { background: var(--blue); border-color: var(--blue); color: #fff; }
+        .btn.primary:hover { background: var(--blue-d); }
+        .btn.danger { color: var(--bad); }
+        .btn[disabled] { opacity: .45; cursor: not-allowed; pointer-events: none; }
+        .actions { display: flex; gap: 8px; margin-top: 12px; }
+        .actions .btn { flex: 1; }
         details.logbox { margin-top: 12px; }
         details.logbox summary { cursor: pointer; color: var(--sub); font-size: 12px; user-select: none; }
         .log {
@@ -121,13 +290,20 @@
                         <button class="icon" data-act="close" title="隐藏（菜单里可再打开）">✕</button>
                     </header>
                     <div class="body">
+                        <label class="field"><span>分享里的文件夹</span>
+                            <div class="row"><input data-ref="source" placeholder="/ 表示分享的最外层"></div>
+                        </label>
                         <div class="status" data-ref="status">准备就绪</div>
+                        <div class="actions">
+                            <button class="btn primary" data-act="scan">扫描</button>
+                        </div>
                         <details class="logbox"><summary>运行日志</summary><pre class="log" data-ref="log"></pre></details>
                     </div>
                 </section>`;
             document.documentElement.appendChild(this.host);
             this.$('[data-act=fold]').addEventListener('click', () => this.fold());
             this.$('[data-act=close]').addEventListener('click', () => this.toggle());
+            this.$('[data-act=scan]').addEventListener('click', () => Job.action(() => Job.scan()));
         },
 
         $(selector) {
@@ -160,6 +336,39 @@
             log.textContent += new Date().toLocaleTimeString() + ' ' + message + '\n';
             log.scrollTop = log.scrollHeight;
             console.info(TAG, message);
+        },
+    };
+
+    // =========================================================================
+    // 扫描
+    // =========================================================================
+
+    const Job = {
+        running: false,
+
+        /** 同一时间只跑一件事；出错显示在状态行，按钮恢复。 */
+        async action(fn) {
+            if (this.running) return;
+            this.running = true;
+            Panel.$('[data-act=scan]').disabled = true;
+            try {
+                await fn();
+            } catch (error) {
+                Panel.say('停止：' + error.message, 'bad');
+                console.error(TAG, error);
+            } finally {
+                this.running = false;
+                Panel.$('[data-act=scan]').disabled = false;
+            }
+        },
+
+        async scan() {
+            const sourceDir = cleanPath(Panel.$('[data-ref=source]').value);
+            Panel.say('正在读取分享信息…', 'busy');
+            const info = await shareInfo();
+            const source = await readShareDir(info, sourceDir);
+            if (!source.length) throw new Error('分享文件夹 ' + sourceDir + ' 是空的，请核对路径');
+            Panel.say('分享文件夹 ' + sourceDir + '：共 ' + source.length + ' 项', 'ok');
         },
     };
 

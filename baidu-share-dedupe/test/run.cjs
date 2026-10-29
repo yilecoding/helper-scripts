@@ -50,6 +50,19 @@ async function open(url, opts = {}) {
 const panel = (page, sel) => page.locator('#baidu-share-dedupe').locator(sel)
 const status = (page) => panel(page, '[data-ref=status]').textContent()
 
+/** 填来源后点扫描，等按钮恢复（扫描结束，成功或失败）。 */
+async function scan(page, source) {
+    if (source !== undefined) await panel(page, '[data-ref=source]').fill(source)
+    await panel(page, '[data-act=scan]').click()
+    await page.waitForFunction(() => {
+        const b = document.querySelector('#baidu-share-dedupe').shadowRoot.querySelector('[data-act=scan]')
+        return !b.disabled
+    })
+    return status(page)
+}
+
+const calls = (page, p) => page.pan.calls.filter((c) => c.path === p)
+
 async function main() {
     env = await h.setup(FIXTURES)
 
@@ -108,6 +121,80 @@ async function main() {
         t.assert(await panel(page, '.panel').isVisible(), '菜单再显示')
         await panel(page, '[data-act=close]').click()
         t.assert(await panel(page, '.panel').isHidden(), '✕ 隐藏面板')
+        await page.close()
+    })
+
+    console.log('读分享文件夹')
+    await t.test('分页读到底：250 个文件分 3 页', async () => {
+        const pan = new FakePan().addShare('/照片', FakePan.files(250))
+        const page = await open(SHARE_URL, { pan })
+        t.eq(await scan(page, '/照片'), '分享文件夹 /照片：共 250 项')
+        const lists = calls(page, '/share/list')
+        t.eq(lists.map((c) => c.query.page), ['1', '2', '3'])
+        t.eq(lists[0].query.shorturl, SURL)
+        t.eq(lists[0].query.dir, '/照片')
+        t.eq(lists[0].query.shareid, pan.shareid)
+        t.eq(lists[0].query.uk, pan.uk)
+        t.eq(h.errors(page).length, 0)
+        await page.close()
+    })
+    await t.test('/ 和空白用 root=1 列分享最外层', async () => {
+        const pan = new FakePan().addShare('/照片', FakePan.files(3)).addShare('/视频', FakePan.files(1))
+        const page = await open(SHARE_URL, { pan })
+        t.eq(await scan(page, '  '), '分享文件夹 /：共 2 项')
+        const q = calls(page, '/share/list')[0].query
+        t.eq([q.root, q.dir], ['1', undefined])
+        await page.close()
+    })
+    await t.test('路径前后多余的斜杠会被去掉', async () => {
+        const pan = new FakePan().addShare('/a/b', FakePan.files(2))
+        const page = await open(SHARE_URL, { pan })
+        t.eq(await scan(page, ' a/b/ '), '分享文件夹 /a/b：共 2 项')
+        await page.close()
+    })
+    await t.test('提取码 Cookie（BDCLND）作为 sekey 带上', async () => {
+        const pan = new FakePan().addShare('/照片', FakePan.files(1))
+        const page = await open(SHARE_URL, { pan })
+        await page.context().addCookies([{ name: 'BDCLND', value: encodeURIComponent('k+e/y='), domain: 'pan.baidu.com', path: '/' }])
+        await scan(page, '/照片')
+        t.eq(calls(page, '/share/list')[0].query.sekey, 'k+e/y=')
+        await page.close()
+    })
+    await t.test('页面上没有 bdstoken 时问一次接口', async () => {
+        const pan = new FakePan({ bdstoken: '' }).addShare('/照片', FakePan.files(1))
+        const page = await open(SHARE_URL, { pan })
+        t.eq(await scan(page, '/照片'), '分享文件夹 /照片：共 1 项')
+        t.eq(calls(page, '/api/gettemplatevariable').length, 1)
+        await page.close()
+    })
+
+    console.log('出错时')
+    await t.test('页面没有分享信息（还没输提取码）', async () => {
+        const page = await open(SHARE_URL, { yunData: null })
+        t.assert((await scan(page, '/照片')).includes('页面上没找到分享信息'), await status(page))
+        t.eq(await panel(page, '[data-ref=status]').getAttribute('data-tone'), 'bad')
+        t.assert(await panel(page, '[data-act=scan]').isEnabled(), '出错后扫描按钮恢复')
+        await page.close()
+    })
+    await t.test('未登录（errno -6）给出人话提示', async () => {
+        const pan = new FakePan().addShare('/照片', FakePan.files(1)).fail('/share/list', -6)
+        const page = await open(SHARE_URL, { pan })
+        t.assert((await scan(page, '/照片')).includes('未登录或登录已失效'), await status(page))
+        await page.close()
+    })
+    await t.test('文件夹不存在 / 空文件夹', async () => {
+        const pan = new FakePan().addShare('/空', [])
+        const page = await open(SHARE_URL, { pan })
+        t.assert((await scan(page, '/没有')).includes('文件夹不存在'), await status(page))
+        t.assert((await scan(page, '/空')).includes('是空的'), await status(page))
+        await page.close()
+    })
+    await t.test('翻页出现重复文件就停，不冒漏文件的险', async () => {
+        const pan = new FakePan().addShare('/照片', FakePan.files(150))
+        const rows = pan.share.get('/照片')
+        rows.splice(100, 0, { ...rows[0], server_filename: 'IMG-0001.jpg' })   // 第 2 页开头又出现第 1 页的 fs_id
+        const page = await open(SHARE_URL, { pan })
+        t.assert((await scan(page, '/照片')).includes('重复文件'), await status(page))
         await page.close()
     })
 
