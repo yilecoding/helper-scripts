@@ -69,10 +69,16 @@ const calls = (page, p) => page.pan.calls.filter((c) => c.path === p)
 /** 扫描按钮恢复可用 = 当前操作结束。 */
 const idle = (page) => page.evaluate(() => !document.querySelector('#baidu-share-dedupe').shadowRoot.querySelector('[data-act=scan]').disabled)
 
-/** 点开始转存，假时钟一秒一秒往前拨，直到结束。 */
-async function run(page) {
+/**
+ * 点开始转存，假时钟一秒一秒往前拨，直到结束。
+ * onTick(i) 每拨一次调用一次（用来在中途点停止之类）。
+ */
+async function run(page, onTick) {
     await panel(page, '[data-act=run]').click()
-    for (let i = 0; i < 2000 && !(await idle(page)); i++) await page.clock.runFor(1000)
+    for (let i = 0; i < 2000 && !(await idle(page)); i++) {
+        if (onTick) await onTick(i)
+        await page.clock.runFor(1000)
+    }
     t.assert(await idle(page), '转存没有结束')
     return status(page)
 }
@@ -296,6 +302,43 @@ async function main() {
         const msg = await run(page)
         t.assert(msg.includes('转存失败示例（errno 12）'), msg)
         t.assert(await panel(page, '[data-act=run]').isEnabled(), '还有待转存，可以再点')
+        await page.close()
+    })
+
+    console.log('停止与续跑')
+    await t.test('转存中点停止：这一批做完后停下，不标红；重新扫描续跑', async () => {
+        const pan = new FakePan().addShare('/照片', FakePan.files(1203))
+        const page = await open(SHARE_URL, { pan, clock: true })
+        await scan(page, '/照片')
+        let clicked = false
+        const msg = await run(page, async () => {
+            if (clicked) return
+            t.assert(await panel(page, '[data-act=stop]').isVisible(), '转存中显示停止按钮')
+            t.assert(await panel(page, '[data-act=run]').isHidden(), '转存中隐藏开始按钮')
+            t.assert(await panel(page, '[data-ref=target]').isDisabled(), '转存中不能改文件夹')
+            if (pan.transferred.length === 1) {
+                await panel(page, '[data-act=stop]').click()
+                clicked = true
+            }
+        })
+        t.assert(msg.startsWith('已停止'), msg)
+        t.eq(await panel(page, '[data-ref=status]').getAttribute('data-tone'), null)
+        t.eq(pan.transferred.length, 1)
+        t.assert(await panel(page, '[data-act=stop]').isHidden(), '结束后停止按钮收起')
+        t.eq(await scan(page), '核对完成：待转存 703 个，分 2 批')
+        t.eq(await run(page), '完成：分享的 1203 个文件都已在 /存档')
+        t.eq(pan.transferred.map((x) => x.length), [500, 500, 203])
+        await page.close()
+    })
+    await t.test('扫描后改了文件夹：要重新扫描才能转存', async () => {
+        const pan = new FakePan().addShare('/照片', FakePan.files(3))
+        const page = await open(SHARE_URL, { pan })
+        await scan(page, '/照片')
+        t.assert(await panel(page, '[data-act=run]').isEnabled())
+        await panel(page, '[data-ref=target]').fill('/别处')
+        t.assert(await panel(page, '[data-act=run]').isDisabled(), '改了目标后转存按钮变灰')
+        t.eq(await status(page), '文件夹改了，请重新扫描核对')
+        t.eq(await stats(page), ['–', '–', '–', '–'])
         await page.close()
     })
 

@@ -3,7 +3,7 @@
 // @name:zh-CN   百度网盘分享批量转存｜非会员自动分批、按文件名和大小去重、可续跑
 // @name:en      Baidu Netdisk Share Batch Saver — Auto-batched, Deduplicated, Resumable
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2026.10.29.4
+// @version      2026.10.29.5
 // @description  在百度网盘分享页把整个文件夹转存到自己的网盘：自动拆成每批 500 个（非会员单次上限），先和目标文件夹按文件名 + 大小核对，已有的跳过；每批转存后核对到齐再继续，中途停了重新扫描就能续跑。
 // @description:zh-CN  在百度网盘分享页把整个文件夹转存到自己的网盘：自动拆成每批 500 个（非会员单次上限），先和目标文件夹按文件名 + 大小核对，已有的跳过；每批转存后核对到齐再继续，中途停了重新扫描就能续跑。
 // @description:en  Saves a whole folder from a Baidu Netdisk share link into your own netdisk: splits it into batches of 500 (the per-transfer limit for non-members), compares against the target folder by file name and size so existing files are skipped, verifies each batch before the next, and resumes after a rescan if stopped.
@@ -309,6 +309,7 @@
             border: 1px solid var(--line); border-radius: 8px; background: #fff; outline: none; transition: border-color .15s, box-shadow .15s;
         }
         input:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(6,167,255,.15); }
+        input:disabled { background: var(--bg); color: var(--sub); }
         .btn {
             all: unset; box-sizing: border-box; height: 32px; padding: 0 14px; border-radius: 8px; cursor: pointer;
             display: inline-flex; align-items: center; justify-content: center; gap: 4px; white-space: nowrap;
@@ -378,6 +379,7 @@
                         <div class="actions">
                             <button class="btn" data-act="scan">扫描核对</button>
                             <button class="btn primary" data-act="run" disabled>开始转存</button>
+                            <button class="btn danger" data-act="stop" hidden>停止</button>
                         </div>
                         <details class="logbox"><summary>运行日志</summary><pre class="log" data-ref="log"></pre></details>
                     </div>
@@ -387,6 +389,11 @@
             this.$('[data-act=close]').addEventListener('click', () => this.toggle());
             this.$('[data-act=scan]').addEventListener('click', () => Job.action(() => Job.scan()));
             this.$('[data-act=run]').addEventListener('click', () => Job.action(() => Job.run()));
+            this.$('[data-act=stop]').addEventListener('click', () => Job.requestStop());
+            // 扫描之后改了文件夹，之前的核对结果就不算数了
+            for (const ref of ['source', 'target']) {
+                this.$('[data-ref=' + ref + ']').addEventListener('input', () => Job.invalidate());
+            }
         },
 
         $(selector) {
@@ -414,6 +421,17 @@
             this.$('[data-ref=bar]').style.width = pct + '%';
             this.$('[data-ref=progress-text]').textContent = '已在目标文件夹 ' + done + ' / ' + total;
             this.$('[data-ref=progress-pct]').textContent = pct + '%';
+        },
+
+        /** 操作中：扫描 / 转存变灰，停止按钮出现；结束后按 canRun 决定转存按钮。 */
+        busy(on, canRun) {
+            this.$('[data-act=scan]').disabled = on;
+            this.$('[data-act=run]').disabled = on || !canRun;
+            this.$('[data-act=run]').hidden = on;
+            const stop = this.$('[data-act=stop]');
+            stop.hidden = !on;
+            stop.disabled = false;
+            for (const ref of ['source', 'target']) this.$('[data-ref=' + ref + ']').disabled = on;
         },
 
         stats(n) {
@@ -444,6 +462,9 @@
     // 扫描
     // =========================================================================
 
+    /** 用户点了停止。和出错分开：不算失败，不标红。 */
+    class Stopped extends Error {}
+
     const Job = {
         running: false,
 
@@ -451,18 +472,43 @@
         async action(fn) {
             if (this.running) return;
             this.running = true;
-            Panel.$('[data-act=scan]').disabled = true;
-            Panel.$('[data-act=run]').disabled = true;
+            this.stopping = false;
+            Panel.busy(true);
             try {
                 await fn();
             } catch (error) {
-                Panel.say('停止：' + error.message, 'bad');
-                console.error(TAG, error);
+                if (error instanceof Stopped) Panel.say('已停止。重新点「扫描核对」再「开始转存」即可续跑，已存的会跳过');
+                else {
+                    Panel.say('停止：' + error.message, 'bad');
+                    console.error(TAG, error);
+                }
             } finally {
                 this.running = false;
-                Panel.$('[data-act=scan]').disabled = false;
-                Panel.$('[data-act=run]').disabled = !(this.plan && this.plan.missing > 0);
+                Panel.busy(false, !!(this.plan && this.plan.missing > 0));
             }
+        },
+
+        stopping: false,
+
+        /** 停止不打断正在发的请求：当前这批转存会先完成，下一步开始前停下。 */
+        requestStop() {
+            if (!this.running || this.stopping) return;
+            this.stopping = true;
+            Panel.$('[data-act=stop]').disabled = true;
+            Panel.say('正在停止：已发出的这一批会先完成…', 'busy');
+        },
+
+        /** 每个可以停下的点调用一次。 */
+        checkStop() {
+            if (this.stopping) throw new Stopped();
+        },
+
+        invalidate() {
+            if (!this.plan || this.running) return;
+            this.plan = null;
+            Panel.stats(null);
+            Panel.$('[data-act=run]').disabled = true;
+            Panel.say('文件夹改了，请重新扫描核对');
         },
 
         /** 扫描结果：{ info, sourceDir, targetDir, source }，转存时用。 */
@@ -498,6 +544,7 @@
             if (!plan) throw new Error('请先扫描核对');
             const total = plan.source.length;
             for (let batch = 1; ; batch++) {
+                this.checkStop();
                 const diff = compare(plan.source, await readDiskDir(plan.targetDir));
                 plan.missing = diff.missing.length;
                 Panel.stats({ source: total, existing: diff.existing, missing: diff.missing.length });
@@ -506,6 +553,7 @@
                     Panel.say('完成：分享的 ' + total + ' 个文件都已在 ' + plan.targetDir, 'ok');
                     return;
                 }
+                this.checkStop();
                 const files = diff.missing.slice(0, CONFIG.batchSize);
                 Panel.say('第 ' + batch + ' 批：转存 ' + files.length + ' 个（还差 ' + diff.missing.length + ' 个）', 'busy');
                 await transfer(plan.info, files, plan.targetDir);
@@ -518,6 +566,7 @@
         async verify(files, targetDir, batch) {
             for (let i = 0; i < CONFIG.verifyTries; i++) {
                 await pause(CONFIG.verifyDelayMs);
+                this.checkStop();
                 const byName = new Map((await readDiskDir(targetDir, true)).map((file) => [file.name, file]));
                 if (files.every((file) => byName.has(file.name) && byName.get(file.name).size === file.size)) return;
             }
