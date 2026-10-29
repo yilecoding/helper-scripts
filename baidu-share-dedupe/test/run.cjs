@@ -45,6 +45,11 @@ async function open(url, opts = {}) {
     if (opts.clock) await page.clock.install()
     await h.install(page, SCRIPT, opts)
     await page.goto(url)
+    // 等来源预填（可能要读一次分享最外层）结束，之后的调用记录从零算
+    if (opts.ready !== false) {
+        await page.locator('#baidu-share-dedupe[data-ready]').waitFor({ state: 'attached' })
+        pan.calls = []
+    }
     return page
 }
 
@@ -125,7 +130,7 @@ async function main() {
         await page.close()
     })
     await t.test('自己的网盘首页不显示', async () => {
-        const page = await open('https://pan.baidu.com/disk/home')
+        const page = await open('https://pan.baidu.com/disk/home', { ready: false })
         await page.waitForTimeout(300)
         t.eq(await page.locator('#baidu-share-dedupe').count(), 0)
         t.eq((await h.gm(page)).menu.length, 0)
@@ -186,9 +191,11 @@ async function main() {
         t.eq(calls(page, '/share/list')[0].query.sekey, 'k+e/y=')
         await page.close()
     })
-    await t.test('页面上没有 bdstoken 时问一次接口', async () => {
+    await t.test('页面上没有 bdstoken 时问一次接口（之后复用）', async () => {
         const pan = new FakePan({ bdstoken: '' }).addShare('/照片', FakePan.files(1))
-        const page = await open(SHARE_URL, { pan })
+        const page = await open(SHARE_URL, { pan, ready: false })
+        await page.locator('#baidu-share-dedupe[data-ready]').waitFor({ state: 'attached' })
+        t.eq(await scan(page, '/照片'), '核对完成：待转存 1 个，分 1 批')
         t.eq(await scan(page, '/照片'), '核对完成：待转存 1 个，分 1 批')
         t.eq(calls(page, '/api/gettemplatevariable').length, 1)
         await page.close()
@@ -342,6 +349,49 @@ async function main() {
         await page.close()
     })
 
+    console.log('默认值')
+    await t.test('来源取分享页地址里的路径（hash 和 ?path= 两种）', async () => {
+        const pan = new FakePan().addShare('/照片/2024', FakePan.files(1)).addShare('/视频', [])
+        let page = await open(SHARE_URL + '#list/path=%2F%E7%85%A7%E7%89%87%2F2024', { pan })
+        t.eq(await panel(page, '[data-ref=source]').inputValue(), '/照片/2024')
+        t.eq(calls(page, '/share/list').length, 0)
+        await page.close()
+        page = await open(SHARE_URL + '?path=%2F%E8%A7%86%E9%A2%91', { pan })
+        t.eq(await panel(page, '[data-ref=source]').inputValue(), '/视频')
+        await page.close()
+    })
+    await t.test('在最外层且只有一个文件夹：自动选它；有多个就不选', async () => {
+        const pan = new FakePan().addShare('/9.28原图', FakePan.files(3))
+        let page = await open(SHARE_URL, { pan })
+        t.eq(await panel(page, '[data-ref=source]').inputValue(), '/9.28原图')
+        await page.close()
+        pan.addShare('/另一个', [])
+        page = await open(SHARE_URL, { pan })
+        t.eq(await panel(page, '[data-ref=source]').inputValue(), '')
+        await page.close()
+    })
+    await t.test('切换分享里的文件夹（hashchange）跟着变；自己改过就不再动', async () => {
+        const pan = new FakePan().addShare('/a', []).addShare('/b', [])
+        const page = await open(SHARE_URL, { pan })
+        await page.evaluate(() => { location.hash = '#list/path=%2Fa' })
+        await page.waitForFunction(() => document.querySelector('#baidu-share-dedupe').shadowRoot.querySelector('[data-ref=source]').value === '/a')
+        await panel(page, '[data-ref=source]').fill('/自己填的')
+        await page.evaluate(() => { location.hash = '#list/path=%2Fb' })
+        await page.waitForTimeout(200)
+        t.eq(await panel(page, '[data-ref=source]').inputValue(), '/自己填的')
+        await page.close()
+    })
+    await t.test('目标文件夹记住上次扫描成功的', async () => {
+        const pan = new FakePan().addShare('/照片', FakePan.files(1)).addDisk('/我的资源', [])
+        let page = await open(SHARE_URL, { pan })
+        await scan(page, '/照片', '/我的资源/')
+        t.eq(await page.evaluate(() => JSON.parse(localStorage.getItem('__gm:lastTarget'))), '/我的资源')
+        await page.close()
+        page = await open(SHARE_URL, { pan, values: { lastTarget: '/我的资源' } })
+        t.eq(await panel(page, '[data-ref=target]').inputValue(), '/我的资源')
+        await page.close()
+    })
+
     console.log('选文件夹')
     /** 选择器里当前列出的条目文字，等「正在读取」消失。 */
     async function pickerItems(page, kind) {
@@ -431,8 +481,9 @@ async function main() {
         await page.close()
     })
     await t.test('未登录（errno -6）给出人话提示', async () => {
-        const pan = new FakePan().addShare('/照片', FakePan.files(1)).fail('/share/list', -6)
+        const pan = new FakePan().addShare('/照片', FakePan.files(1))
         const page = await open(SHARE_URL, { pan })
+        pan.fail('/share/list', -6)
         t.assert((await scan(page, '/照片')).includes('未登录或登录已失效'), await status(page))
         await page.close()
     })

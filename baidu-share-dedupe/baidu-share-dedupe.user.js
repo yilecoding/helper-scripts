@@ -3,7 +3,7 @@
 // @name:zh-CN   百度网盘分享批量转存｜非会员自动分批、按文件名和大小去重、可续跑
 // @name:en      Baidu Netdisk Share Batch Saver — Auto-batched, Deduplicated, Resumable
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2026.10.29.6
+// @version      2026.10.29.7
 // @description  在百度网盘分享页把整个文件夹转存到自己的网盘：自动拆成每批 500 个（非会员单次上限），先和目标文件夹按文件名 + 大小核对，已有的跳过；每批转存后核对到齐再继续，中途停了重新扫描就能续跑。
 // @description:zh-CN  在百度网盘分享页把整个文件夹转存到自己的网盘：自动拆成每批 500 个（非会员单次上限），先和目标文件夹按文件名 + 大小核对，已有的跳过；每批转存后核对到齐再继续，中途停了重新扫描就能续跑。
 // @description:en  Saves a whole folder from a Baidu Netdisk share link into your own netdisk: splits it into batches of 500 (the per-transfer limit for non-members), compares against the target folder by file name and size so existing files are skipped, verifies each batch before the next, and resumes after a rescan if stopped.
@@ -11,6 +11,8 @@
 // @match        https://pan.baidu.com/s/*
 // @match        https://pan.baidu.com/share/*
 // @noframes
+// @grant        GM_getValue
+// @grant        GM_setValue
 // @grant        GM_registerMenuCommand
 // @grant        unsafeWindow
 // @license      MIT
@@ -260,6 +262,70 @@
     }
 
     const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+    // =========================================================================
+    // 默认值
+    // =========================================================================
+
+    /**
+     * 分享页当前打开的文件夹。分享页在地址里记路径，见过两种写法：
+     *   /s/1xxx#list/path=%2F照片%2F2024    （老版，hash）
+     *   /s/1xxx?path=%2F照片%2F2024         （新版，query）
+     * 都没有（或在最外层）返回空串。
+     */
+    function browsingPath(loc) {
+        const url = new URL(loc.href);
+        let raw = url.searchParams.get('path');
+        if (!raw) {
+            const m = /[#&/]path=([^&]*)/.exec(url.hash);
+            if (m) {
+                try { raw = decodeURIComponent(m[1]); } catch (e) { raw = ''; }
+            }
+        }
+        const dir = raw ? cleanPath(raw) : '/';
+        return dir === '/' ? '' : dir;
+    }
+
+    const Defaults = {
+        /** 用户自己改过来源就不再自动填。 */
+        sourceTouched: false,
+
+        init() {
+            const target = GM_getValue('lastTarget', '');
+            if (target) Panel.$('[data-ref=target]').value = target;
+            Panel.$('[data-ref=source]').addEventListener('input', (e) => { if (e.isTrusted) this.sourceTouched = true; });
+            window.addEventListener('hashchange', () => this.fillSource());
+            // 预填完成后在宿主元素上打个标记（测试靠它等预填结束）
+            this.fillSource().finally(() => { Panel.host.dataset.ready = '1'; });
+        },
+
+        /**
+         * 来源：地址里有路径就用；在最外层的话，最外层只有一个文件夹（最常见的分享方式）就直接选它。
+         * 只是预填，读不到不报错。
+         */
+        async fillSource() {
+            if (this.sourceTouched || Job.running) return;
+            const set = (dir) => {
+                const input = Panel.$('[data-ref=source]');
+                if (this.sourceTouched || input.value === dir) return;
+                input.value = dir;
+                input.dispatchEvent(new Event('input'));
+            };
+            const here = browsingPath(location);
+            if (here) return set(here);
+            try {
+                const top = await readShareDir(await shareInfo(), '/', true);
+                if (top.length === 1 && top[0].isdir) set(top[0].path || '/' + top[0].name);
+            } catch (e) {
+                console.info(TAG, '没能预填来源：', e.message);
+            }
+        },
+
+        /** 扫描成功后记住目标文件夹，下次打开别的分享直接用。 */
+        rememberTarget(dir) {
+            GM_setValue('lastTarget', dir);
+        },
+    };
 
     // =========================================================================
     // 面板
@@ -682,6 +748,7 @@
             const target = await readDiskDir(targetDir);
             const diff = compare(source, target);
             this.plan = { info, sourceDir, targetDir, source, missing: diff.missing.length };
+            Defaults.rememberTarget(targetDir);
             Panel.stats({ source: source.length, existing: diff.existing, missing: diff.missing.length });
             Panel.progress(diff.existing, source.length);
             Panel.say(diff.missing.length
@@ -737,5 +804,6 @@
     const SURL = shareKey(location);
     if (!SURL || document.getElementById('baidu-share-dedupe')) return;
     Panel.mount();
+    Defaults.init();
     GM_registerMenuCommand('📦 显示 / 隐藏转存面板', () => Panel.toggle());
 })();
