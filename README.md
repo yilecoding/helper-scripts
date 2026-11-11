@@ -42,6 +42,14 @@
 
 ## 脚本一览
 
+### 贵州省网络研修专题自动续课
+
+> 贵州省网络研修平台（`www.gzwy.gov.cn`）· 专题课程播放完成后切换到专题列表中的下一门
+>
+> **[👉 安装脚本](https://raw.githubusercontent.com/yilecoding/helper-scripts/main/gzwy-course-autonext/gzwy-course-autonext.user.js)** · [调研与使用说明](./gzwy-course-autonext/notes.md)
+>
+> 在专题页开启并点「开始学习第一门未完成课程」；课程正常播放完成、平台同步进度后，通过平台原生入口打开下一门。默认关闭；考试、直播等非课程项目由用户按平台要求完成。
+
 ### ⭐ 2026 暑期教师研修自动连播助手
 
 > 国家中小学智慧教育平台（`basic.smartedu.cn`）· 2026 年「暑期教师研修」专题（基础教育）· **本仓库使用人数最多的脚本**
