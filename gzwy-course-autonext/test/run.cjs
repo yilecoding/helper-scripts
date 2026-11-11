@@ -16,7 +16,7 @@ const NEXT_ID = 'course-next'
     async function openCourse(enabled, options = {}) {
         const context = await env.browser.newContext()
         const player = await context.newPage()
-        await h.install(player, SCRIPT, { values: { 'gzwy-course-autonext-enabled': enabled } })
+        await h.install(player, SCRIPT, { values: { 'gzwy-course-autonext-enabled': enabled, 'gzwy-course-autonext-keepalive': options.keepAlive === true } })
         await player.goto(env.base + '/player.html#/pc/nc/pagecourse/coursePlayer?id=' + CURRENT_ID)
         await player.evaluate(({ currentId, nextId, nextType }) => {
             const next = { businessId: nextId, name: '下一门', typeValue: nextType, typeText: nextType === 'exam' ? '考试' : '课程', progress: 0, playState: true }
@@ -131,6 +131,86 @@ const NEXT_ID = 'course-next'
             eq(await page.evaluate(() => window.__toast || null), null)
             eq(JSON.stringify(await page.evaluate(() => window.__call)),
                 JSON.stringify({ groupFirst: true, item: 'first-pending', classId: 'class-start', groupFourth: true, index: 1, previous: 100, flag: null }))
+        } finally { await context.close() }
+    })
+
+    // 保活测试：fixture 的 video 没有片源，一直是 paused，用假的 play() 计数。
+    async function armKeepAliveProbes(player) {
+        await player.waitForSelector('#gzwy-course-autonext-panel')
+        await player.evaluate(() => {
+            window.__played = 0; window.__moved = 0; window.__visibility = 0
+            document.getElementById('lesson').play = () => { window.__played++; return Promise.resolve() }
+            document.onmousemove = () => { window.__moved++ }
+            document.addEventListener('visibilitychange', () => { window.__visibility++ })
+            document.dispatchEvent(new Event('visibilitychange'))
+        })
+    }
+
+    await t.test('后台保活开启：拦下 visibilitychange、重置无操作计时、暂停后续播', async () => {
+        const { context, player } = await openCourse(true, { keepAlive: true })
+        try {
+            await armKeepAliveProbes(player)
+            await player.waitForFunction(() => window.__played > 0 && window.__moved > 0, null, { timeout: 9000 })
+            eq(await player.evaluate(() => window.__visibility), 0)
+            eq(await player.evaluate(() => document.hidden), false)
+            assert((await h.errors(player)).length === 0, '播放页有未捕获异常')
+        } finally { await context.close() }
+    })
+
+    await t.test('后台保活关闭：不拦事件、不续播', async () => {
+        const { context, player } = await openCourse(true, { keepAlive: false })
+        try {
+            await armKeepAliveProbes(player)
+            await player.waitForTimeout(6500)
+            eq(await player.evaluate(() => window.__played), 0)
+            eq(await player.evaluate(() => window.__moved), 0)
+            eq(await player.evaluate(() => window.__visibility), 1)
+        } finally { await context.close() }
+    })
+
+    await t.test('平台弹出验证/答题窗口时保活不续播', async () => {
+        const { context, player } = await openCourse(true, { keepAlive: true })
+        try {
+            await armKeepAliveProbes(player)
+            await player.evaluate(() => {
+                const dialog = document.createElement('div')
+                dialog.className = 'el-dialog__wrapper'
+                dialog.textContent = '扫一扫人脸识别'
+                document.body.append(dialog)
+                window.__played = 0
+            })
+            await player.waitForFunction(() => document.querySelector('#gzwy-course-autonext-panel [data-status]').textContent.includes('手动处理'), null, { timeout: 9000 })
+            await player.waitForTimeout(5500)
+            eq(await player.evaluate(() => window.__played), 0)
+        } finally { await context.close() }
+    })
+
+    await t.test('「是否继续学习」弹窗自动点确认', async () => {
+        const { context, player } = await openCourse(true, { keepAlive: true })
+        try {
+            await armKeepAliveProbes(player)
+            await player.evaluate(() => {
+                const box = document.createElement('div')
+                box.className = 'el-message-box__wrapper'
+                box.innerHTML = '<p>您已学习30分钟了,是否继续学习？</p><div class="el-message-box__btns"><button class="el-button">取消</button><button class="el-button el-button--primary">确定</button></div>'
+                box.querySelector('.el-button--primary').addEventListener('click', () => { window.__confirmed = true; box.remove() })
+                document.body.append(box)
+            })
+            await player.waitForFunction(() => window.__confirmed === true, null, { timeout: 9000 })
+        } finally { await context.close() }
+    })
+
+    await t.test('交给平台打开下一门后，本页停止保活并出现重试按钮', async () => {
+        const { context, player } = await openCourse(true, { keepAlive: true })
+        try {
+            await armKeepAliveProbes(player)
+            await player.$eval('#lesson', video => video.dispatchEvent(new Event('ended')))
+            await player.waitForFunction(() => window.opener.__entered === 'course-next', null, { timeout: 8000 })
+            await player.evaluate(() => { window.__played = 0; window.opener.__entered = null })
+            await player.waitForTimeout(5500)
+            eq(await player.evaluate(() => window.__played), 0)
+            await player.click('#gzwy-course-autonext-panel [data-actions] button')
+            eq(await player.evaluate(() => window.opener.__entered), 'course-next')
         } finally { await context.close() }
     })
 

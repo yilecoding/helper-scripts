@@ -3,9 +3,9 @@
 // @name:zh-CN   贵州省网络研修专题｜完成后切换下一门课
 // @name:en      Guizhou Online Training｜Next Course After Completion
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2026.11.11.2
-// @description  从专题页一键进入第一门未完成课程；课程完成后通过平台原生入口打开下一门。
-// @description:zh-CN 从专题页一键进入第一门未完成课程；课程完成后通过平台原生入口打开下一门。
+// @version      2026.11.11.3
+// @description  从专题页一键进入第一门未完成课程；课程完成后通过平台原生入口打开下一门；可选后台保活。
+// @description:zh-CN 从专题页一键进入第一门未完成课程；课程完成后通过平台原生入口打开下一门；可选后台保活。
 // @description:en  Start the first unfinished course from the topic page, then use the platform's native entry for the next course after completion.
 // @author       壹樂（V：ita1125）
 // @match        http://gzwy.gov.cn/page.html*
@@ -32,9 +32,13 @@
     const ENABLED_KEY = 'gzwy-course-autonext-enabled';
     const ROOT_ID = 'gzwy-course-autonext-panel';
     const POLL_MS = 2000;
-    const COMPLETION_TIMEOUT_MS = 60000;
+    const KEEPALIVE_KEY = 'gzwy-course-autonext-keepalive';
+    const KEEPALIVE_MS = 5000;
+    const COMPLETION_TIMEOUT_MS = 10 * 60000;
     const TOPIC_ID = '28c0ade8b77e42ac821863d958ade8c8';
     let enabled = GM_getValue(ENABLED_KEY, false) === true;
+    let keepAlive = GM_getValue(KEEPALIVE_KEY, false) === true;
+    let handedOff = false;
     let endedForCurrentCourse = false;
     let processing = false;
     let readyTarget = null;
@@ -175,22 +179,17 @@
         return el;
     }
 
-    function showNextButton(vm, target, current) {
-        readyTarget = { vm, target };
-        const actions = document.querySelector('#' + ROOT_ID + ' [data-actions]');
-        if (!actions) return;
-        actions.replaceChildren();
-        actions.append(button('进入下一门：' + (target.item.name || '未命名课程'), () => openNext(vm, target), 'primary'));
-        setStatus('平台已记录《' + (current.item.name || '当前课程') + '》完成。', 'success');
-    }
-
     function openNext(vm, target) {
         if (!enabled || !target || !vm || typeof vm.clickEnter !== 'function') return;
         try {
             const item = target.item;
             // 与用户手动点击「进入」走同一套站点逻辑：时间、报名、前置条件、人脸验证。
             callNativeEnter(vm, target);
-            setStatus('已交给平台打开《' + (item.name || '下一门课程') + '》。若浏览器拦截新标签页，请点下方按钮重试。', 'info');
+            // 本页的课已学完：停掉保活，避免站点绕回第一段后在旧标签页里继续播。
+            handedOff = true;
+            const actions = document.querySelector('#' + ROOT_ID + ' [data-actions]');
+            if (actions) actions.replaceChildren(button('重新打开：' + (item.name || '下一门课程'), () => openNext(vm, target), 'primary'));
+            setStatus('已交给平台打开《' + (item.name || '下一门课程') + '》。本页已停止播放；若浏览器拦截了新标签页，请允许弹窗后点下方按钮重试。', 'info');
             console.info(TAG, '已调用专题页原生课程入口', item.name || item.businessId);
         } catch (error) {
             console.error(TAG, '进入下一门失败', error);
@@ -266,12 +265,77 @@
         processing = false;
     }
 
+    // ---- 后台保活（默认关闭，只在播放页生效）----
+    // 站点播放器有两处会让挂后台的课停下来：
+    //   1. initPlayerTabStop：visibilitychange 且 document.hidden 时暂停播放器；
+    //   2. 无操作提醒：document.onmousemove 超过设定分钟数没触发，就暂停并弹「是否继续学习」。
+    // 人脸核验、随堂测验等弹窗不处理，出现时停下来等人工操作。
+    function installVisibilityShield() {
+        const doc = PAGE.document;
+        const proto = PAGE.Document.prototype;
+        const shield = (name, value) => {
+            const desc = Object.getOwnPropertyDescriptor(proto, name);
+            if (!desc || !desc.get) return;
+            try {
+                Object.defineProperty(doc, name, {
+                    configurable: true,
+                    get: () => (keepAlive && !handedOff ? value : desc.get.call(doc)),
+                });
+            } catch (error) { console.debug(TAG, '无法接管 ' + name, error); }
+        };
+        shield('hidden', false);
+        shield('webkitHidden', false);
+        shield('visibilityState', 'visible');
+        shield('webkitVisibilityState', 'visible');
+        ['visibilitychange', 'webkitvisibilitychange'].forEach(type => doc.addEventListener(type, event => {
+            if (keepAlive && !handedOff) event.stopImmediatePropagation();
+        }, true));
+    }
+
+    function isShown(el) {
+        return getComputedStyle(el).display !== 'none' && el.getClientRects().length > 0;
+    }
+
+    function keepAliveTick() {
+        const media = document.querySelector('video,audio');
+        if (handedOff) {
+            if (enabled && media && !media.paused) media.pause();
+            return;
+        }
+        if (!keepAlive) return;
+
+        // 等同于动了一下鼠标：重置站点的无操作计时。
+        const poke = PAGE.document.onmousemove;
+        if (typeof poke === 'function') {
+            try { poke.call(PAGE.document, new MouseEvent('mousemove')); } catch (error) { console.debug(TAG, '重置无操作计时失败', error); }
+        }
+
+        const box = Array.from(document.querySelectorAll('.el-message-box__wrapper')).find(isShown);
+        if (box) {
+            const confirm = box.textContent.includes('是否继续学习') && box.querySelector('.el-message-box__btns .el-button--primary');
+            if (confirm) { confirm.click(); console.info(TAG, '已确认「是否继续学习」'); }
+            else setStatus('平台弹出了提示窗口，请手动处理。');
+            return;
+        }
+        if (Array.from(document.querySelectorAll('.el-dialog__wrapper')).some(isShown)) {
+            setStatus('平台弹出了验证或答题窗口，请手动处理，处理完会继续播放。');
+            return;
+        }
+        if (endedForCurrentCourse || !media || !media.paused || media.ended) return;
+        Promise.resolve(media.play()).catch(() => {
+            // 没有用户手势时浏览器只允许静音自动播放。
+            media.muted = true;
+            return media.play();
+        }).catch(error => console.debug(TAG, '续播失败', error));
+    }
+
     function renderPanel() {
         if (document.getElementById(ROOT_ID)) return;
         const host = document.createElement('section');
         host.id = ROOT_ID;
         host.innerHTML = '<div class="title">专题续课</div>' +
             '<label class="switch"><input type="checkbox" data-enabled><span>课程完成后进入下一门</span></label>' +
+            '<label class="switch"><input type="checkbox" data-keepalive><span>后台保活（切到后台不暂停、自动续播）</span></label>' +
             '<div class="status" data-status></div><div class="actions" data-actions></div>';
         const style = document.createElement('style');
         style.textContent =
@@ -299,6 +363,14 @@
                 host.querySelector('[data-actions]').replaceChildren();
                 setStatus('已暂停自动切课。');
             }
+        });
+        const keepBox = host.querySelector('[data-keepalive]');
+        keepBox.checked = keepAlive;
+        keepBox.addEventListener('change', () => {
+            keepAlive = keepBox.checked;
+            GM_setValue(KEEPALIVE_KEY, keepAlive);
+            if (isTopicPage) setStatus(keepAlive ? '后台保活已开启，对之后打开的课程页生效。' : '后台保活已关闭，对之后打开的课程页生效。');
+            else setStatus(keepAlive ? '后台保活已开启：切到后台不暂停，暂停后会自动续播。' : '后台保活已关闭。');
         });
         if (isTopicPage) {
             host.querySelector('[data-actions]').append(button('开始学习第一门未完成课程', startFirstCourse, 'primary'));
@@ -360,6 +432,8 @@
             console.info(TAG, '专题页已就绪；点击「开始学习第一门未完成课程」。');
             return;
         }
+        installVisibilityShield();
+        setInterval(keepAliveTick, KEEPALIVE_MS);
         document.querySelectorAll('video,audio').forEach(watchMedia);
         new MutationObserver(records => records.forEach(record => record.addedNodes.forEach(node => {
             if (node.nodeType !== Node.ELEMENT_NODE) return;
