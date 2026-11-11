@@ -5,212 +5,245 @@ const h = require('../../tools/userscript-harness.cjs')
 
 const SCRIPT = path.join(__dirname, '..', 'gzwy-course-autonext.user.js')
 const FIXTURES = path.join(__dirname, 'fixtures')
-const CURRENT_ID = 'course-current'
-const NEXT_ID = 'course-next'
+const TOPIC_URL = '/topic.html#/pc/nc/pagespecial/specialDetail?id=28c0ade8b77e42ac821863d958ade8c8'
+const PANEL = '#gzwy-course-autonext-panel'
+const K = { enabled: 'gzwy-course-autonext-enabled', keepAlive: 'gzwy-course-autonext-keepalive', active: 'gzwy-course-autonext-active' }
 
 ;(async () => {
     const env = await h.setup(FIXTURES)
     const t = h.createRunner('gzwy-course-autonext')
     const { assert, eq } = t
 
-    async function openCourse(enabled, options = {}) {
-        const context = await env.browser.newContext()
-        const player = await context.newPage()
-        await h.install(player, SCRIPT, { values: { 'gzwy-course-autonext-enabled': enabled, 'gzwy-course-autonext-keepalive': options.keepAlive === true } })
-        await player.goto(env.base + '/player.html#/pc/nc/pagecourse/coursePlayer?id=' + CURRENT_ID)
-        await player.evaluate(({ currentId, nextId, nextType }) => {
-            const next = { businessId: nextId, name: '下一门', typeValue: nextType, typeText: nextType === 'exam' ? '考试' : '课程', progress: 0, playState: true }
-            const current = { businessId: currentId, name: '当前课', typeValue: 'course', typeText: '课程', progress: 100, playState: true }
-            const group = { classId: 'class-1', subList: [current, next] }
-            document.body.__vue__ = {
-                lists: [group], showClick: true,
-                $parent: { initData() {} },
-                clickEnter(item) { window.opener.__entered = item.businessId },
-            }
-            document.getElementById('app').__vue__ = document.body.__vue__
-            const opener = { document, closed: false, __entered: null }
-            Object.defineProperty(window, 'opener', { configurable: true, value: opener })
-        }, { currentId: CURRENT_ID, nextId: NEXT_ID, nextType: options.nextType || 'course' })
-        await player.evaluate(({ currentId, lastResource }) => {
-            document.body.__vue__ = {
-                queryiId: currentId,
-                curPlayItem: { id: lastResource ? 'last-resource' : 'first-resource' },
-                chapterInfo: { children: [{ id: 'first-resource' }, { id: 'last-resource' }] },
-            }
-        }, { currentId: CURRENT_ID, lastResource: options.lastResource !== false })
-        return { context, player }
-    }
+    const gmActive = page => page.evaluate(() => JSON.parse(localStorage.getItem('__gm:gzwy-course-autonext-active') || '""'))
+    const status = page => page.$eval(PANEL + ' [data-status]', el => el.textContent)
+    const nudge = page => page.evaluate(() => { window.dispatchEvent(new CustomEvent('gzwy-course-autonext-check')) })
 
-    await t.test('末段自然结束且平台已记满进度时调用专题原生入口', async () => {
-        const { context, player } = await openCourse(true)
-        try {
-            await player.waitForSelector('#gzwy-course-autonext-panel')
-            await player.$eval('#lesson', video => video.dispatchEvent(new Event('ended')))
-            await player.waitForFunction(() => window.opener.__entered === 'course-next', null, { timeout: 8000 })
-            eq(await player.evaluate(() => window.opener.__entered), 'course-next')
-            assert((await h.errors(player)).length === 0, '播放页有未捕获异常')
-        } finally { await context.close() }
-    })
-
-    await t.test('默认关闭时不会自动切课', async () => {
-        const { context, player } = await openCourse(false)
-        try {
-            await player.waitForSelector('#gzwy-course-autonext-panel')
-            await player.$eval('#lesson', video => video.dispatchEvent(new Event('ended')))
-            await player.waitForTimeout(2500)
-            eq(await player.evaluate(() => window.opener.__entered || null), null)
-            eq(await player.$eval('#gzwy-course-autonext-panel [data-enabled]', input => input.checked), false)
-            assert((await h.errors(player)).length === 0, '播放页有未捕获异常')
-        } finally { await context.close() }
-    })
-
-    await t.test('当前课程中间段结束时不切到下一门', async () => {
-        const { context, player } = await openCourse(true, { lastResource: false })
-        try {
-            await player.waitForSelector('#gzwy-course-autonext-panel')
-            await player.$eval('#lesson', video => video.dispatchEvent(new Event('ended')))
-            await player.waitForTimeout(2500)
-            eq(await player.evaluate(() => window.opener.__entered || null), null)
-        } finally { await context.close() }
-    })
-
-    await t.test('专题下一项是考试时不调用课程入口', async () => {
-        const { context, player } = await openCourse(true, { nextType: 'exam' })
-        try {
-            await player.waitForSelector('#gzwy-course-autonext-panel')
-            await player.$eval('#lesson', video => video.dispatchEvent(new Event('ended')))
-            await player.waitForFunction(() => document.querySelector('#gzwy-course-autonext-panel [data-status]').textContent.includes('考试'))
-            eq(await player.evaluate(() => window.opener.__entered || null), null)
-        } finally { await context.close() }
-    })
-
-    await t.test('专题页显示开始按钮并选择第一门未完成课程', async () => {
+    // 专题页：rows 是 [businessId, progress, typeValue?]；refreshTo 给出 initData 之后的进度。
+    async function openTopic(values, rows, options = {}) {
         const context = await env.browser.newContext()
         const page = await context.newPage()
-        await h.install(page, SCRIPT, { values: { 'gzwy-course-autonext-enabled': false } })
-        await page.goto(env.base + '/topic.html#/pc/nc/pagespecial/specialDetail?id=28c0ade8b77e42ac821863d958ade8c8')
-        await page.evaluate(() => {
-            const completed = { businessId: 'done', name: '已完成', typeValue: 'course', progress: 100, playState: true }
-            const pending = { businessId: 'first-pending', name: '第一门未完成', typeValue: 'course', progress: 0, playState: true }
-            const group = { classId: 'class-start', subList: [completed, pending] }
-            document.body.__vue__ = {
-                lists: [group], showClick: true, $parent: { initData() {} },
-                clickEnter(item) { window.__selectedCourse = item.businessId },
+        await h.install(page, SCRIPT, { values: { [K.enabled]: false, [K.keepAlive]: false, [K.active]: '', ...values } })
+        await page.goto(env.base + TOPIC_URL)
+        await page.evaluate(({ rows, refreshTo, projectSignature }) => {
+            const make = list => list.map(([businessId, progress, typeValue]) => ({
+                businessId, name: '课程 ' + businessId, progress, playState: true,
+                typeValue: typeValue || 'course', typeText: typeValue === 'exam' ? '考试' : '课程',
+            }))
+            const group = { classId: 'class-1', subList: make(rows) }
+            window.__entered = []
+            window.__refreshed = 0
+            const enter = item => window.__entered.push(item.businessId)
+            // 项目版与站点 dsf-pc.js 的检查一致：第二个参数不是课程行时提示「不在学习时间范围」。
+            const clickEnter = projectSignature
+                ? function (e, t, s, a, i, n, o) {
+                    if (!t || !t.playState) { window.__toast = '不在学习时间范围'; return }
+                    window.__call = { groupFirst: e === vm.lists[0], classId: s, groupFourth: a === vm.lists[0], index: i, previous: n, flag: o === undefined ? null : o }
+                    enter(t)
+                }
+                : function (item) { enter(item) }
+            const vm = {
+                lists: [group], showClick: true, clickEnter,
+                $options: { methods: { clickEnter } },
+                $parent: {
+                    initData() {
+                        window.__refreshed++
+                        if (refreshTo) vm.lists = [{ classId: 'class-1', subList: make(refreshTo) }]
+                    },
+                },
             }
-        })
+            document.body.__vue__ = vm
+        }, { rows, refreshTo: options.refreshTo || null, projectSignature: options.projectSignature === true })
+        await page.waitForSelector(PANEL)
+        return { context, page }
+    }
+
+    // 播放页：rates 是各课件的 finishedRate。
+    async function openPlayer(values, rates) {
+        const context = await env.browser.newContext()
+        const page = await context.newPage()
+        await h.install(page, SCRIPT, { values: { [K.enabled]: true, [K.keepAlive]: false, [K.active]: 'c1', ...values } })
+        await page.goto(env.base + '/player.html#/pc/nc/pagecourse/coursePlayer?id=c1')
+        await page.evaluate(rates => {
+            const children = rates.map((finishedRate, index) => ({ id: 'w' + index, finishedRate }))
+            // 与真实站点一致：最后一段播完后站点已把当前课件绕回第一段，只能看完成度。
+            document.body.__vue__ = { queryiId: 'c1', curPlayItem: children[0], chapterInfo: { children } }
+            window.__nudged = 0; window.__played = 0; window.__paused = 0; window.__moved = 0; window.__visibility = 0
+            const opener = { closed: false, CustomEvent, dispatchEvent(event) { if (event.type === 'gzwy-course-autonext-check') window.__nudged++ } }
+            Object.defineProperty(window, 'opener', { configurable: true, value: opener })
+            // fixture 的 video 没有片源，一直是 paused，用假的 play() 计数。
+            const video = document.getElementById('lesson')
+            video.play = () => { window.__played++; return Promise.resolve() }
+            document.onmousemove = () => { window.__moved++ }
+            document.addEventListener('visibilitychange', () => { window.__visibility++ })
+            document.dispatchEvent(new Event('visibilitychange'))
+        }, rates)
+        await page.waitForSelector(PANEL)
+        return { context, page }
+    }
+
+    // ---------- 专题页 ----------
+
+    await t.test('点开始：进入第一门未完成课程并记为正在学', async () => {
+        const { context, page } = await openTopic({}, [['c1', 100], ['c2', 0], ['c3', 0]])
         try {
-            await page.waitForSelector('#gzwy-course-autonext-panel')
-            await page.click('#gzwy-course-autonext-panel [data-actions] button')
-            eq(await page.evaluate(() => window.__selectedCourse), 'first-pending')
-            eq(await page.$eval('#gzwy-course-autonext-panel [data-enabled]', input => input.checked), true)
+            await page.click(PANEL + ' [data-actions] button')
+            eq(JSON.stringify(await page.evaluate(() => window.__entered)), '["c2"]')
+            eq(await gmActive(page), 'c2')
+            eq(await page.$eval(PANEL + ' [data-enabled]', input => input.checked), true)
+            assert((await status(page)).includes('课程 c2'), '状态里没有课程名')
+            assert((await h.errors(page)).length === 0, '专题页有未捕获异常')
         } finally { await context.close() }
     })
 
     await t.test('项目版 clickEnter（7 个形参）按 group, item, classId… 的顺序调用', async () => {
-        const context = await env.browser.newContext()
-        const page = await context.newPage()
-        await h.install(page, SCRIPT, { values: { 'gzwy-course-autonext-enabled': false } })
-        await page.goto(env.base + '/topic.html#/pc/nc/pagespecial/specialDetail?id=28c0ade8b77e42ac821863d958ade8c8')
-        await page.evaluate(() => {
-            const completed = { businessId: 'done', name: '已完成', typeValue: 'course', progress: 100, playState: true }
-            const pending = { businessId: 'first-pending', name: '第一门未完成', typeValue: 'course', progress: 0, playState: true }
-            const group = { classId: 'class-start', subList: [completed, pending] }
-            // 与站点 dsf-pc.js 的检查一致：第二个参数不是课程行时提示「不在学习时间范围」。
-            function clickEnter(e, t, s, a, i, n, o) {
-                if (!t || !t.playState) { window.__toast = '不在学习时间范围'; return }
-                window.__call = { groupFirst: e === group, item: t.businessId, classId: s, groupFourth: a === group, index: i, previous: n, flag: o === undefined ? null : o }
-            }
-            document.body.__vue__ = {
-                lists: [group], showClick: true, $parent: { initData() {} },
-                $options: { methods: { clickEnter } }, clickEnter,
-            }
-        })
+        const { context, page } = await openTopic({}, [['c1', 100], ['c2', 0]], { projectSignature: true })
         try {
-            await page.waitForSelector('#gzwy-course-autonext-panel')
-            await page.click('#gzwy-course-autonext-panel [data-actions] button')
+            await page.click(PANEL + ' [data-actions] button')
             eq(await page.evaluate(() => window.__toast || null), null)
+            eq(JSON.stringify(await page.evaluate(() => window.__entered)), '["c2"]')
             eq(JSON.stringify(await page.evaluate(() => window.__call)),
-                JSON.stringify({ groupFirst: true, item: 'first-pending', classId: 'class-start', groupFourth: true, index: 1, previous: 100, flag: null }))
+                JSON.stringify({ groupFirst: true, classId: 'class-1', groupFourth: true, index: 1, previous: 100, flag: null }))
         } finally { await context.close() }
     })
 
-    // 保活测试：fixture 的 video 没有片源，一直是 paused，用假的 play() 计数。
-    async function armKeepAliveProbes(player) {
-        await player.waitForSelector('#gzwy-course-autonext-panel')
-        await player.evaluate(() => {
-            window.__played = 0; window.__moved = 0; window.__visibility = 0
-            document.getElementById('lesson').play = () => { window.__played++; return Promise.resolve() }
-            document.onmousemove = () => { window.__moved++ }
-            document.addEventListener('visibilitychange', () => { window.__visibility++ })
-            document.dispatchEvent(new Event('visibilitychange'))
-        })
-    }
+    await t.test('正在学的课程刷新后记满 100%：自动进入下一门', async () => {
+        const { context, page } = await openTopic({ [K.enabled]: true, [K.active]: 'c2' },
+            [['c1', 100], ['c2', 60], ['c3', 0]], { refreshTo: [['c1', 100], ['c2', 100], ['c3', 0]] })
+        try {
+            await nudge(page)
+            await page.waitForFunction(() => window.__entered.length > 0, null, { timeout: 8000 })
+            eq(JSON.stringify(await page.evaluate(() => window.__entered)), '["c3"]')
+            eq(await gmActive(page), 'c3')
+            assert(await page.evaluate(() => window.__refreshed) >= 1, '没有刷新专题列表')
+            assert((await h.errors(page)).length === 0, '专题页有未捕获异常')
+        } finally { await context.close() }
+    })
+
+    await t.test('正在学的课程还没记满：不切，状态显示当前进度', async () => {
+        const { context, page } = await openTopic({ [K.enabled]: true, [K.active]: 'c2' }, [['c1', 100], ['c2', 60], ['c3', 0]])
+        try {
+            await nudge(page)
+            await page.waitForFunction(sel => document.querySelector(sel).textContent.includes('60%'), PANEL + ' [data-status]', { timeout: 8000 })
+            eq(JSON.stringify(await page.evaluate(() => window.__entered)), '[]')
+            eq(await gmActive(page), 'c2')
+        } finally { await context.close() }
+    })
+
+    await t.test('开关关闭时不切', async () => {
+        const { context, page } = await openTopic({ [K.enabled]: false, [K.active]: 'c1' }, [['c1', 100], ['c2', 0]])
+        try {
+            await nudge(page)
+            await page.waitForTimeout(4000)
+            eq(JSON.stringify(await page.evaluate(() => window.__entered)), '[]')
+        } finally { await context.close() }
+    })
+
+    await t.test('下一项是考试：不进入，停止盯进度', async () => {
+        const { context, page } = await openTopic({ [K.enabled]: true, [K.active]: 'c1' }, [['c1', 100], ['c2', 0, 'exam'], ['c3', 0]])
+        try {
+            await nudge(page)
+            await page.waitForFunction(sel => document.querySelector(sel).textContent.includes('考试'), PANEL + ' [data-status]', { timeout: 8000 })
+            eq(JSON.stringify(await page.evaluate(() => window.__entered)), '[]')
+            eq(await gmActive(page), '')
+        } finally { await context.close() }
+    })
+
+    await t.test('全部学完：提示没有未完成课程', async () => {
+        const { context, page } = await openTopic({ [K.enabled]: true, [K.active]: 'c2' }, [['c1', 100], ['c2', 100]])
+        try {
+            await nudge(page)
+            await page.waitForFunction(sel => document.querySelector(sel).textContent.includes('没有未完成课程'), PANEL + ' [data-status]', { timeout: 8000 })
+            eq(await gmActive(page), '')
+        } finally { await context.close() }
+    })
+
+    await t.test('「重新打开」按钮再次进入正在学的课程', async () => {
+        const { context, page } = await openTopic({}, [['c1', 0], ['c2', 0]])
+        try {
+            await page.click(PANEL + ' [data-actions] button')
+            await page.click(PANEL + ' [data-actions] button')
+            eq(JSON.stringify(await page.evaluate(() => window.__entered)), '["c1","c1"]')
+        } finally { await context.close() }
+    })
+
+    // ---------- 播放页 ----------
+
+    await t.test('课件全部记满：通知专题页检查（当前课件已被站点绕回第一段）', async () => {
+        const { context, page } = await openPlayer({}, [100, 100, 100])
+        try {
+            await page.waitForFunction(() => window.__nudged > 0, null, { timeout: 9000 })
+            assert((await status(page)).includes('全部完成'), '状态没有提示课件已完成')
+            assert((await h.errors(page)).length === 0, '播放页有未捕获异常')
+        } finally { await context.close() }
+    })
+
+    await t.test('还有课件没记满 / 开关关闭：不通知', async () => {
+        const a = await openPlayer({}, [100, 60])
+        const b = await openPlayer({ [K.enabled]: false }, [100, 100])
+        try {
+            await a.page.waitForTimeout(6500)
+            eq(await a.page.evaluate(() => window.__nudged), 0)
+            eq(await b.page.evaluate(() => window.__nudged), 0)
+        } finally { await a.context.close(); await b.context.close() }
+    })
+
+    await t.test('专题页已切到别的课程：本页停播、不再保活', async () => {
+        const { context, page } = await openPlayer({ [K.active]: 'c2' }, [100, 100])
+        try {
+            await page.waitForFunction(sel => document.querySelector(sel).textContent.includes('已停止播放'), PANEL + ' [data-status]', { timeout: 9000 })
+            await page.waitForTimeout(5500)
+            eq(await page.evaluate(() => window.__played), 0)
+            eq(await page.evaluate(() => window.__nudged), 0)
+        } finally { await context.close() }
+    })
 
     await t.test('后台保活开启：拦下 visibilitychange、重置无操作计时、暂停后续播', async () => {
-        const { context, player } = await openCourse(true, { keepAlive: true })
+        const { context, page } = await openPlayer({ [K.keepAlive]: true }, [100, 60])
         try {
-            await armKeepAliveProbes(player)
-            await player.waitForFunction(() => window.__played > 0 && window.__moved > 0, null, { timeout: 9000 })
-            eq(await player.evaluate(() => window.__visibility), 0)
-            eq(await player.evaluate(() => document.hidden), false)
-            assert((await h.errors(player)).length === 0, '播放页有未捕获异常')
+            await page.waitForFunction(() => window.__played > 0 && window.__moved > 0, null, { timeout: 9000 })
+            eq(await page.evaluate(() => window.__visibility), 0)
+            eq(await page.evaluate(() => document.hidden), false)
+            assert((await h.errors(page)).length === 0, '播放页有未捕获异常')
         } finally { await context.close() }
     })
 
     await t.test('后台保活关闭：不拦事件、不续播', async () => {
-        const { context, player } = await openCourse(true, { keepAlive: false })
+        const { context, page } = await openPlayer({}, [100, 60])
         try {
-            await armKeepAliveProbes(player)
-            await player.waitForTimeout(6500)
-            eq(await player.evaluate(() => window.__played), 0)
-            eq(await player.evaluate(() => window.__moved), 0)
-            eq(await player.evaluate(() => window.__visibility), 1)
+            await page.waitForTimeout(6500)
+            eq(await page.evaluate(() => window.__played), 0)
+            eq(await page.evaluate(() => window.__moved), 0)
+            eq(await page.evaluate(() => window.__visibility), 1)
         } finally { await context.close() }
     })
 
     await t.test('平台弹出验证/答题窗口时保活不续播', async () => {
-        const { context, player } = await openCourse(true, { keepAlive: true })
+        const { context, page } = await openPlayer({ [K.keepAlive]: true }, [100, 60])
         try {
-            await armKeepAliveProbes(player)
-            await player.evaluate(() => {
+            await page.evaluate(() => {
                 const dialog = document.createElement('div')
                 dialog.className = 'el-dialog__wrapper'
                 dialog.textContent = '扫一扫人脸识别'
                 document.body.append(dialog)
-                window.__played = 0
             })
-            await player.waitForFunction(() => document.querySelector('#gzwy-course-autonext-panel [data-status]').textContent.includes('手动处理'), null, { timeout: 9000 })
-            await player.waitForTimeout(5500)
-            eq(await player.evaluate(() => window.__played), 0)
+            await page.waitForFunction(sel => document.querySelector(sel).textContent.includes('手动处理'), PANEL + ' [data-status]', { timeout: 9000 })
+            await page.evaluate(() => { window.__played = 0 })
+            await page.waitForTimeout(5500)
+            eq(await page.evaluate(() => window.__played), 0)
         } finally { await context.close() }
     })
 
     await t.test('「是否继续学习」弹窗自动点确认', async () => {
-        const { context, player } = await openCourse(true, { keepAlive: true })
+        const { context, page } = await openPlayer({ [K.keepAlive]: true }, [100, 60])
         try {
-            await armKeepAliveProbes(player)
-            await player.evaluate(() => {
+            await page.evaluate(() => {
                 const box = document.createElement('div')
                 box.className = 'el-message-box__wrapper'
                 box.innerHTML = '<p>您已学习30分钟了,是否继续学习？</p><div class="el-message-box__btns"><button class="el-button">取消</button><button class="el-button el-button--primary">确定</button></div>'
                 box.querySelector('.el-button--primary').addEventListener('click', () => { window.__confirmed = true; box.remove() })
                 document.body.append(box)
             })
-            await player.waitForFunction(() => window.__confirmed === true, null, { timeout: 9000 })
-        } finally { await context.close() }
-    })
-
-    await t.test('交给平台打开下一门后，本页停止保活并出现重试按钮', async () => {
-        const { context, player } = await openCourse(true, { keepAlive: true })
-        try {
-            await armKeepAliveProbes(player)
-            await player.$eval('#lesson', video => video.dispatchEvent(new Event('ended')))
-            await player.waitForFunction(() => window.opener.__entered === 'course-next', null, { timeout: 8000 })
-            await player.evaluate(() => { window.__played = 0; window.opener.__entered = null })
-            await player.waitForTimeout(5500)
-            eq(await player.evaluate(() => window.__played), 0)
-            await player.click('#gzwy-course-autonext-panel [data-actions] button')
-            eq(await player.evaluate(() => window.opener.__entered), 'course-next')
+            await page.waitForFunction(() => window.__confirmed === true, null, { timeout: 9000 })
         } finally { await context.close() }
     })
 

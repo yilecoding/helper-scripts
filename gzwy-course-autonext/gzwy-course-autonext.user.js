@@ -3,7 +3,7 @@
 // @name:zh-CN   贵州省网络研修专题｜完成后切换下一门课
 // @name:en      Guizhou Online Training｜Next Course After Completion
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2026.11.11.3
+// @version      2026.11.11.5
 // @description  从专题页一键进入第一门未完成课程；课程完成后通过平台原生入口打开下一门；可选后台保活。
 // @description:zh-CN 从专题页一键进入第一门未完成课程；课程完成后通过平台原生入口打开下一门；可选后台保活。
 // @description:en  Start the first unfinished course from the topic page, then use the platform's native entry for the next course after completion.
@@ -30,20 +30,26 @@
     const TAG = '[专题续课]';
     const PAGE = typeof unsafeWindow === 'undefined' ? window : unsafeWindow;
     const ENABLED_KEY = 'gzwy-course-autonext-enabled';
-    const ROOT_ID = 'gzwy-course-autonext-panel';
-    const POLL_MS = 2000;
     const KEEPALIVE_KEY = 'gzwy-course-autonext-keepalive';
-    const KEEPALIVE_MS = 5000;
-    const COMPLETION_TIMEOUT_MS = 10 * 60000;
+    // 专题页正在学的课程 businessId；播放页据此判断自己是不是已经被换下去了。
+    const ACTIVE_KEY = 'gzwy-course-autonext-active';
+    const ROOT_ID = 'gzwy-course-autonext-panel';
+    const NUDGE_EVENT = 'gzwy-course-autonext-check';
+    const TICK_MS = 5000;
+    const TOPIC_POLL_MS = 60000;
+    const REFRESH_WAIT_MS = 2500;
+    const NUDGE_GAP_MS = 20000;
     const TOPIC_ID = '28c0ade8b77e42ac821863d958ade8c8';
     let enabled = GM_getValue(ENABLED_KEY, false) === true;
     let keepAlive = GM_getValue(KEEPALIVE_KEY, false) === true;
-    let handedOff = false;
-    let endedForCurrentCourse = false;
-    let processing = false;
-    let readyTarget = null;
+    let activeId = String(GM_getValue(ACTIVE_KEY, '') || '');
     let currentCourseId = '';
-    let lastRefresh = 0;
+    // 专题页
+    let advancing = false;
+    // 播放页
+    let handedOff = false;
+    let courseDone = false;
+    let lastNudge = 0;
 
     function routeInfo() {
         const route = PAGE.location.hash || '';
@@ -54,7 +60,7 @@
         return { isTopic, isPlayer, courseId };
     }
 
-    let routeState = routeInfo();
+    const routeState = routeInfo();
     if (!routeState.isTopic && !routeState.isPlayer) return;
     currentCourseId = routeState.courseId;
     const isTopicPage = routeState.isTopic;
@@ -63,58 +69,42 @@
         const nextRoute = routeInfo();
         if (nextRoute.isPlayer && nextRoute.courseId && nextRoute.courseId !== currentCourseId) {
             currentCourseId = nextRoute.courseId;
-            endedForCurrentCourse = false;
-            readyTarget = null;
-            lastRefresh = 0;
-            setStatus('已进入《' + currentCourseId + '》，继续按平台进度学习。');
+            handedOff = false;
+            courseDone = false;
+            lastNudge = 0;
             console.info(TAG, '已识别当前课程路由', currentCourseId);
         }
     });
 
-    function findCourseListVm(win) {
+    const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+    function findVm(win, match) {
         try {
             const doc = win.document;
             const seen = new Set();
             const stack = [];
             const add = vm => { if (vm && !seen.has(vm)) { seen.add(vm); stack.push(vm); } };
             doc.querySelectorAll('*').forEach(node => add(node.__vue__));
-            const app = doc.getElementById('app');
-            if (app) add(app.__vue__);
-
             while (stack.length) {
                 const vm = stack.pop();
-                if (Array.isArray(vm.lists) && typeof vm.clickEnter === 'function' &&
-                    vm.lists.some(group => Array.isArray(group.subList))) return vm;
+                if (match(vm)) return vm;
                 if (Array.isArray(vm.$children)) vm.$children.forEach(add);
             }
         } catch (error) {
-            console.debug(TAG, '无法读取专题页课程列表', error);
+            console.debug(TAG, '读取页面组件失败', error);
         }
         return null;
+    }
+
+    // 用功能特征识别 Vue 实例，不依赖压缩后的组件名。
+    function findCourseListVm() {
+        return findVm(PAGE, vm => Array.isArray(vm.lists) && typeof vm.clickEnter === 'function' &&
+            vm.lists.some(group => Array.isArray(group.subList)));
     }
 
     function findPlayerVm() {
-        const seen = new Set();
-        const stack = [];
-        const add = vm => { if (vm && !seen.has(vm)) { seen.add(vm); stack.push(vm); } };
-        PAGE.document.querySelectorAll('*').forEach(node => add(node.__vue__));
-        const app = PAGE.document.getElementById('app');
-        if (app) add(app.__vue__);
-        while (stack.length) {
-            const vm = stack.pop();
-            const children = vm.chapterInfo && vm.chapterInfo.children;
-            if (String(vm.queryiId || '') === currentCourseId && vm.curPlayItem && Array.isArray(children)) return vm;
-            if (Array.isArray(vm.$children)) vm.$children.forEach(add);
-        }
-        return null;
-    }
-
-    function isLastCoursewareAtEnd() {
-        const vm = findPlayerVm();
-        const children = vm && vm.chapterInfo && vm.chapterInfo.children;
-        if (!vm || !Array.isArray(children) || !children.length || !vm.curPlayItem) return false;
-        const index = children.findIndex(item => String(item.id) === String(vm.curPlayItem.id));
-        return index >= 0 && index === children.length - 1;
+        return findVm(PAGE, vm => String(vm.queryiId || '') === currentCourseId && vm.curPlayItem &&
+            vm.chapterInfo && Array.isArray(vm.chapterInfo.children));
     }
 
     function courseRows(vm) {
@@ -128,6 +118,10 @@
     function progressOf(item) {
         const value = Number(item && item.progress);
         return Number.isFinite(value) ? value : 0;
+    }
+
+    function nameOf(row) {
+        return (row && row.item && row.item.name) || '未命名课程';
     }
 
     // 贵州站点用项目版组件覆盖了通用组件，clickEnter 的参数表不同：
@@ -145,6 +139,7 @@
         return !!vm.showClick && !!item.playState;
     }
 
+    // 与用户手动点击「进入」走同一套站点逻辑：时间、报名、前置条件、人脸验证。
     function callNativeEnter(vm, row) {
         const { item, group, index } = row;
         const previousProgress = index > 0 ? group.subList[index - 1].progress : null;
@@ -156,7 +151,7 @@
         }
     }
 
-    function completionRefresher(vm) {
+    function listRefresher(vm) {
         if (typeof vm.initData === 'function') return () => vm.initData();
         const parent = vm.$parent;
         if (parent && typeof parent.initData === 'function') return () => parent.initData();
@@ -170,6 +165,11 @@
         status.dataset.kind = kind || 'info';
     }
 
+    function setActions(...buttons) {
+        const actions = document.querySelector('#' + ROOT_ID + ' [data-actions]');
+        if (actions) actions.replaceChildren(...buttons);
+    }
+
     function button(label, callback, className) {
         const el = document.createElement('button');
         el.type = 'button';
@@ -179,90 +179,165 @@
         return el;
     }
 
-    function openNext(vm, target) {
-        if (!enabled || !target || !vm || typeof vm.clickEnter !== 'function') return;
+    function setEnabled(value) {
+        enabled = value;
+        GM_setValue(ENABLED_KEY, value);
+        const checkbox = document.querySelector('#' + ROOT_ID + ' [data-enabled]');
+        if (checkbox) checkbox.checked = value;
+    }
+
+    function setActive(id) {
+        activeId = id;
+        GM_setValue(ACTIVE_KEY, id);
+    }
+
+    // ---- 专题页：盯着课程列表，当前课程记满 100% 就打开下一门 ----
+
+    function startButton() {
+        return button('开始学习第一门未完成课程', startFirstCourse, 'primary');
+    }
+
+    function reopenButton(row) {
+        return button('重新打开：' + nameOf(row), () => {
+            const vm = findCourseListVm();
+            const fresh = vm && courseRows(vm).find(item => String(item.item.businessId) === String(row.item.businessId));
+            if (fresh) enterCourse(vm, fresh);
+        });
+    }
+
+    function stopWatching(message, kind) {
+        setActive('');
+        setActions(startButton());
+        setStatus(message, kind);
+    }
+
+    function enterCourse(vm, row) {
         try {
-            const item = target.item;
-            // 与用户手动点击「进入」走同一套站点逻辑：时间、报名、前置条件、人脸验证。
-            callNativeEnter(vm, target);
-            // 本页的课已学完：停掉保活，避免站点绕回第一段后在旧标签页里继续播。
-            handedOff = true;
-            const actions = document.querySelector('#' + ROOT_ID + ' [data-actions]');
-            if (actions) actions.replaceChildren(button('重新打开：' + (item.name || '下一门课程'), () => openNext(vm, target), 'primary'));
-            setStatus('已交给平台打开《' + (item.name || '下一门课程') + '》。本页已停止播放；若浏览器拦截了新标签页，请允许弹窗后点下方按钮重试。', 'info');
-            console.info(TAG, '已调用专题页原生课程入口', item.name || item.businessId);
+            callNativeEnter(vm, row);
         } catch (error) {
-            console.error(TAG, '进入下一门失败', error);
-            setStatus('打开下一门失败。请确认专题页仍开着，再试一次。', 'error');
+            console.error(TAG, '打开课程失败', error);
+            setStatus('未能打开《' + nameOf(row) + '》。请确认登录和报名状态后重试。', 'error');
+            return false;
+        }
+        setActive(String(row.item.businessId));
+        setActions(reopenButton(row));
+        setStatus('已打开《' + nameOf(row) + '》，本页会盯着进度，到 100% 自动进入下一门。没看到新标签页就允许弹出式窗口后点下方按钮。');
+        console.info(TAG, '已调用专题页原生课程入口', nameOf(row));
+        return true;
+    }
+
+    // 返回第一门未完成课程；不能进入时给出原因并返回 null。
+    function pickNext(vm, rows) {
+        const next = rows.find(row => progressOf(row.item) < 100);
+        if (!next) {
+            stopWatching('专题列表中没有未完成课程了。', 'success');
+            return null;
+        }
+        if (next.item.typeValue !== 'course') {
+            stopWatching('下一项是“' + (next.item.typeText || next.item.typeValue || '非课程项目') + '”，请按平台要求手动完成后再点开始。');
+            return null;
+        }
+        if (!canEnter(vm, next.item)) {
+            stopWatching('《' + nameOf(next) + '》当前未开放或不满足平台前置条件，请先按平台提示处理。');
+            return null;
+        }
+        return next;
+    }
+
+    function startFirstCourse() {
+        const vm = findCourseListVm();
+        if (!vm) {
+            setStatus('专题课程列表还在加载，请稍等后再点。');
+            return;
+        }
+        const next = pickNext(vm, courseRows(vm));
+        if (!next) return;
+        setEnabled(true);
+        enterCourse(vm, next);
+    }
+
+    async function advance() {
+        if (!enabled || !activeId || advancing) return;
+        advancing = true;
+        try {
+            let vm = findCourseListVm();
+            if (!vm) return;
+            const refresh = listRefresher(vm);
+            if (refresh) {
+                try { refresh(); } catch (error) { console.debug(TAG, '刷新专题进度失败', error); }
+                await sleep(REFRESH_WAIT_MS);
+                vm = findCourseListVm() || vm;
+            }
+            if (!enabled || !activeId) return;
+            const rows = courseRows(vm);
+            const current = rows.find(row => String(row.item.businessId) === activeId);
+            if (!current) {
+                stopWatching('专题列表里找不到正在学的课程，已停止。请重新点开始。', 'error');
+                return;
+            }
+            if (progressOf(current.item) < 100) {
+                setStatus('正在学《' + nameOf(current) + '》，平台记录 ' + progressOf(current.item) + '%。到 100% 自动进入下一门。');
+                return;
+            }
+            const next = pickNext(vm, rows);
+            if (next) enterCourse(vm, next);
+        } finally {
+            advancing = false;
         }
     }
 
-    async function checkCompletion() {
-        if (!enabled || !endedForCurrentCourse || processing || readyTarget) return;
-        processing = true;
-        setStatus('视频已结束，正在等平台同步课程完成状态…');
+    function startTopic() {
+        setInterval(advance, TOPIC_POLL_MS);
+        // 播放页发现课件全部看完时会来催一次，不用等下一轮定时检查。
+        PAGE.addEventListener(NUDGE_EVENT, () => { advance(); });
+        if (enabled && activeId) {
+            setStatus('继续盯着上次打开的课程进度…');
+            advance();
+        }
+        console.info(TAG, '专题页已就绪；点击「开始学习第一门未完成课程」。');
+    }
 
-        const opener = PAGE.opener;
-        if (!opener || opener.closed) {
-            setStatus('找不到仍打开的专题页。请从专题页进入课程，并保留专题页窗口。', 'error');
-            processing = false;
+    // ---- 播放页：课件看完后催专题页检查；被换下去后停播 ----
+
+    // 不能用「最后一段播完」来判断：站点的结束回调先执行，会立刻把当前课件绕回第一段。
+    function allCoursewareFinished() {
+        const vm = findPlayerVm();
+        const children = vm && vm.chapterInfo && vm.chapterInfo.children;
+        return Array.isArray(children) && children.length > 0 &&
+            children.every(item => Number(item.finishedRate) >= 100);
+    }
+
+    function nudgeTopic() {
+        const now = Date.now();
+        if (now - lastNudge < NUDGE_GAP_MS) return;
+        lastNudge = now;
+        try {
+            const opener = PAGE.opener;
+            if (opener && !opener.closed) opener.dispatchEvent(new opener.CustomEvent(NUDGE_EVENT));
+        } catch (error) {
+            console.debug(TAG, '通知专题页失败，等专题页自己的定时检查', error);
+        }
+    }
+
+    function checkCourse() {
+        if (!enabled) return;
+        const active = String(GM_getValue(ACTIVE_KEY, '') || '');
+        if (active && active !== currentCourseId) {
+            if (!handedOff) {
+                handedOff = true;
+                setStatus('专题页已切到下一门，本页已停止播放。', 'success');
+                console.info(TAG, '本课已被换下');
+                // 脚本打开的标签页才关得掉；关不掉就留着，只是不再播放。
+                if (keepAlive) setTimeout(() => { try { PAGE.close(); } catch (error) { /* 留着即可 */ } }, 1500);
+            }
             return;
         }
-
-        const deadline = Date.now() + COMPLETION_TIMEOUT_MS;
-        while (Date.now() < deadline && enabled && endedForCurrentCourse) {
-            const vm = findCourseListVm(opener);
-            if (!vm) {
-                setStatus('专题页课程列表尚未加载，正在等待…');
-                await new Promise(resolve => setTimeout(resolve, POLL_MS));
-                continue;
-            }
-
-            const rows = courseRows(vm);
-            if (!rows.some(row => String(row.item.businessId) === currentCourseId)) {
-                setStatus('专题页列表中找不到当前课程，请确认课程由这个专题页打开。', 'error');
-                break;
-            }
-            const now = Date.now();
-            const refresh = completionRefresher(vm);
-            if (refresh && now - lastRefresh >= 6000) {
-                try { refresh(); lastRefresh = now; } catch (error) { console.debug(TAG, '刷新专题进度失败', error); }
-            }
-            await new Promise(resolve => setTimeout(resolve, POLL_MS));
-
-            const refreshedVm = findCourseListVm(opener) || vm;
-            const refreshedRows = courseRows(refreshedVm);
-            const currentIndex = refreshedRows.findIndex(row => String(row.item.businessId) === currentCourseId);
-            if (currentIndex < 0) continue;
-            const current = refreshedRows[currentIndex];
-            if (progressOf(current.item) < 100) {
-                setStatus('平台当前记录进度 ' + progressOf(current.item) + '%，完成后会继续检查。');
-                continue;
-            }
-
-            const nextPending = refreshedRows.slice(currentIndex + 1).find(row => progressOf(row.item) < 100);
-            if (!nextPending) {
-                setStatus('专题列表中没有尚未完成的下一门课程。', 'success');
-                break;
-            }
-            if (nextPending.item.typeValue !== 'course') {
-                setStatus('下一项是“' + (nextPending.item.typeText || nextPending.item.typeValue || '非课程项目') + '”，请按平台要求手动完成。');
-                break;
-            }
-            if (!canEnter(refreshedVm, nextPending.item)) {
-                setStatus('下一门课程当前未开放或不满足平台前置条件，请先按平台提示处理。');
-                break;
-            }
-
-            // 走平台原生入口，避免跳过它的课程时间和前置条件判定。
-            openNext(refreshedVm, nextPending);
-            break;
+        handedOff = false;
+        courseDone = allCoursewareFinished();
+        if (courseDone) {
+            setStatus('本课课件已全部完成，等专题页核对进度后进入下一门。请保留专题页标签页。');
+            nudgeTopic();
         }
-
-        if (!readyTarget && enabled && endedForCurrentCourse && Date.now() >= deadline) {
-            setStatus('暂未收到课程完成状态。请等平台进度更新，或检查是否还有未完成的课程内容。');
-        }
-        processing = false;
     }
 
     // ---- 后台保活（默认关闭，只在播放页生效）----
@@ -296,10 +371,11 @@
         return getComputedStyle(el).display !== 'none' && el.getClientRects().length > 0;
     }
 
-    function keepAliveTick() {
+    function playerTick() {
+        checkCourse();
         const media = document.querySelector('video,audio');
         if (handedOff) {
-            if (enabled && media && !media.paused) media.pause();
+            if (media && !media.paused) media.pause();
             return;
         }
         if (!keepAlive) return;
@@ -321,12 +397,21 @@
             setStatus('平台弹出了验证或答题窗口，请手动处理，处理完会继续播放。');
             return;
         }
-        if (endedForCurrentCourse || !media || !media.paused || media.ended) return;
+        // 课件全看完后站点会从头循环播放，不去打断它，也不必再续播。
+        if (courseDone || !media || !media.paused || media.ended) return;
         Promise.resolve(media.play()).catch(() => {
             // 没有用户手势时浏览器只允许静音自动播放。
             media.muted = true;
             return media.play();
         }).catch(error => console.debug(TAG, '续播失败', error));
+    }
+
+    function startPlayer() {
+        installVisibilityShield();
+        setInterval(playerTick, TICK_MS);
+        // 一段播完后平台会回写完成度，稍等再查一次，比等下一轮定时检查快。
+        document.addEventListener('ended', () => setTimeout(checkCourse, 3000), true);
+        console.info(TAG, '已启动；课程进度和导航均由平台原生逻辑处理。');
     }
 
     function renderPanel() {
@@ -353,15 +438,13 @@
         const checkbox = host.querySelector('[data-enabled]');
         checkbox.checked = enabled;
         checkbox.addEventListener('change', () => {
-            enabled = checkbox.checked;
-            GM_setValue(ENABLED_KEY, enabled);
-            if (enabled) {
-                setStatus('已开启。课程会按平台实际完成进度切换。');
-                if (endedForCurrentCourse) checkCompletion();
+            setEnabled(checkbox.checked);
+            if (isTopicPage) {
+                if (enabled) setStatus(activeId ? '已开启，继续盯着课程进度。' : '已开启。点「开始学习」进入第一门未完成课程。');
+                else setStatus('已暂停自动切课。');
+                if (enabled) advance();
             } else {
-                readyTarget = null;
-                host.querySelector('[data-actions]').replaceChildren();
-                setStatus('已暂停自动切课。');
+                setStatus(enabled ? '已开启。课件全部完成后由专题页进入下一门。' : '已暂停自动切课。');
             }
         });
         const keepBox = host.querySelector('[data-keepalive]');
@@ -373,74 +456,17 @@
             else setStatus(keepAlive ? '后台保活已开启：切到后台不暂停，暂停后会自动续播。' : '后台保活已关闭。');
         });
         if (isTopicPage) {
-            host.querySelector('[data-actions]').append(button('开始学习第一门未完成课程', startFirstCourse, 'primary'));
-            setStatus(enabled ? '已开启。点「开始学习」进入第一门未完成课程。' : '先开启自动续课，再点「开始学习」进入第一门未完成课程。');
+            setActions(startButton());
+            setStatus(enabled ? '已开启。点「开始学习」进入第一门未完成课程。' : '点「开始学习」进入第一门未完成课程，之后自动一门接一门。');
         } else {
-            setStatus(enabled ? '已开启。正在等待当前课程播放结束。' : '请先开启；只在课程自然播放结束并被平台记为完成后切换。');
+            setStatus(enabled ? '已开启。课件全部完成后由专题页进入下一门。' : '请先开启；课程被平台记为完成后才切换。');
         }
-    }
-
-    function startFirstCourse() {
-        const vm = findCourseListVm(PAGE);
-        if (!vm) {
-            setStatus('专题课程列表还在加载，请稍等后再点。');
-            return;
-        }
-        const firstPending = courseRows(vm).find(row => progressOf(row.item) < 100);
-        if (!firstPending) {
-            setStatus('专题列表中没有未完成课程。', 'success');
-            return;
-        }
-        if (firstPending.item.typeValue !== 'course') {
-            setStatus('下一项是“' + (firstPending.item.typeText || firstPending.item.typeValue || '非课程项目') + '”，请先按平台要求处理。');
-            return;
-        }
-        if (!canEnter(vm, firstPending.item)) {
-            setStatus('第一门未完成课程当前未开放或不满足平台前置条件，请先按平台提示处理。');
-            return;
-        }
-        enabled = true;
-        GM_setValue(ENABLED_KEY, true);
-        const checkbox = document.querySelector('#' + ROOT_ID + ' [data-enabled]');
-        if (checkbox) checkbox.checked = true;
-        setStatus('正在调用平台入口打开《' + (firstPending.item.name || '第一门课程') + '》…');
-        try {
-            callNativeEnter(vm, firstPending);
-        } catch (error) {
-            console.error(TAG, '开始课程失败', error);
-            setStatus('未能打开课程。请确认登录和报名状态后重试。', 'error');
-        }
-    }
-
-    function watchMedia(media) {
-        if (!(media instanceof HTMLMediaElement) || media.dataset.gzwyAutoNextBound) return;
-        media.dataset.gzwyAutoNextBound = '1';
-        media.addEventListener('ended', () => {
-            // 课程内的资源仍由网站原生连播；仅在最后一个资源自然结束时检查专题下一门。
-            if (!isLastCoursewareAtEnd()) {
-                setStatus('本段已结束，平台正在继续当前课程。');
-                return;
-            }
-            endedForCurrentCourse = true;
-            checkCompletion();
-        }, true);
     }
 
     function start() {
         renderPanel();
-        if (isTopicPage) {
-            console.info(TAG, '专题页已就绪；点击「开始学习第一门未完成课程」。');
-            return;
-        }
-        installVisibilityShield();
-        setInterval(keepAliveTick, KEEPALIVE_MS);
-        document.querySelectorAll('video,audio').forEach(watchMedia);
-        new MutationObserver(records => records.forEach(record => record.addedNodes.forEach(node => {
-            if (node.nodeType !== Node.ELEMENT_NODE) return;
-            if (node.matches && node.matches('video,audio')) watchMedia(node);
-            if (node.querySelectorAll) node.querySelectorAll('video,audio').forEach(watchMedia);
-        }))).observe(document.documentElement, { childList: true, subtree: true });
-        console.info(TAG, '已启动；课程进度和导航均由平台原生逻辑处理。');
+        if (isTopicPage) startTopic();
+        else startPlayer();
     }
 
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, { once: true });
