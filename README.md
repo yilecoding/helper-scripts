@@ -2,16 +2,16 @@
 
 # helper-scripts
 
-**24 个实用油猴脚本：自动刷课连播、阅读增强、去广告弹窗、解除复制限制、一键导出……装上就能用。**
+**25 个实用油猴脚本：自动刷课连播、阅读增强、去广告弹窗、解除复制限制、一键导出……装上就能用。**
 
 [![GitHub stars](https://img.shields.io/github/stars/yilecoding/helper-scripts?style=social)](https://github.com/yilecoding/helper-scripts/stargazers)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
-![Scripts](https://img.shields.io/badge/scripts-24-brightgreen.svg)
+![Scripts](https://img.shields.io/badge/scripts-25-brightgreen.svg)
 ![Tampermonkey](https://img.shields.io/badge/Tampermonkey-ready-00485B.svg)
 
 </div>
 
-> A collection of 24 Tampermonkey userscripts, mostly for Chinese websites: an auto-play helper for the 2026 SmartEdu teacher training (the most popular one), plus general tools for reading, de-cluttering, copying, exporting, browsing and saving Baidu Netdisk shares in bulk. Click **安装** in any table below to install.
+> A collection of 25 Tampermonkey userscripts, mostly for Chinese websites: an auto-play helper for the 2026 SmartEdu teacher training (the most popular one), a next-course helper for the Guizhou online training platform, plus general tools for reading, de-cluttering, copying, exporting, browsing and saving Baidu Netdisk shares in bulk. Click **安装** in any table below to install.
 
 - **装上就能用**：点表格里的「安装」，Tampermonkey 会自动弹出安装页，之后自动更新。
 - **不乱改网页**：通用脚本大多能在菜单里按站点停用，不打扰本来正常的网站。
@@ -21,6 +21,7 @@
 
 - [快速开始](#快速开始)
 - [脚本一览](#脚本一览)
+  - [贵州省网络研修专题自动续课](#贵州省网络研修专题自动续课)
   - [⭐ 2026 暑期教师研修自动连播助手](#-2026-暑期教师研修自动连播助手)
   - [阅读体验](#阅读体验)
   - [去干扰与解除限制](#去干扰与解除限制)
@@ -44,11 +45,13 @@
 
 ### 贵州省网络研修专题自动续课
 
-> 贵州省网络研修平台（`www.gzwy.gov.cn`）· 专题课程播放完成后切换到专题列表中的下一门
+> 贵州省网络研修平台（`www.gzwy.gov.cn`）· 专题课程播放完成后切换到专题列表中的下一门，可选后台保活
 >
 > **[👉 安装脚本](https://raw.githubusercontent.com/yilecoding/helper-scripts/main/gzwy-course-autonext/gzwy-course-autonext.user.js)** · [调研与使用说明](./gzwy-course-autonext/notes.md)
 >
 > 在专题页开启并点「开始学习第一门未完成课程」；课程正常播放完成、平台同步进度后，通过平台原生入口打开下一门。默认关闭；考试、直播等非课程项目由用户按平台要求完成。
+>
+> 面板上另有「后台保活」开关（默认关闭）：课程页切到后台不暂停，自动确认「是否继续学习」，意外暂停后续播。人脸核验、随堂测验弹窗出现时会停下来等你处理。挂机前请对该站点允许弹出式窗口，并保留专题页标签页。
 
 ### ⭐ 2026 暑期教师研修自动连播助手
 
@@ -141,7 +144,7 @@
 
 **脚本会收集我的数据吗？**
 不会。所有设置和记录都只存在你本机的 Tampermonkey 里，没有任何统计或上报。脚本发出的网络请求只有两类：
-- 发往你正在浏览的网站本身：自动翻页（加载下一页）、图片批量下载、网页变化监控、研修助手（平台自己的接口）、百度网盘分享批量转存（百度网盘自己的接口）。
+- 发往你正在浏览的网站本身：自动翻页（加载下一页）、图片批量下载、网页变化监控、研修助手（平台自己的接口）、贵州专题续课（让专题页刷新自己的课程进度）、百度网盘分享批量转存（百度网盘自己的接口）。
 - 功能本身需要的服务：划词翻译（Google 翻译、MyMemory）、以图搜图（你选的搜图网站）、GitHub 增强（GitHub API）。
 
 ## 开发与测试
