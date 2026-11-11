@@ -6,7 +6,7 @@
 
 - 页面是 Vue 单页应用，入口文件加载 `modules/nc/js/dsf-nc.pc.js`，课程播放器使用 ckplayer。
 - 专题页列表从 `nc/class/course/list` 获取有序 `lists[].subList[]`；课程行包含 `businessId`、`name`、`typeValue`、`progress`、`playState` 等字段。
-- 专题列表的「进入」按钮调用 Vue 组件 `clickEnter(item, classId, group, index, previousProgress)`，该方法保留平台报名、前置课程和人脸核验等原有检查。
+- 专题列表的「进入」按钮调用 Vue 组件的 `clickEnter`。**贵州站点实际生效的是 `static/js/project/dsf-pc.js` 里的项目版组件**，参数表是 `clickEnter(group, item, classId, group, index, previousProgress, isStudentFlag)`；`modules/nc/js/dsf-nc.pc.js` 里的通用版是 `clickEnter(item, classId, group, index, previousProgress)`。按通用版顺序去调项目版，第二个参数变成 classId 字符串，`playState` 读不到，页面提示「不在学习时间范围」且不打开课程。脚本按形参个数（≥6 为项目版）区分两种调用方式。
 - 课程播放页从 `nc/course/play/getPlayTrend` 取 `playTree`，使用 `locationSite` 载入当前课件。播放器结束回调可在课程树里继续下一课件；站点原生切换函数会把最后一项绕回第一项。
 - 学习进度由页面播放器按正常播放进度调用 `nc/course/play/pulseSaveRecord` 上报；专题列表可重新加载后读取平台记录的完成百分比。
 

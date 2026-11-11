@@ -106,6 +106,34 @@ const NEXT_ID = 'course-next'
         } finally { await context.close() }
     })
 
+    await t.test('项目版 clickEnter（7 个形参）按 group, item, classId… 的顺序调用', async () => {
+        const context = await env.browser.newContext()
+        const page = await context.newPage()
+        await h.install(page, SCRIPT, { values: { 'gzwy-course-autonext-enabled': false } })
+        await page.goto(env.base + '/topic.html#/pc/nc/pagespecial/specialDetail?id=28c0ade8b77e42ac821863d958ade8c8')
+        await page.evaluate(() => {
+            const completed = { businessId: 'done', name: '已完成', typeValue: 'course', progress: 100, playState: true }
+            const pending = { businessId: 'first-pending', name: '第一门未完成', typeValue: 'course', progress: 0, playState: true }
+            const group = { classId: 'class-start', subList: [completed, pending] }
+            // 与站点 dsf-pc.js 的检查一致：第二个参数不是课程行时提示「不在学习时间范围」。
+            function clickEnter(e, t, s, a, i, n, o) {
+                if (!t || !t.playState) { window.__toast = '不在学习时间范围'; return }
+                window.__call = { groupFirst: e === group, item: t.businessId, classId: s, groupFourth: a === group, index: i, previous: n, flag: o === undefined ? null : o }
+            }
+            document.body.__vue__ = {
+                lists: [group], showClick: true, $parent: { initData() {} },
+                $options: { methods: { clickEnter } }, clickEnter,
+            }
+        })
+        try {
+            await page.waitForSelector('#gzwy-course-autonext-panel')
+            await page.click('#gzwy-course-autonext-panel [data-actions] button')
+            eq(await page.evaluate(() => window.__toast || null), null)
+            eq(JSON.stringify(await page.evaluate(() => window.__call)),
+                JSON.stringify({ groupFirst: true, item: 'first-pending', classId: 'class-start', groupFourth: true, index: 1, previous: 100, flag: null }))
+        } finally { await context.close() }
+    })
+
     await env.close()
     t.done()
 })().catch(error => { console.error(error); process.exitCode = 1 })

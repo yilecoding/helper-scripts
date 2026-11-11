@@ -3,7 +3,7 @@
 // @name:zh-CN   贵州省网络研修专题｜完成后切换下一门课
 // @name:en      Guizhou Online Training｜Next Course After Completion
 // @namespace    https://github.com/yilecoding/helper-scripts
-// @version      2026.11.11.1
+// @version      2026.11.11.2
 // @description  从专题页一键进入第一门未完成课程；课程完成后通过平台原生入口打开下一门。
 // @description:zh-CN 从专题页一键进入第一门未完成课程；课程完成后通过平台原生入口打开下一门。
 // @description:en  Start the first unfinished course from the topic page, then use the platform's native entry for the next course after completion.
@@ -126,6 +126,32 @@
         return Number.isFinite(value) ? value : 0;
     }
 
+    // 贵州站点用项目版组件覆盖了通用组件，clickEnter 的参数表不同：
+    //   项目版（dsf-pc.js）：clickEnter(group, item, classId, group, index, previousProgress, isStudentFlag)
+    //   通用版（dsf-nc.pc.js）：clickEnter(item, classId, group, index, previousProgress)
+    // 按形参个数区分，调用方式与页面「进入」按钮的模板保持一致。
+    function usesProjectSignature(vm) {
+        const methods = vm.$options && vm.$options.methods;
+        const fn = (methods && methods.clickEnter) || vm.clickEnter;
+        return fn.length >= 6;
+    }
+
+    function canEnter(vm, item) {
+        if (usesProjectSignature(vm)) return vm.isstudent == 1 || (!!vm.showClick && !!item.playState);
+        return !!vm.showClick && !!item.playState;
+    }
+
+    function callNativeEnter(vm, row) {
+        const { item, group, index } = row;
+        const previousProgress = index > 0 ? group.subList[index - 1].progress : null;
+        if (usesProjectSignature(vm)) {
+            if (vm.isstudent == 1) vm.clickEnter(group, item, group.classId, group, index, previousProgress, 1);
+            else vm.clickEnter(group, item, group.classId, group, index, previousProgress);
+        } else {
+            vm.clickEnter(item, group.classId, group, index, previousProgress);
+        }
+    }
+
     function completionRefresher(vm) {
         if (typeof vm.initData === 'function') return () => vm.initData();
         const parent = vm.$parent;
@@ -162,10 +188,8 @@
         if (!enabled || !target || !vm || typeof vm.clickEnter !== 'function') return;
         try {
             const item = target.item;
-            const group = target.group;
-            const previousProgress = target.index > 0 ? progressOf(group.subList[target.index - 1]) : null;
             // 与用户手动点击「进入」走同一套站点逻辑：时间、报名、前置条件、人脸验证。
-            vm.clickEnter(item, group.classId, group, target.index, previousProgress);
+            callNativeEnter(vm, target);
             setStatus('已交给平台打开《' + (item.name || '下一门课程') + '》。若浏览器拦截新标签页，请点下方按钮重试。', 'info');
             console.info(TAG, '已调用专题页原生课程入口', item.name || item.businessId);
         } catch (error) {
@@ -226,7 +250,7 @@
                 setStatus('下一项是“' + (nextPending.item.typeText || nextPending.item.typeValue || '非课程项目') + '”，请按平台要求手动完成。');
                 break;
             }
-            if (!refreshedVm.showClick || !nextPending.item.playState) {
+            if (!canEnter(refreshedVm, nextPending.item)) {
                 setStatus('下一门课程当前未开放或不满足平台前置条件，请先按平台提示处理。');
                 break;
             }
@@ -299,7 +323,7 @@
             setStatus('下一项是“' + (firstPending.item.typeText || firstPending.item.typeValue || '非课程项目') + '”，请先按平台要求处理。');
             return;
         }
-        if (!vm.showClick || !firstPending.item.playState) {
+        if (!canEnter(vm, firstPending.item)) {
             setStatus('第一门未完成课程当前未开放或不满足平台前置条件，请先按平台提示处理。');
             return;
         }
@@ -307,11 +331,9 @@
         GM_setValue(ENABLED_KEY, true);
         const checkbox = document.querySelector('#' + ROOT_ID + ' [data-enabled]');
         if (checkbox) checkbox.checked = true;
-        const group = firstPending.group;
-        const previousProgress = firstPending.index > 0 ? progressOf(group.subList[firstPending.index - 1]) : null;
         setStatus('正在调用平台入口打开《' + (firstPending.item.name || '第一门课程') + '》…');
         try {
-            vm.clickEnter(firstPending.item, group.classId, group, firstPending.index, previousProgress);
+            callNativeEnter(vm, firstPending);
         } catch (error) {
             console.error(TAG, '开始课程失败', error);
             setStatus('未能打开课程。请确认登录和报名状态后重试。', 'error');
